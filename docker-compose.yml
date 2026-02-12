@@ -1,0 +1,91 @@
+version: "3.9"
+
+services:
+
+  jellyfin:
+    image: jellyfin/jellyfin
+    container_name: friendbox-jellyfin
+    ports:
+      - "8096:8096"
+    volumes:
+      - /mnt/friendbox/config/jellyfin:/config
+      - /mnt/friendbox/movies:/movies
+      - /mnt/friendbox/tv:/tv
+    restart: unless-stopped
+
+  portainer:
+    image: portainer/portainer-ce
+    container_name: friendbox-portainer
+    ports:
+      - "9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/friendbox/config/portainer:/data
+    restart: unless-stopped
+
+  sonarr:
+    image: linuxserver/sonarr
+    container_name: friendbox-sonarr
+    ports:
+      - "8989:8989"
+    volumes:
+      - /mnt/friendbox/config/sonarr:/config
+      - /mnt/friendbox/tv:/tv
+      - /mnt/friendbox/downloads:/downloads
+    restart: unless-stopped
+
+  radarr:
+    image: linuxserver/radarr
+    container_name: friendbox-radarr
+    ports:
+      - "7878:7878"
+    volumes:
+      - /mnt/friendbox/config/radarr:/config
+      - /mnt/friendbox/movies:/movies
+      - /mnt/friendbox/downloads:/downloads
+    restart: unless-stopped
+
+  delugevpn:
+    image: binhex/arch-delugevpn
+    container_name: friendbox-delugevpn
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "8112:8112"     # Deluge WebUI
+      - "8118:8118"     # Privoxy
+      - "9118:9118"     # Alt Privoxy
+      - "58846:58846"   # Deluge Daemon
+      - "58946:58946"
+      - "58946:58946/udp"
+    volumes:
+      - /mnt/friendbox/downloads:/data
+      - /mnt/friendbox/config/delugevpn:/config
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - VPN_ENABLED=no              # change to yes when ready
+      - VPN_PROV=custom
+      - VPN_CLIENT=wireguard
+      - LAN_NETWORK=192.168.1.0/24   # change to your LAN
+      - ENABLE_PRIVOXY=yes
+      - STRICT_PORT_FORWARD=no
+      - ENABLE_SOCKS=no
+      - DELUGE_DAEMON_LOG_LEVEL=info
+      - DELUGE_WEB_LOG_LEVEL=info
+      - DELUGE_ENABLE_WEBUI_PASSWORD=yes
+      - USERSPACE_WIREGUARD=no
+      - UMASK=000
+      - PUID=1000
+      - PGID=1000
+    restart: unless-stopped
+
+  teamspeak:
+    image: teamspeaksystems/teamspeak6-server:latest
+    container_name: friendbox-teamspeak
+    restart: unless-stopped
+    ports:
+      - "9987:9987/udp"
+      - "30033:30033/tcp"
+    environment:
+      - TSSERVER_LICENSE_ACCEPTED=accept
+    volumes:
+      - /mnt/friendbox/config/teamspeak:/var/tsserver

@@ -20,7 +20,7 @@ Storage root: /mnt/friendbox
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/friendbox/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xkronusx/friendbox/main/install.sh | sudo bash
 ```
 
 After install, log out and back in so Docker group permissions apply.

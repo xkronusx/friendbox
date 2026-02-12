@@ -26,9 +26,15 @@ curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/friendbox/main/instal
 After install, log out and back in so Docker group permissions apply.
 
 Services:
+
 Jellyfin → http://SERVER_IP:8096
+
 Portainer → https://SERVER_IP:9443
+
 Sonarr → http://SERVER_IP:8989
+
 Radarr → http://SERVER_IP:7878
+
 DelugeVPN → http://SERVER_IP:8112
+
 TeamSpeak → UDP 9987

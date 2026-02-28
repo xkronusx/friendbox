@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://raw.githubusercontent.com/xkronusx/friendbox/main"
+REPO="https://raw.githubusercontent.com/xkronusx/friendbox/old"
 
 TMP_DIR="/tmp/friendbox-install"
 mkdir -p "$TMP_DIR"

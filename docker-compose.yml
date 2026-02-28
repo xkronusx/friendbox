@@ -1,0 +1,479 @@
+version: "3.9"
+
+# All containers join this network so they can resolve each other by
+# container_name. Profiles control which services start — managed by
+# the friendbox menu. Traefik and Portainer are always activated.
+
+networks:
+  medianet:
+    external: true
+
+services:
+
+  # ── Traefik — reverse proxy + automatic TLS ─────────────────────────────────
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik
+    profiles: [traefik]
+    restart: unless-stopped
+    networks:
+      - medianet
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONFIG_ROOT}/traefik/traefik.yml:/traefik.yml:ro
+      - ${CONFIG_ROOT}/traefik/acme.json:/acme.json
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.middlewares=auth"
+      - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_AUTH}"
+
+  # ── Portainer — Docker management UI ───────────────────────────────────────
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    profiles: [portainer]
+    restart: unless-stopped
+    networks:
+      - medianet
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONFIG_ROOT}/portainer:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.routers.portainer.tls.certresolver=letsencrypt"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+
+  # ── Plex — media playback ───────────────────────────────────────────────────
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    profiles: [plex]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - VERSION=docker
+    volumes:
+      - ${CONFIG_ROOT}/plex:/config
+      - ${MEDIA_ROOT}/tv:/tv
+      - ${MEDIA_ROOT}/movies:/movies
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.plex.rule=Host(`plex.${DOMAIN}`)"
+      - "traefik.http.routers.plex.entrypoints=websecure"
+      - "traefik.http.routers.plex.tls.certresolver=letsencrypt"
+      - "traefik.http.services.plex.loadbalancer.server.port=32400"
+
+  # ── Jellyfin — open-source media server ────────────────────────────────────
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    profiles: [jellyfin]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/jellyfin:/config
+      - ${MEDIA_ROOT}/tv:/data/tv
+      - ${MEDIA_ROOT}/movies:/data/movies
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.${DOMAIN}`)"
+      - "traefik.http.routers.jellyfin.entrypoints=websecure"
+      - "traefik.http.routers.jellyfin.tls.certresolver=letsencrypt"
+      - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
+
+  # ── Sonarr — TV show management ─────────────────────────────────────────────
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    profiles: [sonarr]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/sonarr:/config
+      - ${MEDIA_ROOT}/tv:/tv
+      - ${MEDIA_ROOT}/downloads:/downloads
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sonarr.rule=Host(`sonarr.${DOMAIN}`)"
+      - "traefik.http.routers.sonarr.entrypoints=websecure"
+      - "traefik.http.routers.sonarr.tls.certresolver=letsencrypt"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
+
+  # ── Radarr — movie management ───────────────────────────────────────────────
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    profiles: [radarr]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/radarr:/config
+      - ${MEDIA_ROOT}/movies:/movies
+      - ${MEDIA_ROOT}/downloads:/downloads
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.radarr.rule=Host(`radarr.${DOMAIN}`)"
+      - "traefik.http.routers.radarr.entrypoints=websecure"
+      - "traefik.http.routers.radarr.tls.certresolver=letsencrypt"
+      - "traefik.http.services.radarr.loadbalancer.server.port=7878"
+
+  # ── Prowlarr — indexer management (nightly) ─────────────────────────────────
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:nightly
+    container_name: prowlarr
+    profiles: [prowlarr]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/prowlarr:/config
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prowlarr.rule=Host(`prowlarr.${DOMAIN}`)"
+      - "traefik.http.routers.prowlarr.entrypoints=websecure"
+      - "traefik.http.routers.prowlarr.tls.certresolver=letsencrypt"
+      - "traefik.http.services.prowlarr.loadbalancer.server.port=9696"
+
+  # ── Bazarr — subtitle management ────────────────────────────────────────────
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    profiles: [bazarr]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/bazarr:/config
+      - ${MEDIA_ROOT}/movies:/movies
+      - ${MEDIA_ROOT}/tv:/tv
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bazarr.rule=Host(`bazarr.${DOMAIN}`)"
+      - "traefik.http.routers.bazarr.entrypoints=websecure"
+      - "traefik.http.routers.bazarr.tls.certresolver=letsencrypt"
+      - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
+
+  # ── Ombi — media request manager (v3) ──────────────────────────────────────
+  ombi:
+    image: lscr.io/linuxserver/ombi:latest
+    container_name: ombi
+    profiles: [ombi]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/ombi:/config
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ombi.rule=Host(`ombi.${DOMAIN}`)"
+      - "traefik.http.routers.ombi.entrypoints=websecure"
+      - "traefik.http.routers.ombi.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ombi.loadbalancer.server.port=3579"
+
+  # ── Overseerr — media request & discovery manager ───────────────────────────
+  overseerr:
+    image: lscr.io/linuxserver/overseerr:latest
+    container_name: overseerr
+    profiles: [overseerr]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/overseerr:/config
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.overseerr.rule=Host(`overseerr.${DOMAIN}`)"
+      - "traefik.http.routers.overseerr.entrypoints=websecure"
+      - "traefik.http.routers.overseerr.tls.certresolver=letsencrypt"
+      - "traefik.http.services.overseerr.loadbalancer.server.port=5055"
+
+  # ── NZBGet — Usenet download client ────────────────────────────────────────
+  nzbget:
+    image: lscr.io/linuxserver/nzbget:latest
+    container_name: nzbget
+    profiles: [nzbget]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/nzbget:/config
+      - ${MEDIA_ROOT}/downloads:/downloads
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nzbget.rule=Host(`nzbget.${DOMAIN}`)"
+      - "traefik.http.routers.nzbget.entrypoints=websecure"
+      - "traefik.http.routers.nzbget.tls.certresolver=letsencrypt"
+      - "traefik.http.services.nzbget.loadbalancer.server.port=6789"
+
+  # ── qBittorrent — torrent client (no VPN) ──────────────────────────────────
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    profiles: [qbittorrent]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - WEBUI_PORT=8080
+    volumes:
+      - ${CONFIG_ROOT}/qbittorrent:/config
+      - ${MEDIA_ROOT}/downloads:/downloads
+    ports:
+      - "6881:6881"
+      - "6881:6881/udp"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.qbt.rule=Host(`qbt.${DOMAIN}`)"
+      - "traefik.http.routers.qbt.entrypoints=websecure"
+      - "traefik.http.routers.qbt.tls.certresolver=letsencrypt"
+      - "traefik.http.services.qbt.loadbalancer.server.port=8080"
+
+  # ── qBittorrentVPN — torrent client behind VPN ─────────────────────────────
+  # Requires VPN credentials. Set VPN_* vars in .env or below.
+  # Supported providers: pia, airvpn, mullvad, custom (wireguard/openvpn)
+  qbittorrentvpn:
+    image: binhex/arch-qbittorrentvpn:latest
+    container_name: qbittorrentvpn
+    profiles: [qbittorrentvpn]
+    restart: unless-stopped
+    networks:
+      - medianet
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - VPN_ENABLED=yes
+      - VPN_PROV=${VPN_PROV:-pia}
+      - VPN_CLIENT=${VPN_CLIENT:-openvpn}
+      - VPN_USER=${VPN_USER:-changeme}
+      - VPN_PASS=${VPN_PASS:-changeme}
+      - VPN_OPTIONS=
+      - LAN_NETWORK=${LAN_NETWORK:-192.168.1.0/24}
+      - NAME_SERVERS=1.1.1.1,1.0.0.1
+      - WEBUI_PORT=8080
+      - STRICT_PORT_FORWARD=yes
+      - ENABLE_PRIVOXY=no
+    volumes:
+      - ${CONFIG_ROOT}/qbittorrentvpn:/config
+      - ${MEDIA_ROOT}/downloads:/downloads
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "8181:8080"   # WebUI (use 8181 to avoid clash with plain qbt)
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.qbtvpn.rule=Host(`qbtvpn.${DOMAIN}`)"
+      - "traefik.http.routers.qbtvpn.entrypoints=websecure"
+      - "traefik.http.routers.qbtvpn.tls.certresolver=letsencrypt"
+      - "traefik.http.services.qbtvpn.loadbalancer.server.port=8080"
+
+  # ── DelugeVPN — Deluge torrent client behind VPN ───────────────────────────
+  # Same VPN env vars as qBittorrentVPN above.
+  delugevpn:
+    image: binhex/arch-delugevpn:latest
+    container_name: delugevpn
+    profiles: [delugevpn]
+    restart: unless-stopped
+    networks:
+      - medianet
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - VPN_ENABLED=yes
+      - VPN_PROV=${VPN_PROV:-pia}
+      - VPN_CLIENT=${VPN_CLIENT:-openvpn}
+      - VPN_USER=${VPN_USER:-changeme}
+      - VPN_PASS=${VPN_PASS:-changeme}
+      - VPN_OPTIONS=
+      - LAN_NETWORK=${LAN_NETWORK:-192.168.1.0/24}
+      - NAME_SERVERS=1.1.1.1,1.0.0.1
+      - DELUGE_DAEMON_LOG_LEVEL=info
+      - DELUGE_WEB_LOG_LEVEL=info
+      - ENABLE_PRIVOXY=no
+    volumes:
+      - ${CONFIG_ROOT}/delugevpn:/config
+      - ${MEDIA_ROOT}/downloads:/downloads
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "8112:8112"   # Deluge WebUI
+      - "58846:58846" # Deluge daemon
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.delugevpn.rule=Host(`deluge.${DOMAIN}`)"
+      - "traefik.http.routers.delugevpn.entrypoints=websecure"
+      - "traefik.http.routers.delugevpn.tls.certresolver=letsencrypt"
+      - "traefik.http.services.delugevpn.loadbalancer.server.port=8112"
+
+  # ── NetbootXYZ — network boot server ───────────────────────────────────────
+  netbootxyz:
+    image: lscr.io/linuxserver/netbootxyz:latest
+    container_name: netbootxyz
+    profiles: [netbootxyz]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/netbootxyz:/config
+      - ${MEDIA_ROOT}/netboot/assets:/assets
+    ports:
+      - "69:69/udp"    # TFTP
+      - "3000:3000"    # Web app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.netbootxyz.rule=Host(`netboot.${DOMAIN}`)"
+      - "traefik.http.routers.netbootxyz.entrypoints=websecure"
+      - "traefik.http.routers.netbootxyz.tls.certresolver=letsencrypt"
+      - "traefik.http.services.netbootxyz.loadbalancer.server.port=3000"
+
+  # ── TeamSpeak 6 — voice communication server ────────────────────────────────
+  teamspeak6:
+    image: teamspeaksystems/teamspeak6-server:latest
+    container_name: teamspeak6
+    profiles: [teamspeak6]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - TZ=${TZ}
+      - TS_LICENSE=accept
+    volumes:
+      - ${CONFIG_ROOT}/teamspeak6:/var/ts6
+    ports:
+      - "9987:9987/udp"  # Voice
+      - "10011:10011"    # ServerQuery (raw)
+      - "30033:30033"    # File transfer
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
+      - "traefik.http.routers.ts6.entrypoints=websecure"
+      - "traefik.http.routers.ts6.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ts6.loadbalancer.server.port=10080"
+
+  # ── Mumble — open-source voice chat server ──────────────────────────────────
+  mumble:
+    image: lscr.io/linuxserver/mumble-server:latest
+    container_name: mumble
+    profiles: [mumble]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD:-changeme}
+    volumes:
+      - ${CONFIG_ROOT}/mumble:/config
+    ports:
+      - "64738:64738"        # Voice (TCP)
+      - "64738:64738/udp"    # Voice (UDP)
+
+  # ── Jellyseerr — Jellyfin-native media request manager ─────────────────────
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    profiles: [jellyseerr]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/jellyseerr:/app/config
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyseerr.rule=Host(`jellyseerr.${DOMAIN}`)"
+      - "traefik.http.routers.jellyseerr.entrypoints=websecure"
+      - "traefik.http.routers.jellyseerr.tls.certresolver=letsencrypt"
+      - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
+
+  # ── AMP (AMP-MC) — game server management panel ────────────────────────────
+  # Manages Minecraft and other game servers. Set AMP credentials in .env.
+  ampmc:
+    image: mitchtalmadge/amp-dockerized:latest
+    container_name: ampmc
+    profiles: [ampmc]
+    restart: unless-stopped
+    networks:
+      - medianet
+    environment:
+      - TZ=${TZ}
+      - USERNAME=${AMP_USER:-admin}
+      - PASSWORD=${AMP_PASS:-changeme}
+    volumes:
+      - ${CONFIG_ROOT}/ampmc:/home/amp/.ampdata
+    ports:
+      - "25565:25565"  # Minecraft default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ampmc.rule=Host(`amp.${DOMAIN}`)"
+      - "traefik.http.routers.ampmc.entrypoints=websecure"
+      - "traefik.http.routers.ampmc.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ampmc.loadbalancer.server.port=8080"

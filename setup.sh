@@ -22,6 +22,7 @@ SELECTED_FILE="${INSTALL_DIR}/.selected_containers"
 MERGERFS_MODES_FILE="${INSTALL_DIR}/.mergerfs_modes"
 MERGERFS_POOL_FILE="${INSTALL_DIR}/.mergerfs_pool"
 DNS_STATE_FILE="${INSTALL_DIR}/.dns_config"
+INSTALL_FLAG="${INSTALL_DIR}/.installed"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -43,6 +44,26 @@ require_root() {
 pause() {
   echo ""
   read -rp "Press [Enter] to return to the menu..."
+}
+
+# ── Install state ─────────────────────────────────────────────────────────────
+is_installed() {
+  [[ -f "$INSTALL_FLAG" ]]
+}
+
+mark_installed() {
+  mkdir -p "${INSTALL_DIR}"
+  echo "installed=$(date '+%Y-%m-%d %H:%M:%S')" > "$INSTALL_FLAG"
+}
+
+mark_uninstalled() {
+  rm -f "$INSTALL_FLAG"
+}
+
+# Returns 0 (true) if the stack appears to have active containers
+is_running() {
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps --status running \
+    2>/dev/null | grep -q "running" || return 1
 }
 
 # ── OS compatibility check ────────────────────────────────────────────────────
@@ -604,6 +625,21 @@ _mergerfs_protect_os() {
 }
 
 _mergerfs_initial_setup() {
+  # ── Already-configured guard ─────────────────────────────────────────────────
+  _mergerfs_load_pool
+  if [[ -n "$MERGERFS_POOL" && ${#DISK_MODES[@]} -gt 0 ]] 2>/dev/null; then
+    _mergerfs_load_modes
+    if [[ ${#DISK_MODES[@]} -gt 0 ]]; then
+      echo ""
+      warn "A MergerFS pool is already configured at: ${BOLD}${MERGERFS_POOL}${RESET}"
+      warn "Re-running initial setup will replace the existing pool configuration."
+      echo ""
+      read -rp "  Reconfigure the pool from scratch? [y/N] " yn
+      [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted — use options 2–5 to modify the existing pool."; return 0; }
+      echo ""
+    fi
+  fi
+
   info "Installing mergerfs..."
   if ! apt-get install -y mergerfs 2>/dev/null; then
     warn "Could not install mergerfs automatically."
@@ -1565,6 +1601,33 @@ configure_dns() {
 
 full_install() {
   require_root || return 1
+
+  # ── Already-installed guard ──────────────────────────────────────────────────
+  if is_installed; then
+    local installed_at
+    installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2-)
+    echo ""
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${YELLOW}║  ⚠  Friendbox is already installed                          ║${RESET}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo ""
+    echo -e "  Installed on: ${BOLD}${installed_at:-unknown}${RESET}"
+    echo ""
+    echo -e "  Running Full Install again will:"
+    echo -e "  ${DIM}  • Re-download config files from GitHub${RESET}"
+    echo -e "  ${DIM}  • Overwrite your current .env settings${RESET}"
+    echo -e "  ${DIM}  • Re-run container selection and redeploy${RESET}"
+    echo ""
+    echo -e "  For most changes, use the individual menu options instead:"
+    echo -e "  ${DIM}  • Options 2–5  — change containers / config / credentials${RESET}"
+    echo -e "  ${DIM}  • Option 12    — redeploy containers${RESET}"
+    echo -e "  ${DIM}  • Option 13    — pull latest images${RESET}"
+    echo ""
+    read -rp "  Re-run Full Install anyway? [y/N] " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted — returning to menu."; return 0; }
+    echo ""
+  fi
+
   check_os
   check_deps
   sync_repo
@@ -1577,6 +1640,7 @@ full_install() {
   compose_selected up -d
   echo ""
   success "✅ Friendbox is up!"
+  mark_installed
   echo ""
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
   echo -e "  ${BOLD}Next steps if needed:${RESET}"
@@ -1652,39 +1716,48 @@ show_status() {
 }
 
 redeploy_menu() {
-  echo ""
-  echo -e "${BOLD}Redeploy Options${RESET}"
-  echo "  1) Redeploy ALL active containers (pull latest images + recreate)"
-  echo "  2) Redeploy a SINGLE container"
-  echo "  3) Restart all active containers (no pull)"
-  echo "  4) Change container selection then redeploy"
-  echo "  5) Back"
-  echo ""
-  read -rp "Choice: " choice
-  case "$choice" in
-    1)
-      info "Pulling latest images and redeploying..."
-      compose_selected pull
-      compose_selected up -d --force-recreate
-      success "All active containers redeployed."
-      ;;
-    2)
-      echo ""
-      read -rp "Container name (e.g. sonarr): " svc
-      [[ -z "$svc" ]] && { warn "No name entered."; return; }
-      compose_selected pull "$svc"
-      compose_selected up -d --force-recreate "$svc"
-      success "${svc} redeployed."
-      ;;
-    3) compose_selected restart; success "All containers restarted." ;;
-    4)
-      select_containers
-      compose_selected up -d --remove-orphans
-      success "Stack updated."
-      ;;
-    5) return ;;
-    *) warn "Invalid choice." ;;
-  esac
+  while true; do
+    echo ""
+    echo -e "${BOLD}Redeploy Options${RESET}"
+    echo "  1) Redeploy ALL active containers (pull latest images + recreate)"
+    echo "  2) Redeploy a SINGLE container"
+    echo "  3) Restart all active containers (no pull)"
+    echo "  4) Change container selection then redeploy"
+    echo "  5) Back"
+    echo ""
+    read -rp "Choice: " choice
+    case "$choice" in
+      1)
+        info "Pulling latest images and redeploying..."
+        compose_selected pull
+        compose_selected up -d --force-recreate
+        success "All active containers redeployed."
+        pause
+        ;;
+      2)
+        echo ""
+        read -rp "Container name (e.g. sonarr): " svc
+        [[ -z "$svc" ]] && { warn "No name entered."; sleep 1; continue; }
+        compose_selected pull "$svc"
+        compose_selected up -d --force-recreate "$svc"
+        success "${svc} redeployed."
+        pause
+        ;;
+      3)
+        compose_selected restart
+        success "All containers restarted."
+        pause
+        ;;
+      4)
+        select_containers
+        compose_selected up -d --remove-orphans
+        success "Stack updated."
+        pause
+        ;;
+      5) return ;;
+      *) warn "Invalid choice."; sleep 1 ;;
+    esac
+  done
 }
 
 update_stack() {
@@ -1701,7 +1774,8 @@ teardown() {
   read -rp "Are you sure? [y/N] " yn
   [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return; }
   compose_selected down --remove-orphans
-  success "Containers removed."
+  mark_uninstalled
+  success "Containers removed. Run option 1 to reinstall."
 }
 
 view_logs() {
@@ -1725,8 +1799,18 @@ main_menu() {
     echo -e "${RESET}"
     load_selected
     local count="${#SELECTED[@]}"
-    echo -e "  ${DIM}Active containers: ${count}${RESET}"
+
+    # ── Install status badge ─────────────────────────────────────────────────
+    if is_installed; then
+      local installed_at
+      installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2-)
+      echo -e "  ${GREEN}● INSTALLED${RESET}  ${DIM}(${installed_at:-unknown})${RESET}"
+    else
+      echo -e "  ${YELLOW}○ NOT YET INSTALLED${RESET}  ${DIM}Run option 1 to get started.${RESET}"
+    fi
+    echo -e "  ${DIM}Selected containers: ${count}${RESET}"
     echo ""
+
     echo "  ── Setup ────────────────────────────────"
     echo "   1) Full Install (first time setup)"
     echo "   2) Select containers"
@@ -1748,6 +1832,16 @@ main_menu() {
     echo "   q) Quit"
     echo ""
     read -rp "Select option: " opt
+
+    # ── Gate operations-section items when not installed ─────────────────────
+    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|15)$ ]]; then
+      echo ""
+      warn "Friendbox has not been installed yet."
+      warn "Run option 1 (Full Install) first, then use the operations menu."
+      pause
+      continue
+    fi
+
     case "$opt" in
       1)  full_install                    || true; pause ;;
       2)  select_containers               || true; pause ;;
@@ -1760,7 +1854,7 @@ main_menu() {
       9)  sync_repo                       || true; pause ;;
       10) show_status                     || true; pause ;;
       11) print_urls                      || true; pause ;;
-      12) redeploy_menu                   || true; pause ;;
+      12) redeploy_menu                          ;;   # now has its own loop+return
       13) update_stack                    || true; pause ;;
       14) view_logs                       || true; pause ;;
       15) teardown                        || true; pause ;;

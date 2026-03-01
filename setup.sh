@@ -513,7 +513,7 @@ _mergerfs_add_disk() {
   echo "  1) RW — Read/Write  (normal, files can be created here)"
   echo "  2) NC — No-Create   (existing files readable, no new files written here)"
   echo "  3) RO — Read-Only   (existing files readable, no writes at all)"
-  read -rp "  Mode [1]: " msel
+  read -rp "  Mode (press Enter for default) [1]: " msel
   local mode
   case "${msel:-1}" in
     1) mode="RW" ;; 2) mode="NC" ;; 3) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
@@ -590,7 +590,7 @@ _mergerfs_protect_os() {
   os_mount=$(df / 2>/dev/null | awk 'NR==2{print $6}')
   echo -e "  Detected OS mount: ${CYAN}${os_mount:-/}${RESET}"
   echo ""
-  read -rp "OS mount path to add as NC [${os_mount:-/}]: " input
+  read -rp "OS mount path to add as NC (press Enter to use detected path) [${os_mount:-/}]: " input
   local os_path="${input:-${os_mount:-/}}"
   if [[ -n "${DISK_MODES[$os_path]+_}" ]]; then
     warn "${os_path} is already in the pool as ${DISK_MODES[$os_path]}."
@@ -616,7 +616,8 @@ _mergerfs_initial_setup() {
   echo ""
   echo -e "${BOLD}MergerFS Pool Configuration${RESET}"
   echo "Enter each disk path you want to pool, one at a time."
-  echo "Press Enter with no input when done."
+  echo "Press Enter with no input when done adding disks."
+  echo -e "${DIM}  For mode selection, press Enter to accept the default [1].${RESET}"
   echo ""
   local added=0 disk mode
   while true; do
@@ -640,7 +641,7 @@ _mergerfs_initial_setup() {
   fi
 
   local pool_path="/mnt/media"
-  read -rp "Pool mount point [${pool_path}]: " custom_pool
+  read -rp "Pool mount point (press Enter for default) [${pool_path}]: " custom_pool
   [[ -n "$custom_pool" ]] && pool_path="$custom_pool"
   mkdir -p "$pool_path"
 
@@ -695,6 +696,8 @@ setup_mergerfs() {
 configure_env() {
   echo ""
   echo -e "${BOLD}Environment Configuration${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
   [[ -f "$ENV_FILE" ]]   && source "$ENV_FILE"   2>/dev/null || true
   [[ -f "$STATE_FILE" ]] && source "$STATE_FILE" 2>/dev/null || true
 
@@ -791,6 +794,7 @@ _traefik_set_auth() {
   echo ""
   echo -e "${BOLD}Traefik Dashboard Credentials${RESET}"
   echo -e "${DIM}Secures the Traefik dashboard at https://traefik.${DOMAIN:-yourdomain.com}${RESET}"
+  echo -e "${DIM}  Press Enter on username to keep the value shown in [brackets].${RESET}"
   echo ""
 
   if ! command -v htpasswd &>/dev/null; then
@@ -800,8 +804,21 @@ _traefik_set_auth() {
 
   read -rp "Dashboard username [${TRAEFIK_USER:-admin}]: " input
   local dash_user="${input:-${TRAEFIK_USER:-admin}}"
-  read -srp "Dashboard password: " dash_pass; echo ""
-  [[ -z "$dash_pass" ]] && { warn "Password cannot be empty."; return 1; }
+  read -srp "Dashboard password (press Enter to keep existing): " dash_pass; echo ""
+  # If Enter was pressed and a hash already exists, keep the existing auth
+  if [[ -z "$dash_pass" ]]; then
+    if [[ -n "${TRAEFIK_AUTH:-}" && "${TRAEFIK_AUTH:-}" != "disabled" ]]; then
+      info "Password unchanged — keeping existing credentials."
+      # Still update TRAEFIK_USER in case username changed
+      sed -i '/^TRAEFIK_USER=/d' "$ENV_FILE" 2>/dev/null || true
+      echo "TRAEFIK_USER=${dash_user}" >> "$ENV_FILE"
+      success "Traefik username updated."
+      return 0
+    else
+      warn "No existing password set — please enter a password."
+      return 1
+    fi
+  fi
 
   local new_auth
   new_auth=$(htpasswd -nbB "$dash_user" "$dash_pass" | sed 's/\$/\$\$/g')
@@ -818,6 +835,7 @@ _traefik_set_domain() {
   echo ""
   echo -e "${BOLD}Traefik Domain / ACME Email${RESET}"
   echo -e "${DIM}These are used by Traefik for automatic HTTPS certificate issuance.${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
   read -rp "Domain (e.g. example.com) [${DOMAIN:-}]: " input
   local new_domain="${input:-${DOMAIN:-}}"
@@ -940,6 +958,7 @@ _creds_configure_vpn() {
   echo ""
   echo -e "${BOLD}VPN Credentials${RESET}"
   echo -e "${DIM}Used by qBittorrentVPN and/or DelugeVPN.${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
 
   read -rp "VPN provider (pia, airvpn, mullvad, custom) [${VPN_PROV:-pia}]: " input
@@ -948,8 +967,14 @@ _creds_configure_vpn() {
   VPN_CLIENT="${input:-${VPN_CLIENT:-openvpn}}"
   read -rp "VPN username [${VPN_USER:-}]: " input
   VPN_USER="${input:-${VPN_USER:-}}"
-  read -srp "VPN password: " VPN_PASS; echo ""
-  [[ -z "$VPN_PASS" ]] && { warn "VPN password cannot be empty."; return 1; }
+  read -srp "VPN password (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    VPN_PASS="$input"
+  elif [[ -z "${VPN_PASS:-}" ]]; then
+    warn "VPN password is required."; return 1
+  else
+    info "VPN password unchanged."
+  fi
   read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24}]: " input
   LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24}}"
 
@@ -965,11 +990,18 @@ _creds_configure_amp() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   echo ""
   echo -e "${BOLD}AMP (Game Server Panel) Credentials${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
   read -rp "AMP admin username [${AMP_USER:-admin}]: " input
   AMP_USER="${input:-${AMP_USER:-admin}}"
-  read -srp "AMP admin password: " AMP_PASS; echo ""
-  [[ -z "$AMP_PASS" ]] && { warn "AMP password cannot be empty."; return 1; }
+  read -srp "AMP admin password (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    AMP_PASS="$input"
+  elif [[ -z "${AMP_PASS:-}" ]]; then
+    warn "AMP password is required."; return 1
+  else
+    info "AMP password unchanged."
+  fi
   sed -i '/^AMP_USER=/d;/^AMP_PASS=/d' "$ENV_FILE" 2>/dev/null || true
   printf 'AMP_USER=%s\nAMP_PASS=%s\n' "$AMP_USER" "$AMP_PASS" >> "$ENV_FILE"
   success "AMP credentials saved."
@@ -979,6 +1011,7 @@ _creds_configure_mumble() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   echo ""
   echo -e "${BOLD}Mumble Superuser Password${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
   read -srp "Mumble superuser password [${MUMBLE_SUPERUSER_PASSWORD:-changeme}]: " input
   MUMBLE_SUPERUSER_PASSWORD="${input:-${MUMBLE_SUPERUSER_PASSWORD:-changeme}}"
@@ -1185,14 +1218,21 @@ _dns_configure_cloudflare() {
   echo ""
   echo -e "${BOLD}Cloudflare — DNS A Record Setup${RESET}"
   echo -e "${DIM}Credentials: dash.cloudflare.com → domain → Overview → API section${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
   read -rp "Domain (e.g. example.com) [${DNS_DOMAIN:-}]: " input
   DNS_DOMAIN="${input:-${DNS_DOMAIN:-}}"
   [[ -z "$DNS_DOMAIN" ]] && { warn "Domain required."; return; }
   read -rp "Cloudflare account email [${DNS_CF_EMAIL:-}]: " input
   DNS_CF_EMAIL="${input:-${DNS_CF_EMAIL:-}}"
-  read -srp "Global API Key or API Token: " DNS_CF_API_KEY; echo ""
-  [[ -z "$DNS_CF_API_KEY" ]] && { warn "API key required."; return; }
+  read -srp "Global API Key or API Token (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DNS_CF_API_KEY="$input"
+  elif [[ -z "${DNS_CF_API_KEY:-}" ]]; then
+    warn "API key required."; return
+  else
+    info "API key unchanged."
+  fi
 
   echo ""
   info "Looking up Zone ID for ${DNS_DOMAIN}..."
@@ -1209,7 +1249,7 @@ _dns_configure_cloudflare() {
     DNS_CF_ZONE_ID="$zone_id"
   else
     warn "Could not auto-detect Zone ID."
-    read -rp "Enter Zone ID manually [${DNS_CF_ZONE_ID:-}]: " input
+    read -rp "Enter Zone ID manually (press Enter to keep existing) [${DNS_CF_ZONE_ID:-}]: " input
     DNS_CF_ZONE_ID="${input:-${DNS_CF_ZONE_ID:-}}"
   fi
   DNS_PROVIDER="cloudflare"
@@ -1263,13 +1303,20 @@ _dns_configure_duckdns() {
   echo ""
   echo -e "${BOLD}DuckDNS — DNS Update Setup${RESET}"
   echo -e "${DIM}Free dynamic DNS — token at duckdns.org/account${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
   read -rp "DuckDNS subdomain prefix (e.g. 'myhome') [${DNS_DUCKDNS_SUBDOMAIN:-}]: " input
   DNS_DUCKDNS_SUBDOMAIN="${input:-${DNS_DUCKDNS_SUBDOMAIN:-}}"
   [[ -z "$DNS_DUCKDNS_SUBDOMAIN" ]] && { warn "Subdomain required."; return; }
   DNS_DOMAIN="${DNS_DUCKDNS_SUBDOMAIN}.duckdns.org"
-  read -srp "DuckDNS token: " DNS_DUCKDNS_TOKEN; echo ""
-  [[ -z "$DNS_DUCKDNS_TOKEN" ]] && { warn "Token required."; return; }
+  read -srp "DuckDNS token (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DNS_DUCKDNS_TOKEN="$input"
+  elif [[ -z "${DNS_DUCKDNS_TOKEN:-}" ]]; then
+    warn "Token required."; return
+  else
+    info "Token unchanged."
+  fi
   DNS_PROVIDER="duckdns"
   _dns_save
   success "DuckDNS config saved. Domain: ${DNS_DOMAIN}"
@@ -1297,14 +1344,22 @@ _dns_configure_godaddy() {
   echo ""
   echo -e "${BOLD}GoDaddy — DNS A Record Setup${RESET}"
   echo -e "${DIM}API keys: developer.godaddy.com → API Keys (use Production, not OTE)${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
   read -rp "Domain (e.g. example.com) [${DNS_DOMAIN:-}]: " input
   DNS_DOMAIN="${input:-${DNS_DOMAIN:-}}"
   [[ -z "$DNS_DOMAIN" ]] && { warn "Domain required."; return; }
   read -rp "GoDaddy API Key [${DNS_GODADDY_KEY:-}]: " input
   DNS_GODADDY_KEY="${input:-${DNS_GODADDY_KEY:-}}"
-  read -srp "GoDaddy API Secret: " DNS_GODADDY_SECRET; echo ""
-  [[ -z "$DNS_GODADDY_KEY" || -z "$DNS_GODADDY_SECRET" ]] && { warn "Key and secret required."; return; }
+  read -srp "GoDaddy API Secret (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DNS_GODADDY_SECRET="$input"
+  elif [[ -z "${DNS_GODADDY_SECRET:-}" ]]; then
+    warn "Key and secret required."; return
+  else
+    info "API secret unchanged."
+  fi
+  [[ -z "$DNS_GODADDY_KEY" ]] && { warn "API key required."; return; }
   DNS_PROVIDER="godaddy"
   _dns_save
   success "GoDaddy config saved."
@@ -1344,17 +1399,24 @@ _dns_configure_namecheap() {
   echo -e "${BOLD}Namecheap — Dynamic DNS Setup${RESET}"
   echo -e "${DIM}Enable Dynamic DNS: Domain List → Manage → Advanced DNS${RESET}"
   echo -e "${DIM}⚠ Namecheap DDNS updates one host at a time via their Dynamic DNS endpoint.${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
   read -rp "Namecheap username [${DNS_NAMECHEAP_USER:-}]: " input
   DNS_NAMECHEAP_USER="${input:-${DNS_NAMECHEAP_USER:-}}"
   read -rp "Domain (e.g. example.com) [${DNS_DOMAIN:-}]: " input
   DNS_DOMAIN="${input:-${DNS_DOMAIN:-}}"
   [[ -z "$DNS_DOMAIN" ]] && { warn "Domain required."; return; }
-  read -srp "Dynamic DNS Password (from Advanced DNS panel): " DNS_NAMECHEAP_API_KEY; echo ""
-  [[ -z "$DNS_NAMECHEAP_API_KEY" ]] && { warn "Password required."; return; }
+  read -srp "Dynamic DNS Password (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DNS_NAMECHEAP_API_KEY="$input"
+  elif [[ -z "${DNS_NAMECHEAP_API_KEY:-}" ]]; then
+    warn "Password required."; return
+  else
+    info "Password unchanged."
+  fi
   info "Detecting public IP..."
   local pub_ip; pub_ip=$(_dns_get_public_ip 2>/dev/null) || pub_ip=""
-  read -rp "Whitelisted public IP [${DNS_NAMECHEAP_SOURCE_IP:-${pub_ip}}]: " input
+  read -rp "Whitelisted public IP (press Enter to use detected) [${DNS_NAMECHEAP_SOURCE_IP:-${pub_ip}}]: " input
   DNS_NAMECHEAP_SOURCE_IP="${input:-${DNS_NAMECHEAP_SOURCE_IP:-${pub_ip}}}"
   DNS_PROVIDER="namecheap"
   _dns_save

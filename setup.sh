@@ -30,8 +30,14 @@ warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 die()     { error "$*"; exit 1; }
 
+# menu_die is used inside menu-callable functions — shows error but returns to menu
+menu_die() { error "$*"; return 1; }
+
 require_root() {
-  [[ $EUID -eq 0 ]] || die "This action must be run as root. Use sudo."
+  if [[ $EUID -ne 0 ]]; then
+    error "This action must be run as root. Use: sudo friendbox"
+    return 1
+  fi
 }
 
 pause() {
@@ -111,8 +117,8 @@ declare -A CONTAINER_NAMES=(
 )
 
 declare -A CONTAINER_DESC=(
-  [traefik]="Reverse proxy + automatic HTTPS (required)"
-  [portainer]="Docker management UI (required)"
+  [traefik]="Reverse proxy + automatic HTTPS (recommended)"
+  [portainer]="Docker management UI (recommended)"
   [plex]="Plex media server & player"
   [jellyfin]="Open-source media server (jellyfin/jellyfin)"
   [sonarr]="TV show library manager"
@@ -144,7 +150,7 @@ declare -A CONTAINER_CATEGORY=(
 )
 
 declare -A CONTAINER_ALWAYS=(
-  [traefik]=true    [portainer]=true
+  [traefik]=false   [portainer]=false
   [plex]=false      [jellyfin]=false
   [sonarr]=false    [radarr]=false    [prowlarr]=false  [bazarr]=false
   [qbittorrent]=false [qbittorrentvpn]=false [delugevpn]=false [nzbget]=false
@@ -218,15 +224,15 @@ configure_extras() {
 # ── Load / save selected containers ──────────────────────────────────────────
 load_selected() {
   declare -gA SELECTED=()
-  local key
-  for key in "${CONTAINER_ORDER[@]}"; do
-    [[ "${CONTAINER_ALWAYS[$key]}" == "true" ]] && SELECTED[$key]=1
-  done
   if [[ -f "$SELECTED_FILE" ]]; then
     local line
     while IFS= read -r line; do
       [[ -n "$line" ]] && SELECTED[$line]=1
     done < "$SELECTED_FILE"
+  else
+    # No saved selection yet — default traefik + portainer selected
+    SELECTED[traefik]=1
+    SELECTED[portainer]=1
   fi
 }
 
@@ -250,7 +256,8 @@ select_containers() {
     echo "║                   📦  Container Selection                       ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo -e "${RESET}"
-    echo -e "  ${DIM}Traefik and Portainer are always installed.${RESET}"
+    echo -e "  ${DIM}Traefik and Portainer are recommended but optional.${RESET}"
+    echo -e "  ${DIM}Without Traefik, services are accessible via direct port only.${RESET}"
     echo -e "  Toggle with the item number. ${BOLD}a${RESET}=all  ${BOLD}n${RESET}=none  ${BOLD}d${RESET}=done"
     echo ""
 
@@ -261,15 +268,12 @@ select_containers() {
       if [[ -n "${CONTAINER_CATEGORY[$key]+_}" ]]; then
         echo -e "  ${BOLD}${CYAN}${CONTAINER_CATEGORY[$key]}${RESET}"
       fi
-      local always="${CONTAINER_ALWAYS[$key]}"
       local name="${CONTAINER_NAMES[$key]}"
       local desc="${CONTAINER_DESC[$key]}"
       local chosen=""
       [[ -n "${SELECTED[$key]+_}" ]] && chosen="1"
 
-      if [[ "$always" == "true" ]]; then
-        printf "  ${DIM}[✔] %2d) %-24s — %s${RESET}\n" "$i" "$name" "$desc"
-      elif [[ -n "$chosen" ]]; then
+      if [[ -n "$chosen" ]]; then
         printf "  ${GREEN}[✔]${RESET} ${BOLD}%2d) %-24s${RESET} — %s\n" "$i" "$name" "$desc"
       else
         printf "  [ ] %2d) %-24s — %s\n" "$i" "$name" "$desc"
@@ -290,7 +294,6 @@ select_containers() {
         for key in "${CONTAINER_ORDER[@]}"; do SELECTED[$key]=1; done ;;
       n|N)
         for key in "${CONTAINER_ORDER[@]}"; do
-          [[ "${CONTAINER_ALWAYS[$key]}" == "true" ]] && continue
           unset "SELECTED[$key]" 2>/dev/null || true
         done ;;
       ''|*[!0-9]*)
@@ -298,10 +301,13 @@ select_containers() {
       *)
         if [[ -n "${IDX_MAP[$choice]+_}" ]]; then
           local k="${IDX_MAP[$choice]}"
-          if [[ "${CONTAINER_ALWAYS[$k]}" == "true" ]]; then
-            warn "${CONTAINER_NAMES[$k]} is required and cannot be deselected."; sleep 1
-          elif [[ -n "${SELECTED[$k]+_}" ]]; then
+          if [[ -n "${SELECTED[$k]+_}" ]]; then
             unset "SELECTED[$k]"
+            # Warn if deselecting Traefik — services won't get HTTPS
+            if [[ "$k" == "traefik" ]]; then
+              warn "Traefik deselected — services will use direct port access only (no HTTPS)."
+              sleep 2
+            fi
           else
             SELECTED[$k]=1
           fi
@@ -321,6 +327,12 @@ select_containers() {
   for key in "${CONTAINER_ORDER[@]}"; do
     [[ -n "${SELECTED[$key]+_}" ]] && echo "    ✔ ${CONTAINER_NAMES[$key]}"
   done
+  # Reminder if no Traefik
+  if [[ -z "${SELECTED[traefik]+_}" ]]; then
+    echo ""
+    warn "Traefik is not selected. Configure direct port access in your .env."
+    warn "Services will be reachable via http://server-ip:<port> instead of https://subdomain.domain."
+  fi
   echo ""
   success "Selection saved."
 }
@@ -348,17 +360,42 @@ compose_selected() {
 # ── Fetch helper ──────────────────────────────────────────────────────────────
 fetch_remote() {
   local path="$1" dest="$2"
-  curl -fsSL "${REPO_URL}/${path}" -o "${dest}" || die "Failed to fetch ${path} from repo."
+  if ! curl -fsSL "${REPO_URL}/${path}" -o "${dest}"; then
+    error "Failed to fetch ${path} from repo."
+    return 1
+  fi
+  return 0
 }
 
 sync_repo() {
+  require_root
   info "Syncing latest files from GitHub..."
   mkdir -p "${INSTALL_DIR}"/{config/traefik,scripts}
-  fetch_remote "docker-compose.yml"           "${COMPOSE_FILE}"
-  fetch_remote "config/traefik/traefik.yml"   "${INSTALL_DIR}/config/traefik/traefik.yml"
-  fetch_remote "scripts/redeploy.sh"          "${INSTALL_DIR}/scripts/redeploy.sh"
-  chmod +x "${INSTALL_DIR}/scripts/redeploy.sh"
-  success "Repo synced to ${INSTALL_DIR}"
+
+  local failed=0
+  fetch_remote "docker-compose.yml"          "${COMPOSE_FILE}"                              || failed=$((failed+1))
+  fetch_remote "config/traefik/traefik.yml"  "${INSTALL_DIR}/config/traefik/traefik.yml"   || failed=$((failed+1))
+  fetch_remote "scripts/redeploy.sh"         "${INSTALL_DIR}/scripts/redeploy.sh"           || failed=$((failed+1))
+  [[ -f "${INSTALL_DIR}/scripts/redeploy.sh" ]] && chmod +x "${INSTALL_DIR}/scripts/redeploy.sh"
+
+  # Update the friendbox command itself — do this last so a partial download
+  # doesn't replace the running script mid-execution
+  info "Updating /usr/local/bin/friendbox ..."
+  if fetch_remote "setup.sh" "/usr/local/bin/friendbox.new"; then
+    mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
+    chmod +x /usr/local/bin/friendbox
+    success "friendbox script updated. Changes take effect on next run."
+  else
+    warn "Could not update friendbox script — keeping current version."
+    failed=$((failed+1))
+  fi
+
+  if [[ $failed -eq 0 ]]; then
+    success "Repo synced to ${INSTALL_DIR}"
+  else
+    warn "Sync completed with ${failed} error(s). Check your internet connection."
+    return 1
+  fi
 }
 
 # ── Dependency checks ─────────────────────────────────────────────────────────
@@ -421,6 +458,7 @@ _mergerfs_load_modes() {
 }
 
 _mergerfs_save_modes() {
+  mkdir -p "${INSTALL_DIR}"
   : > "$MERGERFS_MODES_FILE"
   local path
   for path in "${!DISK_MODES[@]}"; do
@@ -430,10 +468,13 @@ _mergerfs_save_modes() {
 
 _mergerfs_load_pool() {
   MERGERFS_POOL=""
-  [[ -f "$MERGERFS_POOL_FILE" ]] && MERGERFS_POOL=$(cat "$MERGERFS_POOL_FILE")
+  [[ -f "$MERGERFS_POOL_FILE" ]] && MERGERFS_POOL=$(cat "$MERGERFS_POOL_FILE") || true
 }
 
-_mergerfs_save_pool() { echo "$1" > "$MERGERFS_POOL_FILE"; }
+_mergerfs_save_pool() {
+  mkdir -p "${INSTALL_DIR}"
+  echo "$1" > "$MERGERFS_POOL_FILE"
+}
 
 _mergerfs_build_branch_list() {
   local rw_branches=() ro_branches=() path
@@ -444,9 +485,11 @@ _mergerfs_build_branch_list() {
       NC) ro_branches+=("${path}=NC") ;;
     esac
   done
-  local all=("${rw_branches[@]}" "${ro_branches[@]}")
+  local all=()
+  [[ ${#rw_branches[@]} -gt 0 ]] && all+=("${rw_branches[@]}")
+  [[ ${#ro_branches[@]} -gt 0 ]] && all+=("${ro_branches[@]}")
   local IFS=:
-  echo "${all[*]}"
+  echo "${all[*]-}"
 }
 
 _mergerfs_write_fstab() {
@@ -476,6 +519,14 @@ _mergerfs_show_status() {
   _mergerfs_load_pool
   echo ""
   echo -e "${BOLD}MergerFS Pool: ${CYAN}${MERGERFS_POOL:-not configured}${RESET}"
+
+  # Check if mergerfs is installed
+  if ! command -v mergerfs &>/dev/null; then
+    echo -e "  ${YELLOW}mergerfs is not installed. Use option 1 to install and configure.${RESET}"
+    echo ""
+    return 0
+  fi
+
   echo "─────────────────────────────────────────────────────────────"
   printf "  ${BOLD}%-30s %-6s %-12s %-10s${RESET}\n" "Mount Point" "Mode" "Size" "Used"
   echo "─────────────────────────────────────────────────────────────"
@@ -605,12 +656,18 @@ _mergerfs_protect_os() {
 
 _mergerfs_initial_setup() {
   info "Installing mergerfs..."
-  apt-get install -y mergerfs || die "Could not install mergerfs."
+  if ! apt-get install -y mergerfs 2>/dev/null; then
+    warn "Could not install mergerfs automatically."
+    warn "Install it manually: sudo apt-get install mergerfs"
+    warn "Then return to this menu to configure the pool."
+    return
+  fi
   _mergerfs_load_modes
   mkdir -p "${INSTALL_DIR}"
   echo ""
   echo -e "${BOLD}MergerFS Pool Configuration${RESET}"
   echo "Enter each disk path you want to pool, one at a time."
+  echo "Press Enter with no input when done."
   echo ""
   local added=0 disk mode
   while true; do
@@ -627,7 +684,11 @@ _mergerfs_initial_setup() {
     added=$((added + 1))
     echo ""
   done
-  [[ $added -eq 0 ]] && die "No disks entered. Aborting mergerfs setup."
+
+  if [[ $added -eq 0 ]]; then
+    warn "No disks entered — pool setup cancelled."
+    return
+  fi
 
   local pool_path="/mnt/media"
   read -rp "Pool mount point [${pool_path}]: " custom_pool
@@ -667,11 +728,11 @@ setup_mergerfs() {
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _mergerfs_initial_setup; pause ;;
-      2) _mergerfs_add_disk;      pause ;;
-      3) _mergerfs_change_mode;   pause ;;
-      4) _mergerfs_remove_disk;   pause ;;
-      5) _mergerfs_protect_os;    pause ;;
+      1) _mergerfs_initial_setup || true; pause ;;
+      2) _mergerfs_add_disk      || true; pause ;;
+      3) _mergerfs_change_mode   || true; pause ;;
+      4) _mergerfs_remove_disk   || true; pause ;;
+      5) _mergerfs_protect_os    || true; pause ;;
       6) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
@@ -701,15 +762,24 @@ configure_env() {
   read -rp "Timezone [${TZ:-America/Toronto}]: " input
   TZ="${input:-${TZ:-America/Toronto}}"
 
-  local TRAEFIK_AUTH
-  if command -v htpasswd &>/dev/null; then
-    read -rp "Traefik dashboard username [admin]: " dash_user
-    dash_user="${dash_user:-admin}"
-    read -srp "Traefik dashboard password: " dash_pass; echo ""
-    TRAEFIK_AUTH=$(htpasswd -nbB "$dash_user" "$dash_pass" | sed 's/\$/\$\$/g')
+  # Check if Traefik is selected to decide whether to prompt for dashboard auth
+  load_selected
+  local TRAEFIK_AUTH="disabled"
+  local USE_TRAEFIK="false"
+  if [[ -n "${SELECTED[traefik]+_}" ]]; then
+    USE_TRAEFIK="true"
+    if command -v htpasswd &>/dev/null; then
+      read -rp "Traefik dashboard username [admin]: " dash_user
+      dash_user="${dash_user:-admin}"
+      read -srp "Traefik dashboard password: " dash_pass; echo ""
+      TRAEFIK_AUTH=$(htpasswd -nbB "$dash_user" "$dash_pass" | sed 's/\$/\$\$/g')
+    else
+      warn "htpasswd not found — install apache2-utils for dashboard auth."
+      TRAEFIK_AUTH="admin:\$\$apr1\$\$placeholder"
+    fi
   else
-    warn "htpasswd not found — install apache2-utils for dashboard auth."
-    TRAEFIK_AUTH="admin:\$\$apr1\$\$placeholder"
+    info "Traefik not selected — skipping dashboard auth setup."
+    info "Services will be accessible directly on their host ports."
   fi
 
   mkdir -p "${INSTALL_DIR}"
@@ -721,6 +791,7 @@ DOMAIN=${DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
 CONFIG_ROOT=${CONFIG_ROOT}
 MEDIA_ROOT=${MEDIA_ROOT}
+USE_TRAEFIK=${USE_TRAEFIK}
 TRAEFIK_AUTH=${TRAEFIK_AUTH}
 EOF
   success ".env written to ${ENV_FILE}"
@@ -736,6 +807,12 @@ ensure_network() {
 }
 
 ensure_acme() {
+  # Only needed when Traefik is selected
+  load_selected
+  if [[ -z "${SELECTED[traefik]+_}" ]]; then
+    info "Traefik not selected — skipping acme.json setup."
+    return
+  fi
   local acme_path="${INSTALL_DIR}/config/traefik/acme.json"
   mkdir -p "$(dirname "$acme_path")"
   [[ -f "$acme_path" ]] || touch "$acme_path"
@@ -1215,14 +1292,14 @@ configure_dns() {
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _dns_configure_cloudflare; pause ;;
-      2) _dns_configure_duckdns;    pause ;;
-      3) _dns_configure_godaddy;    pause ;;
-      4) _dns_configure_namecheap;  pause ;;
-      5) _dns_update_now;           pause ;;
-      6) _dns_show_subdomains;      pause ;;
-      7) _dns_install_cron;         pause ;;
-      8) _dns_remove_cron;          pause ;;
+      1) _dns_configure_cloudflare || true; pause ;;
+      2) _dns_configure_duckdns    || true; pause ;;
+      3) _dns_configure_godaddy    || true; pause ;;
+      4) _dns_configure_namecheap  || true; pause ;;
+      5) _dns_update_now           || true; pause ;;
+      6) _dns_show_subdomains      || true; pause ;;
+      7) _dns_install_cron         || true; pause ;;
+      8) _dns_remove_cron          || true; pause ;;
       9) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
@@ -1254,23 +1331,53 @@ print_urls() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   load_selected
   local d="${DOMAIN:-yourdomain.com}"
+  local use_traefik="${USE_TRAEFIK:-}"
+  # If USE_TRAEFIK not set in .env, infer from selection
+  [[ -z "$use_traefik" ]] && { [[ -n "${SELECTED[traefik]+_}" ]] && use_traefik="true" || use_traefik="false"; }
+
   echo ""
-  echo -e "${BOLD}Active Service URLs${RESET}"
-  declare -A URL_MAP=(
-    [traefik]="https://traefik.${d}"       [portainer]="https://portainer.${d}"
-    [plex]="https://plex.${d}"             [jellyfin]="https://jellyfin.${d}"
-    [sonarr]="https://sonarr.${d}"         [radarr]="https://radarr.${d}"
-    [prowlarr]="https://prowlarr.${d}"     [bazarr]="https://bazarr.${d}"
-    [qbittorrent]="https://qbt.${d}"       [qbittorrentvpn]="https://qbtvpn.${d}"
-    [delugevpn]="https://deluge.${d}"      [nzbget]="https://nzbget.${d}"
-    [overseerr]="https://overseerr.${d}"   [ombi]="https://ombi.${d}"
-    [jellyseerr]="https://jellyseerr.${d}" [teamspeak6]="ts6.${d}:9987 (UDP)"
-    [mumble]="mumble.${d}:64738"           [ampmc]="https://amp.${d}"
-    [netbootxyz]="https://netboot.${d}"
-  )
+  if [[ "$use_traefik" == "true" ]]; then
+    echo -e "${BOLD}Active Service URLs${RESET} ${DIM}(via Traefik HTTPS)${RESET}"
+    declare -A URL_MAP=(
+      [traefik]="https://traefik.${d}"       [portainer]="https://portainer.${d}"
+      [plex]="https://plex.${d}"             [jellyfin]="https://jellyfin.${d}"
+      [sonarr]="https://sonarr.${d}"         [radarr]="https://radarr.${d}"
+      [prowlarr]="https://prowlarr.${d}"     [bazarr]="https://bazarr.${d}"
+      [qbittorrent]="https://qbt.${d}"       [qbittorrentvpn]="https://qbtvpn.${d}"
+      [delugevpn]="https://deluge.${d}"      [nzbget]="https://nzbget.${d}"
+      [overseerr]="https://overseerr.${d}"   [ombi]="https://ombi.${d}"
+      [jellyseerr]="https://jellyseerr.${d}" [teamspeak6]="ts6.${d}:9987 (UDP)"
+      [mumble]="mumble.${d}:64738"           [ampmc]="https://amp.${d}"
+      [netbootxyz]="https://netboot.${d}"
+    )
+  else
+    echo -e "${BOLD}Active Service URLs${RESET} ${DIM}(direct port access — no Traefik)${RESET}"
+    echo -e "  ${DIM}Replace HOST with your server's IP address.${RESET}"
+    declare -A URL_MAP=(
+      [portainer]="http://HOST:9000"
+      [plex]="http://HOST:32400/web"
+      [jellyfin]="http://HOST:8096"
+      [sonarr]="http://HOST:8989"
+      [radarr]="http://HOST:7878"
+      [prowlarr]="http://HOST:9696"
+      [bazarr]="http://HOST:6767"
+      [qbittorrent]="http://HOST:8080"
+      [qbittorrentvpn]="http://HOST:8181"
+      [delugevpn]="http://HOST:8112"
+      [nzbget]="http://HOST:6789"
+      [overseerr]="http://HOST:5055"
+      [ombi]="http://HOST:3579"
+      [jellyseerr]="http://HOST:5055"
+      [teamspeak6]="HOST:9987 (UDP voice)"
+      [mumble]="HOST:64738"
+      [ampmc]="http://HOST:8080"
+      [netbootxyz]="http://HOST:3000"
+    )
+  fi
+
   local key
   for key in "${CONTAINER_ORDER[@]}"; do
-    [[ -n "${SELECTED[$key]+_}" ]] \
+    [[ -n "${SELECTED[$key]+_}" && -n "${URL_MAP[$key]+_}" ]] \
       && printf "  %-26s : ${CYAN}%s${RESET}\n" "${CONTAINER_NAMES[$key]}" "${URL_MAP[$key]}"
   done
   echo ""
@@ -1375,19 +1482,19 @@ main_menu() {
     echo ""
     read -rp "Select option: " opt
     case "$opt" in
-      1)  full_install;             pause ;;
-      2)  select_containers;        pause ;;
-      3)  configure_env;            pause ;;
-      4)  configure_dns;            pause ;;
-      5)  setup_mergerfs;           pause ;;
-      6)  sync_repo;                pause ;;
-      7)  provision_directories;    pause ;;
-      8)  show_status;              pause ;;
-      9)  print_urls;               pause ;;
-      10) redeploy_menu;            pause ;;
-      11) update_stack;             pause ;;
-      12) view_logs ;;
-      13) teardown;                 pause ;;
+      1)  full_install          || true; pause ;;
+      2)  select_containers     || true; pause ;;
+      3)  configure_env         || true; pause ;;
+      4)  configure_dns                ;;   # has its own loop+return
+      5)  setup_mergerfs               ;;   # has its own loop+return
+      6)  sync_repo             || true; pause ;;
+      7)  provision_directories || true; pause ;;
+      8)  show_status           || true; pause ;;
+      9)  print_urls            || true; pause ;;
+      10) redeploy_menu         || true; pause ;;
+      11) update_stack          || true; pause ;;
+      12) view_logs             || true; pause ;;
+      13) teardown              || true; pause ;;
       q|Q) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid option '$opt'"; sleep 1 ;;
     esac

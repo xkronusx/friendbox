@@ -160,66 +160,8 @@ declare -A CONTAINER_ALWAYS=(
   [netbootxyz]=false
 )
 
-# ── VPN containers ────────────────────────────────────────────────────────────
+# ── VPN containers (referenced by service credential menu) ────────────────────
 VPN_CONTAINERS=(qbittorrentvpn delugevpn)
-
-needs_vpn_config() {
-  local k
-  for k in "${VPN_CONTAINERS[@]}"; do
-    [[ -n "${SELECTED[$k]+_}" ]] && return 0
-  done
-  return 1
-}
-
-configure_vpn() {
-  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
-  echo ""
-  echo -e "${BOLD}VPN Configuration${RESET}"
-  echo -e "${DIM}Required for qBittorrentVPN and/or DelugeVPN.${RESET}"
-  echo ""
-  read -rp "VPN provider (pia, airvpn, mullvad, custom) [${VPN_PROV:-pia}]: " input
-  VPN_PROV="${input:-${VPN_PROV:-pia}}"
-  read -rp "VPN client (openvpn, wireguard) [${VPN_CLIENT:-openvpn}]: " input
-  VPN_CLIENT="${input:-${VPN_CLIENT:-openvpn}}"
-  read -rp "VPN username [${VPN_USER:-}]: " input
-  VPN_USER="${input:-${VPN_USER:-}}"
-  read -srp "VPN password: " VPN_PASS; echo ""
-  read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24}]: " input
-  LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24}}"
-
-  local var
-  for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
-    sed -i "/^${var}=/d" "$ENV_FILE" 2>/dev/null || true
-    echo "${var}=${!var}" >> "$ENV_FILE"
-  done
-  success "VPN config saved."
-}
-
-configure_extras() {
-  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
-
-  if [[ -n "${SELECTED[ampmc]+_}" ]]; then
-    echo ""
-    echo -e "${BOLD}AMP (Game Server Panel) Credentials${RESET}"
-    read -rp "AMP admin username [${AMP_USER:-admin}]: " input
-    AMP_USER="${input:-${AMP_USER:-admin}}"
-    read -srp "AMP admin password: " AMP_PASS; echo ""
-    sed -i '/^AMP_USER=/d;/^AMP_PASS=/d' "$ENV_FILE" 2>/dev/null || true
-    printf 'AMP_USER=%s\nAMP_PASS=%s\n' "$AMP_USER" "$AMP_PASS" >> "$ENV_FILE"
-    success "AMP credentials saved."
-  fi
-
-  if [[ -n "${SELECTED[mumble]+_}" ]]; then
-    echo ""
-    echo -e "${BOLD}Mumble Superuser Password${RESET}"
-    read -srp "Mumble superuser password [changeme]: " MUMBLE_SUPERUSER_PASSWORD
-    MUMBLE_SUPERUSER_PASSWORD="${MUMBLE_SUPERUSER_PASSWORD:-changeme}"
-    echo ""
-    sed -i '/^MUMBLE_SUPERUSER_PASSWORD=/d' "$ENV_FILE" 2>/dev/null || true
-    echo "MUMBLE_SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD}" >> "$ENV_FILE"
-    success "Mumble password saved."
-  fi
-}
 
 # ── Load / save selected containers ──────────────────────────────────────────
 load_selected() {
@@ -318,8 +260,6 @@ select_containers() {
   done
 
   save_selected
-  needs_vpn_config && configure_vpn
-  configure_extras
 
   echo ""
   info "Selected containers:"
@@ -330,8 +270,17 @@ select_containers() {
   # Reminder if no Traefik
   if [[ -z "${SELECTED[traefik]+_}" ]]; then
     echo ""
-    warn "Traefik is not selected. Configure direct port access in your .env."
-    warn "Services will be reachable via http://server-ip:<port> instead of https://subdomain.domain."
+    warn "Traefik is not selected — services will be accessible via direct port only."
+  fi
+  # Reminder if VPN containers selected but not yet configured
+  local vpn_selected=false
+  local k
+  for k in "${VPN_CONTAINERS[@]}"; do
+    [[ -n "${SELECTED[$k]+_}" ]] && vpn_selected=true
+  done
+  if [[ "$vpn_selected" == "true" ]]; then
+    echo ""
+    info "VPN container(s) selected — use menu option 5 (Service credentials) to set VPN credentials before deploying."
   fi
   echo ""
   success "Selection saved."
@@ -762,25 +711,14 @@ configure_env() {
   read -rp "Timezone [${TZ:-America/Toronto}]: " input
   TZ="${input:-${TZ:-America/Toronto}}"
 
-  # Check if Traefik is selected to decide whether to prompt for dashboard auth
+  # Derive USE_TRAEFIK from saved container selection — no prompts here.
+  # Traefik dashboard credentials are configured separately via menu option 4.
   load_selected
-  local TRAEFIK_AUTH="disabled"
   local USE_TRAEFIK="false"
-  if [[ -n "${SELECTED[traefik]+_}" ]]; then
-    USE_TRAEFIK="true"
-    if command -v htpasswd &>/dev/null; then
-      read -rp "Traefik dashboard username [admin]: " dash_user
-      dash_user="${dash_user:-admin}"
-      read -srp "Traefik dashboard password: " dash_pass; echo ""
-      TRAEFIK_AUTH=$(htpasswd -nbB "$dash_user" "$dash_pass" | sed 's/\$/\$\$/g')
-    else
-      warn "htpasswd not found — install apache2-utils for dashboard auth."
-      TRAEFIK_AUTH="admin:\$\$apr1\$\$placeholder"
-    fi
-  else
-    info "Traefik not selected — skipping dashboard auth setup."
-    info "Services will be accessible directly on their host ports."
-  fi
+  [[ -n "${SELECTED[traefik]+_}" ]] && USE_TRAEFIK="true"
+
+  # Preserve existing TRAEFIK_AUTH if already set; don't overwrite it here.
+  local existing_auth="${TRAEFIK_AUTH:-disabled}"
 
   mkdir -p "${INSTALL_DIR}"
   cat > "$ENV_FILE" <<EOF
@@ -792,9 +730,262 @@ ACME_EMAIL=${ACME_EMAIL}
 CONFIG_ROOT=${CONFIG_ROOT}
 MEDIA_ROOT=${MEDIA_ROOT}
 USE_TRAEFIK=${USE_TRAEFIK}
-TRAEFIK_AUTH=${TRAEFIK_AUTH}
+TRAEFIK_AUTH=${existing_auth}
 EOF
   success ".env written to ${ENV_FILE}"
+  if [[ "$USE_TRAEFIK" == "true" ]]; then
+    info "Traefik is selected — use menu option 4 (Traefik configuration) to set dashboard credentials."
+  fi
+}
+
+# =============================================================================
+#  Traefik Configuration
+# =============================================================================
+
+_traefik_show_status() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  load_selected
+  echo ""
+  local enabled="${USE_TRAEFIK:-false}"
+  local auth_set="not set"
+  [[ -n "${TRAEFIK_AUTH:-}" && "${TRAEFIK_AUTH:-}" != "disabled" ]] && auth_set="configured"
+
+  if [[ -n "${SELECTED[traefik]+_}" ]]; then
+    echo -e "  ${BOLD}Status      :${RESET} ${GREEN}selected (will deploy)${RESET}"
+  else
+    echo -e "  ${BOLD}Status      :${RESET} ${YELLOW}not selected${RESET}"
+  fi
+  echo -e "  ${BOLD}USE_TRAEFIK :${RESET} ${enabled}"
+  echo -e "  ${BOLD}Domain      :${RESET} ${DOMAIN:-not set}"
+  echo -e "  ${BOLD}ACME email  :${RESET} ${ACME_EMAIL:-not set}"
+  echo -e "  ${BOLD}Dashboard   :${RESET} ${auth_set}"
+  echo ""
+}
+
+configure_traefik() {
+  while true; do
+    clear
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║             🔀  Traefik Configuration                   ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${RESET}"
+    _traefik_show_status
+
+    echo "  1) Set dashboard credentials (username + password)"
+    echo "  2) Update domain / ACME email"
+    echo "  3) Back to main menu"
+    echo ""
+    read -rp "  Choice: " choice
+    case "$choice" in
+      1) _traefik_set_auth      || true; pause ;;
+      2) _traefik_set_domain    || true; pause ;;
+      3) return ;;
+      *) warn "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
+_traefik_set_auth() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}Traefik Dashboard Credentials${RESET}"
+  echo -e "${DIM}Secures the Traefik dashboard at https://traefik.${DOMAIN:-yourdomain.com}${RESET}"
+  echo ""
+
+  if ! command -v htpasswd &>/dev/null; then
+    warn "htpasswd not found. Installing apache2-utils..."
+    apt-get install -y apache2-utils || { error "Could not install apache2-utils."; return 1; }
+  fi
+
+  read -rp "Dashboard username [${TRAEFIK_USER:-admin}]: " input
+  local dash_user="${input:-${TRAEFIK_USER:-admin}}"
+  read -srp "Dashboard password: " dash_pass; echo ""
+  [[ -z "$dash_pass" ]] && { warn "Password cannot be empty."; return 1; }
+
+  local new_auth
+  new_auth=$(htpasswd -nbB "$dash_user" "$dash_pass" | sed 's/\$/\$\$/g')
+
+  # Update TRAEFIK_AUTH and TRAEFIK_USER in .env
+  sed -i '/^TRAEFIK_AUTH=/d;/^TRAEFIK_USER=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'TRAEFIK_USER=%s\nTRAEFIK_AUTH=%s\n' "$dash_user" "$new_auth" >> "$ENV_FILE"
+  success "Traefik dashboard credentials saved."
+  info "Redeploy Traefik (menu option 11 → option 2 → traefik) to apply changes."
+}
+
+_traefik_set_domain() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}Traefik Domain / ACME Email${RESET}"
+  echo -e "${DIM}These are used by Traefik for automatic HTTPS certificate issuance.${RESET}"
+  echo ""
+  read -rp "Domain (e.g. example.com) [${DOMAIN:-}]: " input
+  local new_domain="${input:-${DOMAIN:-}}"
+  [[ -z "$new_domain" ]] && { warn "Domain cannot be empty."; return 1; }
+  read -rp "ACME email [${ACME_EMAIL:-}]: " input
+  local new_email="${input:-${ACME_EMAIL:-}}"
+  [[ -z "$new_email" ]] && { warn "ACME email cannot be empty."; return 1; }
+
+  sed -i '/^DOMAIN=/d;/^ACME_EMAIL=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'DOMAIN=%s\nACME_EMAIL=%s\n' "$new_domain" "$new_email" >> "$ENV_FILE"
+  success "Domain and ACME email updated."
+  warn "If Traefik is already running, delete acme.json and redeploy Traefik to re-issue certificates."
+}
+
+# =============================================================================
+#  Service Credentials (VPN, AMP, Mumble)
+# =============================================================================
+
+_creds_show_status() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  load_selected
+  echo ""
+
+  # VPN
+  local vpn_containers=()
+  local k
+  for k in "${VPN_CONTAINERS[@]}"; do
+    [[ -n "${SELECTED[$k]+_}" ]] && vpn_containers+=("${CONTAINER_NAMES[$k]}")
+  done
+  if [[ ${#vpn_containers[@]} -gt 0 ]]; then
+    echo -e "  ${BOLD}VPN containers :${RESET} ${vpn_containers[*]}"
+    echo -e "  ${BOLD}VPN provider   :${RESET} ${VPN_PROV:-not set}"
+    echo -e "  ${BOLD}VPN client     :${RESET} ${VPN_CLIENT:-not set}"
+    echo -e "  ${BOLD}VPN user       :${RESET} ${VPN_USER:-not set}"
+    echo -e "  ${BOLD}VPN password   :${RESET} ${VPN_PASS:+[set]}"
+    echo -e "  ${BOLD}LAN CIDR       :${RESET} ${LAN_NETWORK:-not set}"
+  else
+    echo -e "  ${DIM}No VPN containers selected.${RESET}"
+  fi
+  echo ""
+
+  # AMP
+  if [[ -n "${SELECTED[ampmc]+_}" ]]; then
+    echo -e "  ${BOLD}AMP username   :${RESET} ${AMP_USER:-not set}"
+    echo -e "  ${BOLD}AMP password   :${RESET} ${AMP_PASS:+[set]}"
+    echo ""
+  fi
+
+  # Mumble
+  if [[ -n "${SELECTED[mumble]+_}" ]]; then
+    echo -e "  ${BOLD}Mumble superuser password :${RESET} ${MUMBLE_SUPERUSER_PASSWORD:+[set]}"
+    echo ""
+  fi
+}
+
+configure_service_credentials() {
+  while true; do
+    clear
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║           🔑  Service Credentials                       ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${RESET}"
+    _creds_show_status
+
+    # Build menu dynamically based on what's selected
+    load_selected
+    local opt_num=1
+    declare -A CRED_OPTS=()
+
+    local vpn_needed=false
+    local k
+    for k in "${VPN_CONTAINERS[@]}"; do
+      [[ -n "${SELECTED[$k]+_}" ]] && vpn_needed=true
+    done
+
+    if [[ "$vpn_needed" == "true" ]]; then
+      echo "  ${opt_num}) Configure VPN credentials"
+      CRED_OPTS[$opt_num]="vpn"
+      opt_num=$((opt_num + 1))
+    fi
+
+    if [[ -n "${SELECTED[ampmc]+_}" ]]; then
+      echo "  ${opt_num}) Configure AMP credentials"
+      CRED_OPTS[$opt_num]="amp"
+      opt_num=$((opt_num + 1))
+    fi
+
+    if [[ -n "${SELECTED[mumble]+_}" ]]; then
+      echo "  ${opt_num}) Configure Mumble superuser password"
+      CRED_OPTS[$opt_num]="mumble"
+      opt_num=$((opt_num + 1))
+    fi
+
+    if [[ $opt_num -eq 1 ]]; then
+      echo -e "  ${DIM}No services requiring credentials are currently selected.${RESET}"
+      echo -e "  ${DIM}Select VPN containers, AMP, or Mumble first (menu option 3).${RESET}"
+    fi
+
+    echo "  ${opt_num}) Back to main menu"
+    CRED_OPTS[$opt_num]="back"
+    echo ""
+    read -rp "  Choice: " choice
+
+    if [[ -z "${CRED_OPTS[$choice]+_}" ]]; then
+      warn "Invalid choice."; sleep 1; continue
+    fi
+
+    case "${CRED_OPTS[$choice]}" in
+      vpn)    _creds_configure_vpn    || true; pause ;;
+      amp)    _creds_configure_amp    || true; pause ;;
+      mumble) _creds_configure_mumble || true; pause ;;
+      back)   return ;;
+    esac
+  done
+}
+
+_creds_configure_vpn() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}VPN Credentials${RESET}"
+  echo -e "${DIM}Used by qBittorrentVPN and/or DelugeVPN.${RESET}"
+  echo ""
+
+  read -rp "VPN provider (pia, airvpn, mullvad, custom) [${VPN_PROV:-pia}]: " input
+  VPN_PROV="${input:-${VPN_PROV:-pia}}"
+  read -rp "VPN client (openvpn, wireguard) [${VPN_CLIENT:-openvpn}]: " input
+  VPN_CLIENT="${input:-${VPN_CLIENT:-openvpn}}"
+  read -rp "VPN username [${VPN_USER:-}]: " input
+  VPN_USER="${input:-${VPN_USER:-}}"
+  read -srp "VPN password: " VPN_PASS; echo ""
+  [[ -z "$VPN_PASS" ]] && { warn "VPN password cannot be empty."; return 1; }
+  read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24}]: " input
+  LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24}}"
+
+  local var
+  for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
+    sed -i "/^${var}=/d" "$ENV_FILE" 2>/dev/null || true
+    echo "${var}=${!var}" >> "$ENV_FILE"
+  done
+  success "VPN credentials saved."
+}
+
+_creds_configure_amp() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}AMP (Game Server Panel) Credentials${RESET}"
+  echo ""
+  read -rp "AMP admin username [${AMP_USER:-admin}]: " input
+  AMP_USER="${input:-${AMP_USER:-admin}}"
+  read -srp "AMP admin password: " AMP_PASS; echo ""
+  [[ -z "$AMP_PASS" ]] && { warn "AMP password cannot be empty."; return 1; }
+  sed -i '/^AMP_USER=/d;/^AMP_PASS=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'AMP_USER=%s\nAMP_PASS=%s\n' "$AMP_USER" "$AMP_PASS" >> "$ENV_FILE"
+  success "AMP credentials saved."
+}
+
+_creds_configure_mumble() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}Mumble Superuser Password${RESET}"
+  echo ""
+  read -srp "Mumble superuser password [${MUMBLE_SUPERUSER_PASSWORD:-changeme}]: " input
+  MUMBLE_SUPERUSER_PASSWORD="${input:-${MUMBLE_SUPERUSER_PASSWORD:-changeme}}"
+  echo ""
+  sed -i '/^MUMBLE_SUPERUSER_PASSWORD=/d' "$ENV_FILE" 2>/dev/null || true
+  echo "MUMBLE_SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD}" >> "$ENV_FILE"
+  success "Mumble password saved."
 }
 
 ensure_network() {
@@ -1311,7 +1502,7 @@ configure_dns() {
 # =============================================================================
 
 full_install() {
-  require_root
+  require_root || return 1
   check_os
   check_deps
   sync_repo
@@ -1324,6 +1515,15 @@ full_install() {
   compose_selected up -d
   echo ""
   success "✅ Friendbox is up!"
+  echo ""
+  echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
+  echo -e "  ${BOLD}Next steps if needed:${RESET}"
+  echo -e "  ${DIM}  • Traefik dashboard password  → menu option  4${RESET}"
+  echo -e "  ${DIM}  • VPN / AMP / Mumble creds    → menu option  5${RESET}"
+  echo -e "  ${DIM}  • DNS A record setup           → menu option  6${RESET}"
+  echo -e "  ${DIM}  • MergerFS storage pool        → menu option  7${RESET}"
+  echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
+  echo ""
   print_urls
 }
 
@@ -1465,36 +1665,43 @@ main_menu() {
     local count="${#SELECTED[@]}"
     echo -e "  ${DIM}Active containers: ${count}${RESET}"
     echo ""
-    echo "  1) Full Install (first time setup)"
-    echo "  2) Select containers to install"
-    echo "  3) Configure / Reconfigure .env"
-    echo "  4) DNS A record manager"
-    echo "  5) MergerFS storage manager"
-    echo "  6) Sync latest files from GitHub"
-    echo "  7) Provision / fix directory ownership"
-    echo "  8) Show container status"
-    echo "  9) View service URLs"
-    echo " 10) Redeploy containers"
-    echo " 11) Update stack (pull latest images)"
-    echo " 12) View logs"
-    echo " 13) Teardown (stop & remove containers)"
-    echo "  q) Quit"
+    echo "  ── Setup ────────────────────────────────"
+    echo "   1) Full Install (first time setup)"
+    echo "   2) Select containers"
+    echo "   3) Configure .env (paths, PUID, timezone)"
+    echo "   4) Traefik configuration"
+    echo "   5) Service credentials (VPN / AMP / Mumble)"
+    echo "   6) DNS A record manager"
+    echo "   7) MergerFS storage manager"
+    echo ""
+    echo "  ── Operations ───────────────────────────"
+    echo "   8) Provision / fix directory ownership"
+    echo "   9) Sync latest files from GitHub"
+    echo "  10) Show container status"
+    echo "  11) View service URLs"
+    echo "  12) Redeploy containers"
+    echo "  13) Update stack (pull latest images)"
+    echo "  14) View logs"
+    echo "  15) Teardown (stop & remove containers)"
+    echo "   q) Quit"
     echo ""
     read -rp "Select option: " opt
     case "$opt" in
-      1)  full_install          || true; pause ;;
-      2)  select_containers     || true; pause ;;
-      3)  configure_env         || true; pause ;;
-      4)  configure_dns                ;;   # has its own loop+return
-      5)  setup_mergerfs               ;;   # has its own loop+return
-      6)  sync_repo             || true; pause ;;
-      7)  provision_directories || true; pause ;;
-      8)  show_status           || true; pause ;;
-      9)  print_urls            || true; pause ;;
-      10) redeploy_menu         || true; pause ;;
-      11) update_stack          || true; pause ;;
-      12) view_logs             || true; pause ;;
-      13) teardown              || true; pause ;;
+      1)  full_install                    || true; pause ;;
+      2)  select_containers               || true; pause ;;
+      3)  configure_env                   || true; pause ;;
+      4)  configure_traefik                      ;;   # has its own loop+return
+      5)  configure_service_credentials          ;;   # has its own loop+return
+      6)  configure_dns                          ;;   # has its own loop+return
+      7)  setup_mergerfs                         ;;   # has its own loop+return
+      8)  provision_directories           || true; pause ;;
+      9)  sync_repo                       || true; pause ;;
+      10) show_status                     || true; pause ;;
+      11) print_urls                      || true; pause ;;
+      12) redeploy_menu                   || true; pause ;;
+      13) update_stack                    || true; pause ;;
+      14) view_logs                       || true; pause ;;
+      15) teardown                        || true; pause ;;
       q|Q) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid option '$opt'"; sleep 1 ;;
     esac

@@ -1712,6 +1712,20 @@ print_urls() {
   # If USE_TRAEFIK not set in .env, infer from selection
   [[ -z "$use_traefik" ]] && { [[ -n "${SELECTED[traefik]+_}" ]] && use_traefik="true" || use_traefik="false"; }
 
+  # ── Detect local IPv4 address ────────────────────────────────────────────────
+  # Try ip route first (most reliable — picks the interface used for outbound
+  # traffic), then fall back to hostname -I (first address), then give up with
+  # a clear placeholder so the user knows what to fill in.
+  local host_ip=""
+  host_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+  if [[ -z "$host_ip" ]]; then
+    host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  if [[ -z "$host_ip" ]]; then
+    host_ip="<server-ip>"
+    warn "Could not detect local IP — replace <server-ip> in the URLs below."
+  fi
+
   echo ""
   if [[ "$use_traefik" == "true" ]]; then
     echo -e "${BOLD}Active Service URLs${RESET} ${DIM}(via Traefik HTTPS)${RESET}"
@@ -1729,26 +1743,26 @@ print_urls() {
     )
   else
     echo -e "${BOLD}Active Service URLs${RESET} ${DIM}(direct port access — no Traefik)${RESET}"
-    echo -e "  ${DIM}Replace HOST with your server's IP address.${RESET}"
+    echo -e "  ${DIM}Server IP: ${CYAN}${host_ip}${RESET}"
     declare -A URL_MAP=(
-      [portainer]="http://HOST:9000"
-      [plex]="http://HOST:32400/web"
-      [jellyfin]="http://HOST:8096"
-      [sonarr]="http://HOST:8989"
-      [radarr]="http://HOST:7878"
-      [prowlarr]="http://HOST:9696"
-      [bazarr]="http://HOST:6767"
-      [qbittorrent]="http://HOST:8080"
-      [qbittorrentvpn]="http://HOST:8181"
-      [delugevpn]="http://HOST:8112"
-      [nzbget]="http://HOST:6789"
-      [overseerr]="http://HOST:5055"
-      [ombi]="http://HOST:3579"
-      [jellyseerr]="http://HOST:5055"
-      [teamspeak6]="HOST:9987 (UDP voice)"
-      [mumble]="HOST:64738"
-      [ampmc]="http://HOST:8080"
-      [netbootxyz]="http://HOST:3000"
+      [portainer]="http://${host_ip}:9000"
+      [plex]="http://${host_ip}:32400/web"
+      [jellyfin]="http://${host_ip}:8096"
+      [sonarr]="http://${host_ip}:8989"
+      [radarr]="http://${host_ip}:7878"
+      [prowlarr]="http://${host_ip}:9696"
+      [bazarr]="http://${host_ip}:6767"
+      [qbittorrent]="http://${host_ip}:8080"
+      [qbittorrentvpn]="http://${host_ip}:8181"
+      [delugevpn]="http://${host_ip}:8112"
+      [nzbget]="http://${host_ip}:6789"
+      [overseerr]="http://${host_ip}:5055"
+      [ombi]="http://${host_ip}:3579"
+      [jellyseerr]="http://${host_ip}:5055"
+      [teamspeak6]="${host_ip}:9987 (UDP voice)"
+      [mumble]="${host_ip}:64738"
+      [ampmc]="http://${host_ip}:8080"
+      [netbootxyz]="http://${host_ip}:3000"
     )
   fi
 

@@ -463,6 +463,16 @@ https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_C
   else
     success "All dependencies satisfied."
   fi
+
+  # ── MergerFS — optional, only needed for storage pool feature ────────────────
+  if command -v mergerfs &>/dev/null; then
+    local mfs_ver
+    mfs_ver=$(mergerfs --version 2>&1 | awk '{print $NF}' | head -1)
+    success "mergerfs installed (${mfs_ver:-unknown version})."
+  else
+    info "mergerfs not installed — only required for the MergerFS storage pool (menu option 7)."
+    info "It will be installed automatically when you run the pool setup."
+  fi
 }
 
 # =============================================================================
@@ -746,6 +756,90 @@ _mergerfs_initial_setup() {
   success "MergerFS pool configured at ${pool_path}."
 }
 
+_mergerfs_show_pool_detail() {
+  _mergerfs_load_modes
+  _mergerfs_load_pool
+
+  echo ""
+  echo -e "${BOLD}${CYAN}MergerFS Pool Detail${RESET}"
+  echo "══════════════════════════════════════════════════════════════"
+
+  # ── Installation status ──────────────────────────────────────────────────────
+  if command -v mergerfs &>/dev/null; then
+    local mfs_ver
+    mfs_ver=$(mergerfs --version 2>&1 | awk '{print $NF}' | head -1)
+    echo -e "  ${BOLD}mergerfs version :${RESET} ${GREEN}${mfs_ver:-installed}${RESET}"
+  else
+    echo -e "  ${BOLD}mergerfs         :${RESET} ${YELLOW}not installed${RESET}"
+  fi
+
+  # ── Pool mount point ─────────────────────────────────────────────────────────
+  echo -e "  ${BOLD}Pool path        :${RESET} ${MERGERFS_POOL:-${YELLOW}not configured${RESET}}"
+
+  if [[ -n "$MERGERFS_POOL" ]]; then
+    if mountpoint -q "$MERGERFS_POOL" 2>/dev/null; then
+      echo -e "  ${BOLD}Pool mounted     :${RESET} ${GREEN}yes${RESET}"
+      local pool_size pool_used pool_avail pool_pct
+      pool_size=$(df -h "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $2}') || pool_size="n/a"
+      pool_used=$(df -h "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $3}') || pool_used="n/a"
+      pool_avail=$(df -h "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $4}') || pool_avail="n/a"
+      pool_pct=$(df -h  "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $5}') || pool_pct="n/a"
+      echo -e "  ${BOLD}Pool size        :${RESET} ${pool_size}  used: ${pool_used}  free: ${pool_avail}  (${pool_pct} full)"
+    else
+      echo -e "  ${BOLD}Pool mounted     :${RESET} ${YELLOW}no — run option 1 or reboot to mount${RESET}"
+    fi
+  fi
+
+  # ── Configured drives ────────────────────────────────────────────────────────
+  echo ""
+  echo "──────────────────────────────────────────────────────────────"
+  printf "  ${BOLD}%-32s %-6s %-10s %-10s %-8s${RESET}\n" "Drive Path" "Mode" "Size" "Used" "Avail"
+  echo "──────────────────────────────────────────────────────────────"
+
+  if [[ ${#DISK_MODES[@]} -eq 0 ]]; then
+    echo -e "  ${DIM}No drives configured yet. Use option 1 to set up the pool.${RESET}"
+  else
+    local path mode col size used avail mounted_marker
+    for path in $(printf '%s\n' "${!DISK_MODES[@]}" | sort); do
+      mode="${DISK_MODES[$path]}"
+      size="n/a"; used="n/a"; avail="n/a"; mounted_marker=""
+
+      if [[ -d "$path" ]]; then
+        size=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $2}') || size="n/a"
+        used=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $3}') || used="n/a"
+        avail=$(df -h "$path" 2>/dev/null | awk 'NR==2{print $4}') || avail="n/a"
+        # Check if something is actually mounted at this path (not just a directory)
+        mountpoint -q "$path" 2>/dev/null && mounted_marker=" ${GREEN}●${RESET}" || mounted_marker=" ${DIM}○${RESET}"
+      else
+        mounted_marker=" ${YELLOW}?${RESET}"
+      fi
+
+      case "$mode" in
+        RW) col="${GREEN}" ;; RO) col="${YELLOW}" ;; NC) col="${CYAN}" ;; *) col="${RESET}" ;;
+      esac
+
+      printf "  ${col}%-32s %-6s %-10s %-10s %-8s${RESET}" "$path" "$mode" "$size" "$used" "$avail"
+      echo -e "${mounted_marker}"
+    done
+  fi
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo -e "  ${DIM}${GREEN}●${RESET}${DIM} = drive mounted   ${DIM}○${RESET}${DIM} = not mounted   ${YELLOW}?${RESET}${DIM} = path not found${RESET}"
+  echo -e "  ${DIM}RW = Read/Write  |  NC = No-Create  |  RO = Read-Only${RESET}"
+
+  # ── Live mount info from the kernel ─────────────────────────────────────────
+  if [[ -n "$MERGERFS_POOL" ]] && command -v findmnt &>/dev/null; then
+    local fstab_line
+    fstab_line=$(findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS "$MERGERFS_POOL" 2>/dev/null)
+    if [[ -n "$fstab_line" ]]; then
+      echo ""
+      echo -e "  ${BOLD}Live mount entry:${RESET}"
+      echo -e "  ${DIM}${fstab_line}${RESET}"
+    fi
+  fi
+  echo ""
+}
+
 setup_mergerfs() {
   require_root
   while true; do
@@ -761,16 +855,18 @@ setup_mergerfs() {
     echo "  3) Change a disk's mode (RW / NC / RO)"
     echo "  4) Remove a disk from the pool"
     echo "  5) Protect OS drive (set as NC)"
-    echo "  6) Back to main menu"
+    echo "  6) Show pool & drive details"
+    echo "  7) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _mergerfs_initial_setup || true; pause ;;
-      2) _mergerfs_add_disk      || true; pause ;;
-      3) _mergerfs_change_mode   || true; pause ;;
-      4) _mergerfs_remove_disk   || true; pause ;;
-      5) _mergerfs_protect_os    || true; pause ;;
-      6) return ;;
+      1) _mergerfs_initial_setup  || true; pause ;;
+      2) _mergerfs_add_disk       || true; pause ;;
+      3) _mergerfs_change_mode    || true; pause ;;
+      4) _mergerfs_remove_disk    || true; pause ;;
+      5) _mergerfs_protect_os     || true; pause ;;
+      6) _mergerfs_show_pool_detail || true; pause ;;
+      7) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

@@ -337,6 +337,57 @@ fetch_remote() {
   return 0
 }
 
+# ── Startup auto-update ───────────────────────────────────────────────────────
+# Called once at launch (before the menu). Downloads the latest versions of all
+# repo-managed files, then re-execs the updated friendbox script so the rest of
+# the session runs on fresh code. Passes --skip-update to the new process so it
+# doesn't loop.  Skipped entirely when not root or when offline.
+auto_update() {
+  # Must be root to write to /usr/local/bin and /opt/friendbox
+  [[ $EUID -ne 0 ]] && return 0
+
+  echo -e "${CYAN}[INFO]${RESET}  Checking for updates..."
+
+  # ── Download repo files ──────────────────────────────────────────────────────
+  local failed=0
+  mkdir -p "${INSTALL_DIR}"/{config/traefik,scripts}
+
+  curl -fsSL --max-time 10 "${REPO_URL}/docker-compose.yml" \
+      -o "${COMPOSE_FILE}.new"                                            2>/dev/null || failed=$((failed+1))
+  curl -fsSL --max-time 10 "${REPO_URL}/config/traefik/traefik.yml" \
+      -o "${INSTALL_DIR}/config/traefik/traefik.yml.new"                 2>/dev/null || failed=$((failed+1))
+  curl -fsSL --max-time 10 "${REPO_URL}/scripts/redeploy.sh" \
+      -o "${INSTALL_DIR}/scripts/redeploy.sh.new"                        2>/dev/null || failed=$((failed+1))
+  curl -fsSL --max-time 10 "${REPO_URL}/setup.sh" \
+      -o "/usr/local/bin/friendbox.new"                                  2>/dev/null || failed=$((failed+1))
+
+  if [[ $failed -gt 0 ]]; then
+    echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub — running with local files."
+    # Clean up any partial downloads
+    rm -f "${COMPOSE_FILE}.new" \
+          "${INSTALL_DIR}/config/traefik/traefik.yml.new" \
+          "${INSTALL_DIR}/scripts/redeploy.sh.new" \
+          "/usr/local/bin/friendbox.new"
+    return 0
+  fi
+
+  # ── Atomically replace files ─────────────────────────────────────────────────
+  mv "${COMPOSE_FILE}.new"                               "${COMPOSE_FILE}"
+  mv "${INSTALL_DIR}/config/traefik/traefik.yml.new"    "${INSTALL_DIR}/config/traefik/traefik.yml"
+  mv "${INSTALL_DIR}/scripts/redeploy.sh.new"           "${INSTALL_DIR}/scripts/redeploy.sh"
+  chmod +x "${INSTALL_DIR}/scripts/redeploy.sh"
+
+  # ── Re-exec with updated script ──────────────────────────────────────────────
+  # Move the new script into place, then exec it so the rest of the session runs
+  # on the freshly-downloaded code. --skip-update tells the new process not to
+  # update again, preventing an infinite loop.
+  mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
+  chmod +x /usr/local/bin/friendbox
+
+  echo -e "${GREEN}[OK]${RESET}    Files updated — reloading..."
+  exec /usr/local/bin/friendbox --skip-update "$@"
+}
+
 sync_repo() {
   require_root
   info "Syncing latest files from GitHub..."
@@ -1880,5 +1931,18 @@ if [[ ! -t 0 ]]; then
   echo -e "    ${BOLD}sudo friendbox${RESET}"
   echo ""
 else
+  # Interactive launch — check for --skip-update flag (set by auto_update after
+  # re-exec so we don't loop) then run the menu.
+  SKIP_UPDATE=false
+  for arg in "$@"; do
+    [[ "$arg" == "--skip-update" ]] && SKIP_UPDATE=true
+  done
+
+  if [[ "$SKIP_UPDATE" == "false" ]]; then
+    auto_update "$@"
+    # auto_update either exec'd (and we never reach here) or skipped due to
+    # no-root / offline — either way, fall through to the menu below.
+  fi
+
   main_menu
 fi

@@ -6,7 +6,9 @@
 #  Tested on: Ubuntu 24.04.4 LTS (Noble Numbat)
 # =============================================================================
 
-set -euo pipefail
+# Note: set -e / set -u intentionally omitted — this is an interactive menu
+# script where non-zero exits from grep, [[ tests, and optional commands are
+# normal and must not crash the session.
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'

@@ -1018,19 +1018,33 @@ configure_env() {
   local existing_auth="${TRAEFIK_AUTH:-disabled}"
 
   _ensure_install_dir
-  cat > "$ENV_FILE" <<EOF
-PUID=${PUID}
-PGID=${PGID}
-TZ=${TZ}
-DOMAIN=${DOMAIN}
-ACME_EMAIL=${ACME_EMAIL}
-CONFIG_ROOT=${CONFIG_ROOT}
-MEDIA_ROOT=${MEDIA_ROOT}
-USE_TRAEFIK=${USE_TRAEFIK}
-TRAEFIK_AUTH=${existing_auth}
-EOF
+
+  # Write base keys — preserve any extra keys (provider creds, DNS config, etc.)
+  # that were appended by other menu functions.
+  _env_set() {
+    local key="$1" val="$2"
+    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+    else
+      echo "${key}=${val}" >> "$ENV_FILE"
+    fi
+  }
+
+  # Seed the file if it doesn't exist yet
+  [[ -f "$ENV_FILE" ]] || touch "$ENV_FILE"
+
+  _env_set PUID         "${PUID}"
+  _env_set PGID         "${PGID}"
+  _env_set TZ           "${TZ}"
+  _env_set DOMAIN       "${DOMAIN}"
+  _env_set ACME_EMAIL   "${ACME_EMAIL}"
+  _env_set CONFIG_ROOT  "${CONFIG_ROOT}"
+  _env_set MEDIA_ROOT   "${MEDIA_ROOT}"
+  _env_set USE_TRAEFIK  "${USE_TRAEFIK}"
+  _env_set TRAEFIK_AUTH "${existing_auth}"
+
   _own "$ENV_FILE"
-  success ".env written to ${ENV_FILE}"
+  success ".env updated (${ENV_FILE})"
   if [[ "$USE_TRAEFIK" == "true" ]]; then
     info "Traefik is selected — use menu option 4 (Traefik configuration) to set dashboard credentials."
   fi
@@ -1167,8 +1181,22 @@ _traefik_show_status() {
   else
     echo -e "  ${BOLD}Status        :${RESET} ${YELLOW}not selected${RESET}"
   fi
-  echo -e "  ${BOLD}Domain        :${RESET} ${DOMAIN:-not set}"
-  echo -e "  ${BOLD}ACME email    :${RESET} ${ACME_EMAIL:-not set}"
+  local traefik_cfg="${INSTALL_DIR}/config/traefik/traefik.yml"
+  if [[ -f "$traefik_cfg" ]]; then
+    echo -e "  ${BOLD}traefik.yml   :${RESET} ${GREEN}exists${RESET}"
+  else
+    echo -e "  ${BOLD}traefik.yml   :${RESET} ${RED}MISSING — save any setting below to generate${RESET}"
+  fi
+  if [[ -z "${DOMAIN:-}" || "${DOMAIN:-}" == "example.com" ]]; then
+    echo -e "  ${BOLD}Domain        :${RESET} ${RED}${DOMAIN:-not set}  ← set via option 2${RESET}"
+  else
+    echo -e "  ${BOLD}Domain        :${RESET} ${DOMAIN}"
+  fi
+  if [[ -z "${ACME_EMAIL:-}" || "${ACME_EMAIL:-}" == "admin@example.com" ]]; then
+    echo -e "  ${BOLD}ACME email    :${RESET} ${RED}${ACME_EMAIL:-not set}  ← set via option 2${RESET}"
+  else
+    echo -e "  ${BOLD}ACME email    :${RESET} ${ACME_EMAIL}"
+  fi
   echo -e "  ${BOLD}ACME provider :${RESET} ${provider_label}"
   echo -e "  ${BOLD}Dashboard     :${RESET} ${auth_set}"
 

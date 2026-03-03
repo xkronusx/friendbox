@@ -64,12 +64,28 @@ mark_uninstalled() {
 ensure_media_root() {
   # Create /mnt/media on every interactive launch so it always exists as a
   # mount point for MergerFS, or as a plain directory for single-drive setups.
+  # Sets ownership of /mnt and /mnt/media to PUID:PGID (default 1000:1000).
   # Requires root — silently skipped otherwise.
   [[ $EUID -ne 0 ]] && return 0
+
+  # Read PUID/PGID from .env if it exists, fall back to 1000:1000
+  local uid="1000" gid="1000"
+  if [[ -f "$ENV_FILE" ]]; then
+    local env_uid env_gid
+    env_uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    env_gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    [[ -n "$env_uid" ]] && uid="$env_uid"
+    [[ -n "$env_gid" ]] && gid="$env_gid"
+  fi
+
   if [[ ! -d "$MEDIA_ROOT" ]]; then
     mkdir -p "$MEDIA_ROOT"
     success "Created media root directory: ${MEDIA_ROOT}"
   fi
+
+  # Own /mnt and /mnt/media — containers and the media user need traversal rights
+  chown "${uid}:${gid}" /mnt
+  chown "${uid}:${gid}" "$MEDIA_ROOT"
 }
 
 # Returns 0 (true) if the stack appears to have active containers
@@ -1635,6 +1651,11 @@ provision_directories() {
   # Always-on config dirs
   mkdir -p "${cfg}/traefik" "${cfg}/portainer"
   chown -R "${uid}:${gid}" "${cfg}/traefik" "${cfg}/portainer"
+
+  # /mnt and media root — containers and the media user need traversal rights
+  chown "${uid}:${gid}" /mnt
+  mkdir -p "$media"
+  chown "${uid}:${gid}" "$media"
 
   # Media subdirs
   local subdir

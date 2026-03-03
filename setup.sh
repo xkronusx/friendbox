@@ -67,8 +67,8 @@ mark_uninstalled() {
 _own() {
   [[ $EUID -ne 0 ]] && return 0
   local uid gid
-  uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; uid="${uid:-1000}"
-  gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; gid="${gid:-1000}"
+  uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; uid="${uid:-1000}"
+  gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; gid="${gid:-1000}"
   chown "${uid}:${gid}" "$@"
 }
 
@@ -89,10 +89,8 @@ _fix_install_dir_ownership() {
   [[ ! -d "$INSTALL_DIR" ]] && return 0
 
   local uid gid
-  uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; uid="${uid:-1000}"
-  gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; gid="${gid:-1000}"
-
-  chown -R "${uid}:${gid}" "${INSTALL_DIR}"
+  uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; uid="${uid:-1000}"
+  gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; gid="${gid:-1000}"
 
   # acme.json must be root:root 600 — Traefik refuses to start otherwise
   local acme="${INSTALL_DIR}/config/traefik/acme.json"
@@ -117,8 +115,8 @@ ensure_media_root() {
   local uid="1000" gid="1000"
   if [[ -f "$ENV_FILE" ]]; then
     local env_uid env_gid
-    env_uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
-    env_gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    env_uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+    env_gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
     [[ -n "$env_uid" ]] && uid="$env_uid"
     [[ -n "$env_gid" ]] && gid="$env_gid"
   fi
@@ -910,7 +908,7 @@ _mergerfs_deploy() {
     abort=true
   else
     local domain_check
-    domain_check=$(grep '^DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    domain_check=$(grep '^DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
     if [[ -z "$domain_check" || "$domain_check" == "example.com" ]]; then
       warn "DOMAIN in .env is not set or is still the placeholder value."
       warn "Run menu option 3 to configure your domain before deploying."
@@ -2265,9 +2263,7 @@ full_install() {
   # ── Already-installed guard ──────────────────────────────────────────────────
   if is_installed; then
     local installed_at
-    installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2-)
-    echo ""
-    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2- || true)
     echo -e "${YELLOW}║  ⚠  Friendbox is already installed                          ║${RESET}"
     echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo ""
@@ -2490,8 +2486,7 @@ main_menu() {
     # ── Install status badge ─────────────────────────────────────────────────
     if is_installed; then
       local installed_at
-      installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2-)
-      echo -e "  ${GREEN}● INSTALLED${RESET}  ${DIM}(${installed_at:-unknown})${RESET}"
+      installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2- || true)
     else
       echo -e "  ${YELLOW}○ NOT YET INSTALLED${RESET}  ${DIM}Run option 1 to get started.${RESET}"
     fi

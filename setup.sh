@@ -840,6 +840,83 @@ _mergerfs_show_pool_detail() {
   echo ""
 }
 
+_mergerfs_deploy() {
+  echo ""
+  echo -e "${BOLD}Deploy Stack with MergerFS Pool${RESET}"
+  echo -e "${DIM}Provisions directories, starts all selected containers, and marks the install complete.${RESET}"
+  echo ""
+
+  # ── Pre-flight checks ────────────────────────────────────────────────────────
+  local abort=false
+
+  # .env must exist and have a domain set
+  if [[ ! -f "$ENV_FILE" ]]; then
+    error "No .env file found at ${ENV_FILE}."
+    error "Run menu option 3 (Configure .env) before deploying."
+    abort=true
+  else
+    local domain_check
+    domain_check=$(grep '^DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    if [[ -z "$domain_check" || "$domain_check" == "example.com" ]]; then
+      warn "DOMAIN in .env is not set or is still the placeholder value."
+      warn "Run menu option 3 to configure your domain before deploying."
+      abort=true
+    fi
+  fi
+
+  # compose file must exist
+  if [[ ! -f "$COMPOSE_FILE" ]]; then
+    error "No docker-compose.yml found at ${COMPOSE_FILE}."
+    error "Run menu option 9 (Sync files from GitHub) first."
+    abort=true
+  fi
+
+  # at least one container must be selected
+  load_selected
+  if [[ ${#SELECTED[@]} -eq 0 ]]; then
+    warn "No containers are selected. Run menu option 2 to select containers first."
+    abort=true
+  fi
+
+  # warn (but don't abort) if the pool path isn't mounted
+  _mergerfs_load_pool
+  if [[ -n "$MERGERFS_POOL" ]] && ! mountpoint -q "$MERGERFS_POOL" 2>/dev/null; then
+    warn "MergerFS pool is configured at ${MERGERFS_POOL} but is not currently mounted."
+    warn "Containers will start, but media directories may be missing or empty until the pool is mounted."
+    echo ""
+    read -rp "  Continue anyway? [y/N] " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
+    echo ""
+  fi
+
+  [[ "$abort" == "true" ]] && return 1
+
+  # ── Confirm before deploying ─────────────────────────────────────────────────
+  info "Selected containers (${#SELECTED[@]}):"
+  local key
+  for key in "${CONTAINER_ORDER[@]}"; do
+    [[ -n "${SELECTED[$key]+_}" ]] && echo "    ✔ ${CONTAINER_NAMES[$key]}"
+  done
+  echo ""
+  read -rp "Deploy now? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
+  echo ""
+
+  # ── Deploy sequence ──────────────────────────────────────────────────────────
+  ensure_network    || return 1
+  ensure_acme       || return 1
+  provision_directories || return 1
+
+  info "Starting selected containers..."
+  compose_selected up -d || { error "docker compose failed — check logs with menu option 14."; return 1; }
+
+  mark_installed
+  echo ""
+  success "✅ Stack deployed successfully!"
+  echo ""
+  print_urls
+}
+
 setup_mergerfs() {
   require_root
   while true; do
@@ -856,17 +933,19 @@ setup_mergerfs() {
     echo "  4) Remove a disk from the pool"
     echo "  5) Protect OS drive (set as NC)"
     echo "  6) Show pool & drive details"
-    echo "  7) Back to main menu"
+    echo "  7) Deploy stack"
+    echo "  8) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _mergerfs_initial_setup  || true; pause ;;
-      2) _mergerfs_add_disk       || true; pause ;;
-      3) _mergerfs_change_mode    || true; pause ;;
-      4) _mergerfs_remove_disk    || true; pause ;;
-      5) _mergerfs_protect_os     || true; pause ;;
+      1) _mergerfs_initial_setup    || true; pause ;;
+      2) _mergerfs_add_disk         || true; pause ;;
+      3) _mergerfs_change_mode      || true; pause ;;
+      4) _mergerfs_remove_disk      || true; pause ;;
+      5) _mergerfs_protect_os       || true; pause ;;
       6) _mergerfs_show_pool_detail || true; pause ;;
-      7) return ;;
+      7) _mergerfs_deploy           || true; pause ;;
+      8) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

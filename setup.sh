@@ -23,6 +23,7 @@ MERGERFS_MODES_FILE="${INSTALL_DIR}/.mergerfs_modes"
 MERGERFS_POOL_FILE="${INSTALL_DIR}/.mergerfs_pool"
 DNS_STATE_FILE="${INSTALL_DIR}/.dns_config"
 INSTALL_FLAG="${INSTALL_DIR}/.installed"
+MEDIA_ROOT="/mnt/media"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -58,6 +59,17 @@ mark_installed() {
 
 mark_uninstalled() {
   rm -f "$INSTALL_FLAG"
+}
+
+ensure_media_root() {
+  # Create /mnt/media on every interactive launch so it always exists as a
+  # mount point for MergerFS, or as a plain directory for single-drive setups.
+  # Requires root — silently skipped otherwise.
+  [[ $EUID -ne 0 ]] && return 0
+  if [[ ! -d "$MEDIA_ROOT" ]]; then
+    mkdir -p "$MEDIA_ROOT"
+    success "Created media root directory: ${MEDIA_ROOT}"
+  fi
 }
 
 # Returns 0 (true) if the stack appears to have active containers
@@ -737,18 +749,13 @@ _mergerfs_initial_setup() {
     return
   fi
 
-  local pool_path="/mnt/media"
-  read -rp "Pool mount point (press Enter for default) [${pool_path}]: " custom_pool
-  [[ -n "$custom_pool" ]] && pool_path="$custom_pool"
+  local pool_path="$MEDIA_ROOT"
   mkdir -p "$pool_path"
 
   _mergerfs_save_modes
   _mergerfs_save_pool "$pool_path"
   _mergerfs_write_fstab "$pool_path"
   _mergerfs_remount "$pool_path"
-
-  sed -i '/^MEDIA_ROOT=/d' "${STATE_FILE}" 2>/dev/null || true
-  echo "MEDIA_ROOT=${pool_path}" >> "${STATE_FILE}"
 
   echo ""
   read -rp "Would you like to protect the OS drive as NC now? [y/N] " yn
@@ -967,8 +974,6 @@ configure_env() {
   DOMAIN="${input:-${DOMAIN:-example.com}}"
   read -rp "ACME/Let's Encrypt email [${ACME_EMAIL:-}]: " input
   ACME_EMAIL="${input:-${ACME_EMAIL:-admin@example.com}}"
-  read -rp "Media root path [${MEDIA_ROOT:-/mnt/media}]: " input
-  MEDIA_ROOT="${input:-${MEDIA_ROOT:-/mnt/media}}"
   read -rp "Config root path [${CONFIG_ROOT:-/opt/friendbox/config}]: " input
   CONFIG_ROOT="${input:-${CONFIG_ROOT:-/opt/friendbox/config}}"
   read -rp "PUID [${PUID:-1000}]: " input; PUID="${input:-${PUID:-1000}}"
@@ -2133,5 +2138,6 @@ else
     # no-root / offline — either way, fall through to the menu below.
   fi
 
+  ensure_media_root
   main_menu
 fi

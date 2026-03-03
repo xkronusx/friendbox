@@ -1442,6 +1442,85 @@ _traefik_validate() {
     fi
   fi
 
+  # ── 14. Let's Encrypt rate limit check (crt.sh CT logs) ───────────────────
+  # LE limit: 5 duplicate certs per registered domain per rolling 7 days.
+  if [[ -n "${DOMAIN:-}" && "${DOMAIN:-}" != "example.com" ]]; then
+    echo ""
+    echo -e "  ${DIM}── Let's Encrypt rate limit check ─────────────────${RESET}"
+    local _le_resp
+    _le_resp=$(curl -fsSL --max-time 10 \
+      "https://crt.sh/?q=%.${DOMAIN}&output=json" 2>/dev/null)
+    if [[ -z "$_le_resp" || "$_le_resp" == "[]" || "$_le_resp" == "null" ]]; then
+      echo -e "  ${DIM}[SKIP] crt.sh unreachable or no certs found yet for ${DOMAIN}${RESET}"
+    else
+      local _le_json _le_py
+      _le_json=$(mktemp /tmp/crtsh_XXXXXX.json)
+      _le_py=$(mktemp /tmp/crtsh_XXXXXX.py)
+      echo "$_le_resp" > "$_le_json"
+      cat > "$_le_py" << 'PYEOF'
+import json, sys, datetime
+tmpfile  = sys.argv[1]
+week_ago = int(sys.argv[2])
+try:
+    with open(tmpfile) as f: certs = json.load(f)
+except Exception:
+    print("parse_error"); sys.exit(0)
+recent = []
+for c in certs:
+    issuer = (c.get("issuer_name") or "").lower()
+    if "let's encrypt" not in issuer and "letsencrypt" not in issuer:
+        continue
+    nb = (c.get("not_before") or c.get("entry_timestamp") or "").replace(" ","T").rstrip("Z")
+    try:
+        ts = int(datetime.datetime.strptime(nb[:19], "%Y-%m-%dT%H:%M:%S")
+                 .replace(tzinfo=datetime.timezone.utc).timestamp())
+    except Exception:
+        continue
+    if ts >= week_ago:
+        recent.append((ts, c.get("common_name",""), nb[:10]))
+recent.sort(reverse=True)
+print(len(recent))
+if recent:
+    oldest_ts = recent[-1][0]
+    reset_dt  = datetime.datetime.utcfromtimestamp(oldest_ts + 7*86400)
+    print(reset_dt.strftime("%Y-%m-%d %H:%M UTC"))
+    for ts, cn, d in recent[:5]:
+        print(f"  {d}  {cn}")
+PYEOF
+      local _le_week_ago=$(( $(date +%s) - 7 * 86400 ))
+      local _le_out
+      _le_out=$(python3 "$_le_py" "$_le_json" "$_le_week_ago" 2>/dev/null)
+      rm -f "$_le_json" "$_le_py"
+      if [[ "$_le_out" == "parse_error" || -z "$_le_out" ]]; then
+        echo -e "  ${DIM}[SKIP] Could not parse crt.sh response${RESET}"
+      else
+        local _le_count _le_reset _le_lines
+        _le_count=$(echo "$_le_out" | head -1)
+        _le_reset=$(echo "$_le_out" | sed -n '2p')
+        _le_lines=$(echo "$_le_out" | tail -n +3)
+        if [[ "$_le_count" -ge 5 ]]; then
+          _chk "LE rate limit (${_le_count}/5 this week)" 0 \
+            "RATE LIMITED — ${_le_count} certs in last 7 days (max: 5)"
+          [[ -n "$_le_reset" ]] && \
+            echo -e "  ${DIM}  Limit resets: ${_le_reset}${RESET}"
+          echo -e "  ${DIM}  Recent certificates issued:${RESET}"
+          while IFS= read -r _ln; do
+            [[ -n "$_ln" ]] && echo -e "  ${DIM}${_ln}${RESET}"
+          done <<< "$_le_lines"
+        elif [[ "$_le_count" -ge 3 ]]; then
+          _chk "LE rate limit (${_le_count}/5 this week)" 1 \
+            "approaching limit — use remaining slots carefully"
+          [[ -n "$_le_reset" ]] && \
+            echo -e "  ${DIM}  Earliest slot reopens: ${_le_reset}${RESET}"
+        else
+          _chk "LE rate limit (${_le_count}/5 this week)" 1 "well within limit"
+        fi
+      fi
+    fi
+  else
+    echo -e "  ${DIM}[SKIP] LE rate limit — domain not configured${RESET}"
+  fi
+
   # ── Summary ───────────────────────────────────────────────────────────────────
   echo ""
   if [[ $fail -eq 0 ]]; then

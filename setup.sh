@@ -418,34 +418,29 @@ fetch_remote() {
 # the session runs on fresh code. Passes --skip-update to the new process so it
 # doesn't loop.  Skipped entirely when not root or when offline.
 auto_update() {
-  # Must be root to write to /usr/local/bin and /opt/friendbox
   [[ $EUID -ne 0 ]] && return 0
 
   echo -e "${CYAN}[INFO]${RESET}  Checking for updates..."
-
-  # ── Ensure install dir exists with correct ownership ────────────────────────
   _ensure_install_dir
 
-  # ── Download repo files ──────────────────────────────────────────────────────
-  # Only sync the script itself — docker-compose.yml is user-managed and must
-  # not be overwritten automatically.
   local failed=0
   curl -fsSL --max-time 10 "${REPO_URL}/setup.sh" \
-      -o "/usr/local/bin/friendbox.new"                                  2>/dev/null || failed=$((failed+1))
+      -o "/usr/local/bin/friendbox.new" 2>/dev/null || failed=$((failed+1))
+  curl -fsSL --max-time 10 "${REPO_URL}/docker-compose.yml" \
+      -o "${COMPOSE_FILE}.new"   2>/dev/null || failed=$((failed+1))
 
   if [[ $failed -gt 0 ]]; then
-    echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub — running with local files."
-    rm -f "/usr/local/bin/friendbox.new"
+    echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub - running with local files."
+    rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
     return 0
   fi
 
-  # ── Write update notice for main_menu to display after re-exec ───────────────
-  cat > "${INSTALL_DIR}/.update_notice" <<EOF
-/usr/local/bin/friendbox
-EOF
+  mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
+  _own "${COMPOSE_FILE}"
+
+  printf 'docker-compose.yml\n/usr/local/bin/friendbox\n' > "${INSTALL_DIR}/.update_notice"
   _own "${INSTALL_DIR}/.update_notice"
 
-  # ── Re-exec with updated script ──────────────────────────────────────────────
   mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
   chmod +x /usr/local/bin/friendbox
   exec /usr/local/bin/friendbox --skip-update "$@"
@@ -458,29 +453,37 @@ sync_repo() {
   echo ""
   _ensure_install_dir
 
-  local failed=0 updated=0
+  local script_ok=0 compose_ok=0
 
-  # Only the friendbox script is synced — docker-compose.yml is user-managed
-  # and must not be overwritten (it holds local edits like image versions).
-  printf "  %-30s " "/usr/local/bin/friendbox"
+  printf "  %-34s " "friendbox script"
   if fetch_remote "setup.sh" "/usr/local/bin/friendbox.new" 2>/dev/null; then
     mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
     chmod +x /usr/local/bin/friendbox
     echo -e "${GREEN}[OK]${RESET}"
-    updated=$((updated + 1))
+    script_ok=1
   else
     rm -f /usr/local/bin/friendbox.new
     echo -e "${RED}[FAILED]${RESET}"
-    failed=$((failed + 1))
   fi
 
-  echo ""
-  if [[ $failed -eq 0 ]]; then
-    success "${updated} file(s) synced from GitHub."
-    info "docker-compose.yml is not synced — edit it directly to change image versions or services."
+  printf "  %-34s " "docker-compose.yml"
+  if fetch_remote "docker-compose.yml" "${COMPOSE_FILE}.new" 2>/dev/null; then
+    mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
+    _own "${COMPOSE_FILE}"
+    echo -e "${GREEN}[OK]${RESET}"
+    compose_ok=1
   else
+    rm -f "${COMPOSE_FILE}.new"
+    echo -e "${RED}[FAILED]${RESET}"
+  fi
+  echo ""
+  if [[ $script_ok -eq 1 && $compose_ok -eq 1 ]]; then
+    success "Sync complete. Run option 12 (Redeploy) to apply any image changes."
+  elif [[ $script_ok -eq 0 && $compose_ok -eq 0 ]]; then
     warn "Sync failed. Check your internet connection."
     return 1
+  else
+    warn "Partial sync - check your internet connection."
   fi
 }
 

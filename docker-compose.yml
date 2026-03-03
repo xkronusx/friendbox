@@ -26,6 +26,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONFIG_ROOT}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ${CONFIG_ROOT}/traefik/acme.json:/etc/traefik/acme.json
+    environment:
+      # DNS challenge provider credentials — only the active provider's vars are used
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN:-}
+      - CF_API_EMAIL=${CF_API_EMAIL:-}
+      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN:-}
+      - GODADDY_API_KEY=${GODADDY_API_KEY:-}
+      - GODADDY_API_SECRET=${GODADDY_API_SECRET:-}
+      - NAMECHEAP_API_USER=${NAMECHEAP_API_USER:-}
+      - NAMECHEAP_API_KEY=${NAMECHEAP_API_KEY:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"

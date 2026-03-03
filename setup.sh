@@ -1227,9 +1227,9 @@ configure_traefik() {
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _traefik_set_auth      || true; pause ;;
-      2) _traefik_set_domain    || true; pause; _traefik_write_config || true ;;
-      3) _traefik_set_provider  || true; pause; _traefik_write_config || true ;;
+      1) _traefik_set_auth     || true; pause ;;
+      2) _traefik_set_domain   || true; pause ;;
+      3) _traefik_set_provider || true; pause ;;
       4) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
@@ -1296,6 +1296,7 @@ _traefik_set_domain() {
   printf 'DOMAIN=%s\nACME_EMAIL=%s\n' "$new_domain" "$new_email" >> "$ENV_FILE"
   success "Domain and ACME email updated."
   warn "If Traefik is already running, delete acme.json and redeploy Traefik to re-issue certificates."
+  _traefik_write_config
 }
 
 _traefik_set_provider() {
@@ -1350,6 +1351,7 @@ _traefik_set_provider() {
     godaddy)    _traefik_provider_godaddy    ;;
     namecheap)  _traefik_provider_namecheap  ;;
   esac
+  _traefik_write_config
 }
 
 _traefik_provider_cloudflare() {

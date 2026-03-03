@@ -81,6 +81,31 @@ _ensure_install_dir() {
        "${INSTALL_DIR}/scripts"
 }
 
+# Recursively fix ownership of everything in INSTALL_DIR to PUID:PGID.
+# Re-applies root-only exceptions afterward.
+# Safe to call on every launch — fast no-op if already correct.
+_fix_install_dir_ownership() {
+  [[ $EUID -ne 0 ]] && return 0
+  [[ ! -d "$INSTALL_DIR" ]] && return 0
+
+  local uid gid
+  uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; uid="${uid:-1000}"
+  gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; gid="${gid:-1000}"
+
+  chown -R "${uid}:${gid}" "${INSTALL_DIR}"
+
+  # acme.json must be root:root 600 — Traefik refuses to start otherwise
+  local acme="${INSTALL_DIR}/config/traefik/acme.json"
+  if [[ -f "$acme" ]]; then
+    chown root:root "$acme"
+    chmod 600 "$acme"
+  fi
+
+  # .dns_config contains API keys — keep it tight even though owner changes
+  local dns_cfg="${INSTALL_DIR}/.dns_config"
+  [[ -f "$dns_cfg" ]] && chmod 600 "$dns_cfg"
+}
+
 ensure_media_root() {
   # Create /mnt/media on every interactive launch so it always exists as a
   # mount point for MergerFS, or as a plain directory for single-drive setups.
@@ -1763,8 +1788,10 @@ provision_directories() {
       || warn "Could not create user UID ${uid} — may already exist."
   fi
 
-  # Install dir — create with correct ownership
+  # Create INSTALL_DIR tree and fix ownership of all existing files in it
   _ensure_install_dir
+  _fix_install_dir_ownership
+  success "  ${INSTALL_DIR}  [${uid}:${gid}] (recursive)"
 
   # Always-on config dirs
   mkdir -p "${cfg}/traefik" "${cfg}/portainer"
@@ -2584,5 +2611,6 @@ else
   fi
 
   ensure_media_root
+  _fix_install_dir_ownership
   main_menu
 fi

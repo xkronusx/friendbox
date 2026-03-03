@@ -1192,19 +1192,35 @@ _traefik_show_status() {
   # Per-provider credential summary
   case "${TRAEFIK_ACME_PROVIDER:-}" in
     cloudflare)
-      echo -e "  ${BOLD}CF API token  :${RESET} ${CF_DNS_API_TOKEN:+[set]}${CF_DNS_API_TOKEN:-not set}"
+      if [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+        echo -e "  ${BOLD}CF API token  :${RESET} [set]"
+      else
+        echo -e "  ${BOLD}CF API token  :${RESET} not set"
+      fi
       echo -e "  ${BOLD}CF API email  :${RESET} ${CF_API_EMAIL:-not set}"
       ;;
     duckdns)
-      echo -e "  ${BOLD}DuckDNS token :${RESET} ${DUCKDNS_TOKEN:+[set]}${DUCKDNS_TOKEN:-not set}"
+      if [[ -n "${DUCKDNS_TOKEN:-}" ]]; then
+        echo -e "  ${BOLD}DuckDNS token :${RESET} [set]"
+      else
+        echo -e "  ${BOLD}DuckDNS token :${RESET} not set"
+      fi
       ;;
     godaddy)
       echo -e "  ${BOLD}GoDaddy key   :${RESET} ${GODADDY_API_KEY:-not set}"
-      echo -e "  ${BOLD}GoDaddy secret:${RESET} ${GODADDY_API_SECRET:+[set]}${GODADDY_API_SECRET:-not set}"
+      if [[ -n "${GODADDY_API_SECRET:-}" ]]; then
+        echo -e "  ${BOLD}GoDaddy secret:${RESET} [set]"
+      else
+        echo -e "  ${BOLD}GoDaddy secret:${RESET} not set"
+      fi
       ;;
     namecheap)
       echo -e "  ${BOLD}NC API user   :${RESET} ${NAMECHEAP_API_USER:-not set}"
-      echo -e "  ${BOLD}NC API key    :${RESET} ${NAMECHEAP_API_KEY:+[set]}${NAMECHEAP_API_KEY:-not set}"
+      if [[ -n "${NAMECHEAP_API_KEY:-}" ]]; then
+        echo -e "  ${BOLD}NC API key    :${RESET} [set]"
+      else
+        echo -e "  ${BOLD}NC API key    :${RESET} not set"
+      fi
       ;;
     http|"")
       echo -e "  ${DIM}  HTTP challenge — no extra credentials needed.${RESET}"
@@ -1391,11 +1407,11 @@ _traefik_provider_duckdns() {
   echo ""
   echo -e "${BOLD}DuckDNS DNS Challenge Credentials${RESET}"
   echo -e "${DIM}  Find your token at: www.duckdns.org (shown after login)${RESET}"
-  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo -e "${DIM}  Press Enter to keep current value. Leave blank to clear.${RESET}"
   echo ""
 
-  echo -n "DuckDNS token (press Enter to keep existing): "
-  read -rs input; echo ""
+  echo -n "DuckDNS token [${DUCKDNS_TOKEN:-}]: "
+  read -r input
   local duck_token
   if [[ -n "$input" ]]; then
     duck_token="$input"

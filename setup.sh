@@ -53,12 +53,32 @@ is_installed() {
 }
 
 mark_installed() {
-  mkdir -p "${INSTALL_DIR}"
+  _ensure_install_dir
   echo "installed=$(date '+%Y-%m-%d %H:%M:%S')" > "$INSTALL_FLAG"
+  _own "$INSTALL_FLAG"
 }
 
 mark_uninstalled() {
   rm -f "$INSTALL_FLAG"
+}
+
+# chown a path to PUID:PGID (from .env, defaulting to 1000:1000).
+# No-ops silently when not root.
+_own() {
+  [[ $EUID -ne 0 ]] && return 0
+  local uid gid
+  uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; uid="${uid:-1000}"
+  gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-) ; gid="${gid:-1000}"
+  chown "${uid}:${gid}" "$@"
+}
+
+# Create the INSTALL_DIR tree and set ownership on every subdirectory.
+_ensure_install_dir() {
+  mkdir -p "${INSTALL_DIR}"/{config/traefik,scripts}
+  _own "${INSTALL_DIR}" \
+       "${INSTALL_DIR}/config" \
+       "${INSTALL_DIR}/config/traefik" \
+       "${INSTALL_DIR}/scripts"
 }
 
 ensure_media_root() {
@@ -228,12 +248,13 @@ load_selected() {
 }
 
 save_selected() {
-  mkdir -p "${INSTALL_DIR}"
+  _ensure_install_dir
   : > "$SELECTED_FILE"
   local key
   for key in "${CONTAINER_ORDER[@]}"; do
     [[ -n "${SELECTED[$key]+_}" ]] && echo "$key" >> "$SELECTED_FILE"
   done
+  _own "$SELECTED_FILE"
 }
 
 # ── Container selection UI ────────────────────────────────────────────────────
@@ -376,11 +397,11 @@ auto_update() {
 
   echo -e "${CYAN}[INFO]${RESET}  Checking for updates..."
 
+  # ── Ensure install dir exists with correct ownership ────────────────────────
+  _ensure_install_dir
+
   # ── Download repo files ──────────────────────────────────────────────────────
   local failed=0
-  mkdir -p "${INSTALL_DIR}"/{config/traefik,scripts}
-
-  curl -fsSL --max-time 10 "${REPO_URL}/docker-compose.yml" \
       -o "${COMPOSE_FILE}.new"                                            2>/dev/null || failed=$((failed+1))
   curl -fsSL --max-time 10 "${REPO_URL}/setup.sh" \
       -o "/usr/local/bin/friendbox.new"                                  2>/dev/null || failed=$((failed+1))
@@ -392,14 +413,16 @@ auto_update() {
     return 0
   fi
 
-  # ── Atomically replace files ─────────────────────────────────────────────────
-  mv "${COMPOSE_FILE}.new"                               "${COMPOSE_FILE}"
+  # ── Atomically replace files and fix ownership ───────────────────────────────
+  mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
+  _own "${COMPOSE_FILE}"
 
   # ── Write update notice for main_menu to display after re-exec ───────────────
   cat > "${INSTALL_DIR}/.update_notice" <<EOF
 docker-compose.yml
 /usr/local/bin/friendbox
 EOF
+  _own "${INSTALL_DIR}/.update_notice"
 
   # ── Re-exec with updated script ──────────────────────────────────────────────
   mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
@@ -412,7 +435,7 @@ sync_repo() {
   echo ""
   echo -e "${BOLD}Syncing latest files from GitHub...${RESET}"
   echo ""
-  mkdir -p "${INSTALL_DIR}"/{config/traefik,scripts}
+  _ensure_install_dir
 
   local failed=0 updated=0
 
@@ -421,6 +444,7 @@ sync_repo() {
     printf "  %-30s " "$label"
     if fetch_remote "$remote" "${dest}.new" 2>/dev/null; then
       mv "${dest}.new" "${dest}"
+      _own "${dest}"
       echo -e "${GREEN}[OK]${RESET}"
       updated=$((updated + 1))
     else
@@ -525,12 +549,13 @@ _mergerfs_load_modes() {
 }
 
 _mergerfs_save_modes() {
-  mkdir -p "${INSTALL_DIR}"
+  _ensure_install_dir
   : > "$MERGERFS_MODES_FILE"
   local path
   for path in "${!DISK_MODES[@]}"; do
     echo "${path}=${DISK_MODES[$path]}" >> "$MERGERFS_MODES_FILE"
   done
+  _own "$MERGERFS_MODES_FILE"
 }
 
 _mergerfs_load_pool() {
@@ -539,8 +564,9 @@ _mergerfs_load_pool() {
 }
 
 _mergerfs_save_pool() {
-  mkdir -p "${INSTALL_DIR}"
+  _ensure_install_dir
   echo "$1" > "$MERGERFS_POOL_FILE"
+  _own "$MERGERFS_POOL_FILE"
 }
 
 _mergerfs_build_branch_list() {
@@ -745,7 +771,7 @@ _mergerfs_initial_setup() {
     return
   fi
   _mergerfs_load_modes
-  mkdir -p "${INSTALL_DIR}"
+  _ensure_install_dir
   echo ""
   echo -e "${BOLD}MergerFS Pool Configuration${RESET}"
   echo "Enter each disk path you want to pool, one at a time."
@@ -1014,7 +1040,7 @@ configure_env() {
   # Preserve existing TRAEFIK_AUTH if already set; don't overwrite it here.
   local existing_auth="${TRAEFIK_AUTH:-disabled}"
 
-  mkdir -p "${INSTALL_DIR}"
+  _ensure_install_dir
   cat > "$ENV_FILE" <<EOF
 PUID=${PUID}
 PGID=${PGID}
@@ -1026,6 +1052,7 @@ MEDIA_ROOT=${MEDIA_ROOT}
 USE_TRAEFIK=${USE_TRAEFIK}
 TRAEFIK_AUTH=${existing_auth}
 EOF
+  _own "$ENV_FILE"
   success ".env written to ${ENV_FILE}"
   if [[ "$USE_TRAEFIK" == "true" ]]; then
     info "Traefik is selected — use menu option 4 (Traefik configuration) to set dashboard credentials."
@@ -1143,6 +1170,7 @@ certificatesResolvers:
 ${resolvers_block}
 EOF
 
+  _own "$traefik_cfg"
   success "traefik.yml written (provider: ${provider})."
 }
 
@@ -1609,7 +1637,7 @@ _creds_configure_mumble() {
 
 generate_redeploy_sh() {
   local dest="${INSTALL_DIR}/scripts/redeploy.sh"
-  mkdir -p "${INSTALL_DIR}/scripts"
+  _ensure_install_dir
 
   cat > "$dest" <<'REDEPLOY'
 #!/usr/bin/env bash
@@ -1680,6 +1708,7 @@ esac
 REDEPLOY
 
   chmod +x "$dest"
+  _own "$dest"
 }
 
 ensure_network() {
@@ -1734,9 +1763,8 @@ provision_directories() {
       || warn "Could not create user UID ${uid} — may already exist."
   fi
 
-  # Install dir
-  mkdir -p "${INSTALL_DIR}"
-  chown "${uid}:${gid}" "${INSTALL_DIR}"
+  # Install dir — create with correct ownership
+  _ensure_install_dir
 
   # Always-on config dirs
   mkdir -p "${cfg}/traefik" "${cfg}/portainer"
@@ -1807,7 +1835,7 @@ _dns_load() {
 }
 
 _dns_save() {
-  mkdir -p "${INSTALL_DIR}"
+  _ensure_install_dir
   cat > "$DNS_STATE_FILE" <<EOF
 DNS_PROVIDER=${DNS_PROVIDER}
 DNS_DOMAIN=${DNS_DOMAIN}
@@ -1822,6 +1850,7 @@ DNS_NAMECHEAP_USER=${DNS_NAMECHEAP_USER}
 DNS_NAMECHEAP_API_KEY=${DNS_NAMECHEAP_API_KEY}
 DNS_NAMECHEAP_SOURCE_IP=${DNS_NAMECHEAP_SOURCE_IP}
 EOF
+  _own "$DNS_STATE_FILE"
   chmod 600 "$DNS_STATE_FILE"
 }
 

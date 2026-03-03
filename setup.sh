@@ -1240,6 +1240,218 @@ _traefik_show_status() {
   echo ""
 }
 
+
+_traefik_validate() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local pass=0 fail=0
+
+  _chk() {
+    # _chk "label" 0|1 "detail"
+    local label="$1" ok="$2" detail="${3:-}"
+    if [[ "$ok" == "1" ]]; then
+      echo -e "  ${GREEN}[PASS]${RESET} ${label}${detail:+  ${DIM}${detail}${RESET}}"
+      pass=$((pass + 1))
+    else
+      echo -e "  ${RED}[FAIL]${RESET} ${label}${detail:+  ${DIM}${detail}${RESET}}"
+      fail=$((fail + 1))
+    fi
+  }
+
+  echo ""
+  echo -e "${BOLD}Traefik Pre-flight Checks${RESET}"
+  echo ""
+
+  # ── 1. traefik.yml exists ────────────────────────────────────────────────────
+  local cfg="${INSTALL_DIR}/config/traefik/traefik.yml"
+  if [[ -f "$cfg" ]]; then
+    _chk "traefik.yml exists" 1 "$cfg"
+  else
+    _chk "traefik.yml exists" 0 "run option 2 or 3 to generate it"
+  fi
+
+  # ── 2. acme.json exists and has correct permissions ──────────────────────────
+  local acme="${INSTALL_DIR}/config/traefik/acme.json"
+  if [[ -f "$acme" ]]; then
+    local perms; perms=$(stat -c "%a" "$acme" 2>/dev/null)
+    if [[ "$perms" == "600" ]]; then
+      _chk "acme.json exists (600)" 1 "$acme"
+    else
+      _chk "acme.json permissions" 0 "got ${perms}, need 600 — run: chmod 600 $acme"
+    fi
+  else
+    _chk "acme.json exists" 0 "run option 8 (Provision directories) to create it"
+  fi
+
+  # ── 3. Domain is set and not placeholder ─────────────────────────────────────
+  if [[ -n "${DOMAIN:-}" && "${DOMAIN:-}" != "example.com" ]]; then
+    _chk "Domain configured" 1 "${DOMAIN}"
+  else
+    _chk "Domain configured" 0 "set a real domain via option 2"
+  fi
+
+  # ── 4. ACME email is set and not placeholder ─────────────────────────────────
+  if [[ -n "${ACME_EMAIL:-}" && "${ACME_EMAIL:-}" != "admin@example.com" ]]; then
+    _chk "ACME email configured" 1 "${ACME_EMAIL}"
+  else
+    _chk "ACME email configured" 0 "set a real email via option 2"
+  fi
+
+  # ── 5. ACME provider is set ───────────────────────────────────────────────────
+  local provider="${TRAEFIK_ACME_PROVIDER:-}"
+  if [[ -n "$provider" ]]; then
+    _chk "ACME provider set" 1 "${provider}"
+  else
+    _chk "ACME provider set" 0 "configure via option 3"
+  fi
+
+  # ── 6. Provider credentials present ──────────────────────────────────────────
+  case "$provider" in
+    cloudflare)
+      [[ -n "${CF_DNS_API_TOKEN:-}" ]] \
+        && _chk "Cloudflare API token" 1 \
+        || _chk "Cloudflare API token" 0 "set via option 3"
+      [[ -n "${CF_API_EMAIL:-}" ]] \
+        && _chk "Cloudflare email" 1 "${CF_API_EMAIL}" \
+        || _chk "Cloudflare email" 0 "set via option 3"
+      ;;
+    duckdns)
+      [[ -n "${DUCKDNS_TOKEN:-}" ]] \
+        && _chk "DuckDNS token" 1 \
+        || _chk "DuckDNS token" 0 "set via option 3"
+      ;;
+    godaddy)
+      [[ -n "${GODADDY_API_KEY:-}" ]] \
+        && _chk "GoDaddy API key" 1 "${GODADDY_API_KEY}" \
+        || _chk "GoDaddy API key" 0 "set via option 3"
+      [[ -n "${GODADDY_API_SECRET:-}" ]] \
+        && _chk "GoDaddy API secret" 1 \
+        || _chk "GoDaddy API secret" 0 "set via option 3"
+      ;;
+    namecheap)
+      [[ -n "${NAMECHEAP_API_USER:-}" ]] \
+        && _chk "Namecheap API user" 1 "${NAMECHEAP_API_USER}" \
+        || _chk "Namecheap API user" 0 "set via option 3"
+      [[ -n "${NAMECHEAP_API_KEY:-}" ]] \
+        && _chk "Namecheap API key" 1 \
+        || _chk "Namecheap API key" 0 "set via option 3"
+      ;;
+    http)
+      _chk "HTTP challenge (no creds needed)" 1
+      ;;
+    *)
+      _chk "Provider credentials" 0 "unknown provider: ${provider:-not set}"
+      ;;
+  esac
+
+  # ── 7. traefik image selected ─────────────────────────────────────────────────
+  load_selected
+  if [[ -n "${SELECTED[traefik]+_}" ]]; then
+    _chk "Traefik selected for deploy" 1
+  else
+    _chk "Traefik selected for deploy" 0 "select Traefik via main menu option 2"
+  fi
+
+  # ── 8. Dashboard auth configured ─────────────────────────────────────────────
+  if [[ -n "${TRAEFIK_AUTH:-}" && "${TRAEFIK_AUTH:-}" != "disabled" ]]; then
+    _chk "Dashboard auth configured" 1
+  else
+    _chk "Dashboard auth configured" 0 "set credentials via option 1 (optional but recommended)"
+  fi
+
+  # ── 9. DNS: domain resolves ───────────────────────────────────────────────────
+  echo ""
+  echo -e "  ${DIM}── Network checks (require internet) ──────────────${RESET}"
+  if [[ -n "${DOMAIN:-}" && "${DOMAIN:-}" != "example.com" ]]; then
+    if command -v dig &>/dev/null; then
+      local resolved; resolved=$(dig +short "${DOMAIN}" A 2>/dev/null | head -1)
+      [[ -n "$resolved" ]] \
+        && _chk "Domain resolves (DNS)" 1 "${DOMAIN} → ${resolved}" \
+        || _chk "Domain resolves (DNS)" 0 "${DOMAIN} returned no A record"
+    elif command -v nslookup &>/dev/null; then
+      local resolved; resolved=$(nslookup "${DOMAIN}" 2>/dev/null | awk '/^Address:/{print $2}' | tail -1)
+      [[ -n "$resolved" ]] \
+        && _chk "Domain resolves (DNS)" 1 "${DOMAIN} → ${resolved}" \
+        || _chk "Domain resolves (DNS)" 0 "${DOMAIN} returned no A record"
+    else
+      echo -e "  ${DIM}[SKIP] DNS resolution — dig/nslookup not available${RESET}"
+    fi
+  else
+    echo -e "  ${DIM}[SKIP] DNS resolution — domain not configured${RESET}"
+  fi
+
+  # ── 10. HTTP challenge: ports 80/443 reachable ───────────────────────────────
+  if [[ "${provider:-}" == "http" ]]; then
+    for port in 80 443; do
+      if command -v nc &>/dev/null; then
+        if nc -z -w3 0.0.0.0 "$port" 2>/dev/null; then
+          _chk "Port ${port} listening" 1
+        else
+          _chk "Port ${port} listening" 0 "Traefik may not be running or port is blocked"
+        fi
+      elif ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+        _chk "Port ${port} listening" 1
+      else
+        _chk "Port ${port} listening" 0 "Traefik may not be running or port is blocked"
+      fi
+    done
+  fi
+
+  # ── 11. DuckDNS token reachability test ──────────────────────────────────────
+  if [[ "${provider:-}" == "duckdns" && -n "${DUCKDNS_TOKEN:-}" ]]; then
+    local subdomain="${DOMAIN%%.*}"
+    local duck_resp
+    duck_resp=$(curl -fsSL --max-time 5 \
+      "https://www.duckdns.org/update?domains=${subdomain}&token=${DUCKDNS_TOKEN}&ip=" 2>/dev/null)
+    if [[ "$duck_resp" == "OK" ]]; then
+      _chk "DuckDNS token valid (API ping)" 1
+    else
+      _chk "DuckDNS token valid (API ping)" 0 "got: ${duck_resp:-no response} — check token"
+    fi
+  fi
+
+  # ── 12. Cloudflare token reachability test ───────────────────────────────────
+  if [[ "${provider:-}" == "cloudflare" && -n "${CF_DNS_API_TOKEN:-}" ]]; then
+    local cf_resp
+    cf_resp=$(curl -fsSL --max-time 5 \
+      -H "Authorization: Bearer ${CF_DNS_API_TOKEN}" \
+      "https://api.cloudflare.com/client/v4/user/tokens/verify" 2>/dev/null)
+    if echo "$cf_resp" | grep -q '"success":true'; then
+      _chk "Cloudflare token valid (API verify)" 1
+    else
+      _chk "Cloudflare token valid (API verify)" 0 "token rejected or unreachable"
+    fi
+  fi
+
+  # ── 13. traefik.yml YAML structure sanity ────────────────────────────────────
+  if [[ -f "$cfg" ]]; then
+    if grep -q "^certificatesResolvers:" "$cfg" && grep -q "letsencrypt:" "$cfg"; then
+      _chk "traefik.yml has certificatesResolvers" 1
+    else
+      _chk "traefik.yml has certificatesResolvers" 0 "regenerate via option 2 or 3"
+    fi
+    if grep -q "^entryPoints:" "$cfg"; then
+      _chk "traefik.yml has entryPoints" 1
+    else
+      _chk "traefik.yml has entryPoints" 0 "regenerate via option 2 or 3"
+    fi
+    local acme_storage; acme_storage=$(grep "storage:" "$cfg" 2>/dev/null | awk '{print $2}')
+    if [[ "$acme_storage" == "/etc/traefik/acme.json" ]]; then
+      _chk "acme.json storage path correct" 1 "${acme_storage}"
+    else
+      _chk "acme.json storage path correct" 0 "got: ${acme_storage:-missing} — regenerate config"
+    fi
+  fi
+
+  # ── Summary ───────────────────────────────────────────────────────────────────
+  echo ""
+  if [[ $fail -eq 0 ]]; then
+    success "All checks passed (${pass}/${pass}) — Traefik should be able to obtain certificates."
+  else
+    warn "${fail} check(s) failed, ${pass} passed — fix the issues above before deploying."
+  fi
+  echo ""
+}
+
 configure_traefik() {
   while true; do
     clear
@@ -1253,14 +1465,16 @@ configure_traefik() {
     echo "  1) Set dashboard credentials (username + password)"
     echo "  2) Update domain / ACME email"
     echo "  3) Configure ACME challenge provider"
-    echo "  4) Back to main menu"
+    echo "  4) Run pre-flight checks"
+    echo "  5) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
       1) _traefik_set_auth     || true; pause ;;
       2) _traefik_set_domain   || true; pause ;;
       3) _traefik_set_provider || true; pause ;;
-      4) return ;;
+      4) _traefik_validate     || true; pause ;;
+      5) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

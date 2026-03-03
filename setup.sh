@@ -1081,8 +1081,10 @@ _traefik_write_config() {
       storage: /etc/traefik/acme.json
       dnsChallenge:
         provider: duckdns
+        delayBeforeCheck: 60
         resolvers:
-          - \"8.8.8.8:53\""
+          - \"ns1.duckdns.org:53\"
+          - \"ns2.duckdns.org:53\""
       ;;
     godaddy)
       resolvers_block="  letsencrypt:

@@ -389,7 +389,6 @@ auto_update() {
 
   if [[ $failed -gt 0 ]]; then
     echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub — running with local files."
-    # Clean up any partial downloads
     rm -f "${COMPOSE_FILE}.new" \
           "${INSTALL_DIR}/scripts/redeploy.sh.new" \
           "/usr/local/bin/friendbox.new"
@@ -401,43 +400,65 @@ auto_update() {
   mv "${INSTALL_DIR}/scripts/redeploy.sh.new"           "${INSTALL_DIR}/scripts/redeploy.sh"
   chmod +x "${INSTALL_DIR}/scripts/redeploy.sh"
 
+  # ── Write update notice for main_menu to display after re-exec ───────────────
+  cat > "${INSTALL_DIR}/.update_notice" <<EOF
+docker-compose.yml
+scripts/redeploy.sh
+/usr/local/bin/friendbox
+EOF
+
   # ── Re-exec with updated script ──────────────────────────────────────────────
-  # Move the new script into place, then exec it so the rest of the session runs
-  # on the freshly-downloaded code. --skip-update tells the new process not to
-  # update again, preventing an infinite loop.
   mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
   chmod +x /usr/local/bin/friendbox
-
-  echo -e "${GREEN}[OK]${RESET}    Files updated — reloading..."
   exec /usr/local/bin/friendbox --skip-update "$@"
 }
 
 sync_repo() {
   require_root
-  info "Syncing latest files from GitHub..."
+  echo ""
+  echo -e "${BOLD}Syncing latest files from GitHub...${RESET}"
+  echo ""
   mkdir -p "${INSTALL_DIR}"/{config/traefik,scripts}
 
-  local failed=0
-  fetch_remote "docker-compose.yml"          "${COMPOSE_FILE}"                              || failed=$((failed+1))
-  fetch_remote "scripts/redeploy.sh"         "${INSTALL_DIR}/scripts/redeploy.sh"           || failed=$((failed+1))
+  local failed=0 updated=0
+
+  _sync_file() {
+    local label="$1" remote="$2" dest="$3"
+    printf "  %-30s " "$label"
+    if fetch_remote "$remote" "${dest}.new" 2>/dev/null; then
+      mv "${dest}.new" "${dest}"
+      echo -e "${GREEN}[OK]${RESET}"
+      updated=$((updated + 1))
+    else
+      rm -f "${dest}.new"
+      echo -e "${RED}[FAILED]${RESET}"
+      failed=$((failed + 1))
+    fi
+  }
+
+  _sync_file "docker-compose.yml"    "docker-compose.yml"   "${COMPOSE_FILE}"
+  _sync_file "scripts/redeploy.sh"   "scripts/redeploy.sh"  "${INSTALL_DIR}/scripts/redeploy.sh"
   [[ -f "${INSTALL_DIR}/scripts/redeploy.sh" ]] && chmod +x "${INSTALL_DIR}/scripts/redeploy.sh"
 
-  # Update the friendbox command itself — do this last so a partial download
-  # doesn't replace the running script mid-execution
-  info "Updating /usr/local/bin/friendbox ..."
-  if fetch_remote "setup.sh" "/usr/local/bin/friendbox.new"; then
+  # friendbox script — do last so a partial download doesn't corrupt the running script
+  printf "  %-30s " "/usr/local/bin/friendbox"
+  if fetch_remote "setup.sh" "/usr/local/bin/friendbox.new" 2>/dev/null; then
     mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
     chmod +x /usr/local/bin/friendbox
-    success "friendbox script updated. Changes take effect on next run."
+    echo -e "${GREEN}[OK]${RESET}"
+    updated=$((updated + 1))
   else
-    warn "Could not update friendbox script — keeping current version."
-    failed=$((failed+1))
+    rm -f /usr/local/bin/friendbox.new
+    echo -e "${RED}[FAILED]${RESET}"
+    failed=$((failed + 1))
   fi
 
+  echo ""
   if [[ $failed -eq 0 ]]; then
-    success "Repo synced to ${INSTALL_DIR}"
+    success "${updated} file(s) synced from GitHub."
+    info "Run option 12 (Redeploy) to apply any docker-compose.yml changes to running containers."
   else
-    warn "Sync completed with ${failed} error(s). Check your internet connection."
+    warn "${updated} file(s) updated, ${failed} failed. Check your internet connection."
     return 1
   fi
 }
@@ -2348,6 +2369,19 @@ view_logs() {
 # =============================================================================
 
 main_menu() {
+  # ── Show auto-update notice if files were just refreshed from GitHub ─────────
+  local notice_file="${INSTALL_DIR}/.update_notice"
+  if [[ -f "$notice_file" ]]; then
+    echo ""
+    echo -e "${GREEN}[OK]${RESET}    Files updated from GitHub:"
+    while IFS= read -r line; do
+      echo -e "        ${DIM}✔ ${line}${RESET}"
+    done < "$notice_file"
+    rm -f "$notice_file"
+    echo ""
+    pause
+  fi
+
   while true; do
     clear
     echo -e "${BOLD}${CYAN}"

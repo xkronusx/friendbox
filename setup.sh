@@ -1016,19 +1016,42 @@ _traefik_show_status() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   load_selected
   echo ""
-  local enabled="${USE_TRAEFIK:-false}"
   local auth_set="not set"
   [[ -n "${TRAEFIK_AUTH:-}" && "${TRAEFIK_AUTH:-}" != "disabled" ]] && auth_set="configured"
 
+  local provider_label="${TRAEFIK_ACME_PROVIDER:-not set}"
+
   if [[ -n "${SELECTED[traefik]+_}" ]]; then
-    echo -e "  ${BOLD}Status      :${RESET} ${GREEN}selected (will deploy)${RESET}"
+    echo -e "  ${BOLD}Status        :${RESET} ${GREEN}selected (will deploy)${RESET}"
   else
-    echo -e "  ${BOLD}Status      :${RESET} ${YELLOW}not selected${RESET}"
+    echo -e "  ${BOLD}Status        :${RESET} ${YELLOW}not selected${RESET}"
   fi
-  echo -e "  ${BOLD}USE_TRAEFIK :${RESET} ${enabled}"
-  echo -e "  ${BOLD}Domain      :${RESET} ${DOMAIN:-not set}"
-  echo -e "  ${BOLD}ACME email  :${RESET} ${ACME_EMAIL:-not set}"
-  echo -e "  ${BOLD}Dashboard   :${RESET} ${auth_set}"
+  echo -e "  ${BOLD}Domain        :${RESET} ${DOMAIN:-not set}"
+  echo -e "  ${BOLD}ACME email    :${RESET} ${ACME_EMAIL:-not set}"
+  echo -e "  ${BOLD}ACME provider :${RESET} ${provider_label}"
+  echo -e "  ${BOLD}Dashboard     :${RESET} ${auth_set}"
+
+  # Per-provider credential summary
+  case "${TRAEFIK_ACME_PROVIDER:-}" in
+    cloudflare)
+      echo -e "  ${BOLD}CF API token  :${RESET} ${CF_DNS_API_TOKEN:+[set]}${CF_DNS_API_TOKEN:-not set}"
+      echo -e "  ${BOLD}CF API email  :${RESET} ${CF_API_EMAIL:-not set}"
+      ;;
+    duckdns)
+      echo -e "  ${BOLD}DuckDNS token :${RESET} ${DUCKDNS_TOKEN:+[set]}${DUCKDNS_TOKEN:-not set}"
+      ;;
+    godaddy)
+      echo -e "  ${BOLD}GoDaddy key   :${RESET} ${GODADDY_API_KEY:-not set}"
+      echo -e "  ${BOLD}GoDaddy secret:${RESET} ${GODADDY_API_SECRET:+[set]}${GODADDY_API_SECRET:-not set}"
+      ;;
+    namecheap)
+      echo -e "  ${BOLD}NC API user   :${RESET} ${NAMECHEAP_API_USER:-not set}"
+      echo -e "  ${BOLD}NC API key    :${RESET} ${NAMECHEAP_API_KEY:+[set]}${NAMECHEAP_API_KEY:-not set}"
+      ;;
+    http|"")
+      echo -e "  ${DIM}  HTTP challenge — no extra credentials needed.${RESET}"
+      ;;
+  esac
   echo ""
 }
 
@@ -1044,13 +1067,15 @@ configure_traefik() {
 
     echo "  1) Set dashboard credentials (username + password)"
     echo "  2) Update domain / ACME email"
-    echo "  3) Back to main menu"
+    echo "  3) Configure ACME challenge provider"
+    echo "  4) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
       1) _traefik_set_auth      || true; pause ;;
       2) _traefik_set_domain    || true; pause ;;
-      3) return ;;
+      3) _traefik_set_provider  || true; pause ;;
+      4) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
@@ -1072,11 +1097,9 @@ _traefik_set_auth() {
   read -rp "Dashboard username [${TRAEFIK_USER:-admin}]: " input
   local dash_user="${input:-${TRAEFIK_USER:-admin}}"
   read -srp "Dashboard password (press Enter to keep existing): " dash_pass; echo ""
-  # If Enter was pressed and a hash already exists, keep the existing auth
   if [[ -z "$dash_pass" ]]; then
     if [[ -n "${TRAEFIK_AUTH:-}" && "${TRAEFIK_AUTH:-}" != "disabled" ]]; then
       info "Password unchanged — keeping existing credentials."
-      # Still update TRAEFIK_USER in case username changed
       sed -i '/^TRAEFIK_USER=/d' "$ENV_FILE" 2>/dev/null || true
       echo "TRAEFIK_USER=${dash_user}" >> "$ENV_FILE"
       success "Traefik username updated."
@@ -1090,11 +1113,10 @@ _traefik_set_auth() {
   local new_auth
   new_auth=$(htpasswd -nbB "$dash_user" "$dash_pass" | sed 's/\$/\$\$/g')
 
-  # Update TRAEFIK_AUTH and TRAEFIK_USER in .env
   sed -i '/^TRAEFIK_AUTH=/d;/^TRAEFIK_USER=/d' "$ENV_FILE" 2>/dev/null || true
   printf 'TRAEFIK_USER=%s\nTRAEFIK_AUTH=%s\n' "$dash_user" "$new_auth" >> "$ENV_FILE"
   success "Traefik dashboard credentials saved."
-  info "Redeploy Traefik (menu option 11 → option 2 → traefik) to apply changes."
+  info "Redeploy Traefik (menu option 12 → option 2 → traefik) to apply changes."
 }
 
 _traefik_set_domain() {
@@ -1115,6 +1137,169 @@ _traefik_set_domain() {
   printf 'DOMAIN=%s\nACME_EMAIL=%s\n' "$new_domain" "$new_email" >> "$ENV_FILE"
   success "Domain and ACME email updated."
   warn "If Traefik is already running, delete acme.json and redeploy Traefik to re-issue certificates."
+}
+
+_traefik_set_provider() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}ACME Challenge Provider${RESET}"
+  echo -e "${DIM}Traefik uses ACME to get automatic HTTPS certificates from Let's Encrypt.${RESET}"
+  echo -e "${DIM}HTTP challenge is simplest. DNS challenge is required for wildcard certs${RESET}"
+  echo -e "${DIM}or if port 80 is blocked on your network.${RESET}"
+  echo ""
+  echo "  1) HTTP challenge  ${DIM}(default — ports 80/443 must be open)${RESET}"
+  echo "  2) Cloudflare      ${DIM}(DNS challenge via Cloudflare API)${RESET}"
+  echo "  3) DuckDNS         ${DIM}(DNS challenge via DuckDNS token)${RESET}"
+  echo "  4) GoDaddy         ${DIM}(DNS challenge via GoDaddy API)${RESET}"
+  echo "  5) Namecheap       ${DIM}(DNS challenge via Namecheap API)${RESET}"
+  echo ""
+  read -rp "  Select provider [current: ${TRAEFIK_ACME_PROVIDER:-http}]: " sel
+
+  local provider
+  case "${sel:-}" in
+    1) provider="http"       ;;
+    2) provider="cloudflare" ;;
+    3) provider="duckdns"    ;;
+    4) provider="godaddy"    ;;
+    5) provider="namecheap"  ;;
+    "") provider="${TRAEFIK_ACME_PROVIDER:-http}" ;;
+    *)  warn "Invalid selection."; return 1 ;;
+  esac
+
+  # Clear all provider-specific vars so switching providers leaves no stale keys
+  sed -i '/^TRAEFIK_ACME_PROVIDER=/d
+          /^CF_DNS_API_TOKEN=/d
+          /^CF_API_EMAIL=/d
+          /^CF_API_KEY=/d
+          /^DUCKDNS_TOKEN=/d
+          /^GODADDY_API_KEY=/d
+          /^GODADDY_API_SECRET=/d
+          /^NAMECHEAP_API_USER=/d
+          /^NAMECHEAP_API_KEY=/d' "$ENV_FILE" 2>/dev/null || true
+
+  echo "TRAEFIK_ACME_PROVIDER=${provider}" >> "$ENV_FILE"
+
+  # Branch to provider-specific credential prompts
+  case "$provider" in
+    http)
+      success "ACME provider set to HTTP challenge."
+      info "Ensure ports 80 and 443 are open and forwarded to this machine."
+      ;;
+    cloudflare) _traefik_provider_cloudflare ;;
+    duckdns)    _traefik_provider_duckdns    ;;
+    godaddy)    _traefik_provider_godaddy    ;;
+    namecheap)  _traefik_provider_namecheap  ;;
+  esac
+}
+
+_traefik_provider_cloudflare() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}Cloudflare DNS Challenge Credentials${RESET}"
+  echo -e "${DIM}  Create a scoped API token at: dash.cloudflare.com → My Profile → API Tokens${RESET}"
+  echo -e "${DIM}  Required permissions: Zone / DNS / Edit  +  Zone / Zone / Read${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
+
+  read -rp "Cloudflare account email [${CF_API_EMAIL:-}]: " input
+  local cf_email="${input:-${CF_API_EMAIL:-}}"
+  [[ -z "$cf_email" ]] && { warn "Email required."; return 1; }
+
+  read -srp "Cloudflare API token (press Enter to keep existing): " input; echo ""
+  local cf_token
+  if [[ -n "$input" ]]; then
+    cf_token="$input"
+  elif [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+    cf_token="$CF_DNS_API_TOKEN"
+    info "API token unchanged."
+  else
+    warn "API token is required."; return 1
+  fi
+
+  sed -i '/^CF_API_EMAIL=/d;/^CF_DNS_API_TOKEN=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'CF_API_EMAIL=%s\nCF_DNS_API_TOKEN=%s\n' "$cf_email" "$cf_token" >> "$ENV_FILE"
+  success "Cloudflare credentials saved."
+}
+
+_traefik_provider_duckdns() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}DuckDNS DNS Challenge Credentials${RESET}"
+  echo -e "${DIM}  Find your token at: www.duckdns.org (shown after login)${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
+
+  read -srp "DuckDNS token (press Enter to keep existing): " input; echo ""
+  local duck_token
+  if [[ -n "$input" ]]; then
+    duck_token="$input"
+  elif [[ -n "${DUCKDNS_TOKEN:-}" ]]; then
+    duck_token="$DUCKDNS_TOKEN"
+    info "Token unchanged."
+  else
+    warn "Token is required."; return 1
+  fi
+
+  sed -i '/^DUCKDNS_TOKEN=/d' "$ENV_FILE" 2>/dev/null || true
+  echo "DUCKDNS_TOKEN=${duck_token}" >> "$ENV_FILE"
+  success "DuckDNS credentials saved."
+}
+
+_traefik_provider_godaddy() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}GoDaddy DNS Challenge Credentials${RESET}"
+  echo -e "${DIM}  Create a Production API key at: developer.godaddy.com → Keys${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
+
+  read -rp "GoDaddy API key [${GODADDY_API_KEY:-}]: " input
+  local gd_key="${input:-${GODADDY_API_KEY:-}}"
+  [[ -z "$gd_key" ]] && { warn "API key required."; return 1; }
+
+  read -srp "GoDaddy API secret (press Enter to keep existing): " input; echo ""
+  local gd_secret
+  if [[ -n "$input" ]]; then
+    gd_secret="$input"
+  elif [[ -n "${GODADDY_API_SECRET:-}" ]]; then
+    gd_secret="$GODADDY_API_SECRET"
+    info "Secret unchanged."
+  else
+    warn "API secret is required."; return 1
+  fi
+
+  sed -i '/^GODADDY_API_KEY=/d;/^GODADDY_API_SECRET=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'GODADDY_API_KEY=%s\nGODDADDY_API_SECRET=%s\n' "$gd_key" "$gd_secret" >> "$ENV_FILE"
+  success "GoDaddy credentials saved."
+}
+
+_traefik_provider_namecheap() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}Namecheap DNS Challenge Credentials${RESET}"
+  echo -e "${DIM}  Enable API access at: ap.www.namecheap.com → Profile → Tools → API Access${RESET}"
+  echo -e "${DIM}  Your IP must be whitelisted in Namecheap's API settings.${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
+
+  read -rp "Namecheap API username [${NAMECHEAP_API_USER:-}]: " input
+  local nc_user="${input:-${NAMECHEAP_API_USER:-}}"
+  [[ -z "$nc_user" ]] && { warn "API username required."; return 1; }
+
+  read -srp "Namecheap API key (press Enter to keep existing): " input; echo ""
+  local nc_key
+  if [[ -n "$input" ]]; then
+    nc_key="$input"
+  elif [[ -n "${NAMECHEAP_API_KEY:-}" ]]; then
+    nc_key="$NAMECHEAP_API_KEY"
+    info "API key unchanged."
+  else
+    warn "API key is required."; return 1
+  fi
+
+  sed -i '/^NAMECHEAP_API_USER=/d;/^NAMECHEAP_API_KEY=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'NAMECHEAP_API_USER=%s\nNAMECHEAP_API_KEY=%s\n' "$nc_user" "$nc_key" >> "$ENV_FILE"
+  success "Namecheap credentials saved."
 }
 
 # =============================================================================

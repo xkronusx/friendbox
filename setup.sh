@@ -427,6 +427,7 @@ auto_update() {
 
   # ── Download repo files ──────────────────────────────────────────────────────
   local failed=0
+  curl -fsSL --max-time 10 "${REPO_URL}/docker-compose.yml" \
       -o "${COMPOSE_FILE}.new"                                            2>/dev/null || failed=$((failed+1))
   curl -fsSL --max-time 10 "${REPO_URL}/setup.sh" \
       -o "/usr/local/bin/friendbox.new"                                  2>/dev/null || failed=$((failed+1))

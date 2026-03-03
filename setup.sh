@@ -84,7 +84,6 @@ _ensure_install_dir() {
 }
 
 # Recursively fix ownership of everything in INSTALL_DIR to PUID:PGID.
-# Re-applies root-only exceptions afterward.
 # Safe to call on every launch — fast no-op if already correct.
 _fix_install_dir_ownership() {
   [[ $EUID -ne 0 ]] && return 0
@@ -94,14 +93,16 @@ _fix_install_dir_ownership() {
   uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; uid="${uid:-1000}"
   gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; gid="${gid:-1000}"
 
-  # acme.json must be root:root 600 — Traefik refuses to start otherwise
+  chown -R "${uid}:${gid}" "${INSTALL_DIR}"
+
+  # acme.json must be 600 — Traefik requires it, but does NOT require root ownership
   local acme="${INSTALL_DIR}/config/traefik/acme.json"
   if [[ -f "$acme" ]]; then
-    chown root:root "$acme"
+    chown "${uid}:${gid}" "$acme"
     chmod 600 "$acme"
   fi
 
-  # .dns_config contains API keys — keep it tight even though owner changes
+  # .dns_config contains API keys — keep permissions tight
   local dns_cfg="${INSTALL_DIR}/.dns_config"
   [[ -f "$dns_cfg" ]] && chmod 600 "$dns_cfg"
 }
@@ -1251,9 +1252,11 @@ _traefik_set_auth() {
     apt-get install -y apache2-utils || { error "Could not install apache2-utils."; return 1; }
   fi
 
-  read -rp "Dashboard username [${TRAEFIK_USER:-admin}]: " input
+  echo -n "Dashboard username [${TRAEFIK_USER:-admin}]: "
+  read -r input
   local dash_user="${input:-${TRAEFIK_USER:-admin}}"
-  read -srp "Dashboard password (press Enter to keep existing): " dash_pass; echo ""
+  echo -n "Dashboard password (press Enter to keep existing): "
+  read -rs dash_pass; echo ""
   if [[ -z "$dash_pass" ]]; then
     if [[ -n "${TRAEFIK_AUTH:-}" && "${TRAEFIK_AUTH:-}" != "disabled" ]]; then
       info "Password unchanged — keeping existing credentials."
@@ -1283,10 +1286,12 @@ _traefik_set_domain() {
   echo -e "${DIM}These are used by Traefik for automatic HTTPS certificate issuance.${RESET}"
   echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
-  read -rp "Domain (e.g. example.com) [${DOMAIN:-}]: " input
+  echo -n "Domain (e.g. example.com) [${DOMAIN:-}]: "
+  read -r input
   local new_domain="${input:-${DOMAIN:-}}"
   [[ -z "$new_domain" ]] && { warn "Domain cannot be empty."; return 1; }
-  read -rp "ACME email [${ACME_EMAIL:-}]: " input
+  echo -n "ACME email [${ACME_EMAIL:-}]: "
+  read -r input
   local new_email="${input:-${ACME_EMAIL:-}}"
   [[ -z "$new_email" ]] && { warn "ACME email cannot be empty."; return 1; }
 
@@ -1304,13 +1309,14 @@ _traefik_set_provider() {
   echo -e "${DIM}HTTP challenge is simplest. DNS challenge is required for wildcard certs${RESET}"
   echo -e "${DIM}or if port 80 is blocked on your network.${RESET}"
   echo ""
-  echo "  1) HTTP challenge  ${DIM}(default — ports 80/443 must be open)${RESET}"
-  echo "  2) Cloudflare      ${DIM}(DNS challenge via Cloudflare API)${RESET}"
-  echo "  3) DuckDNS         ${DIM}(DNS challenge via DuckDNS token)${RESET}"
-  echo "  4) GoDaddy         ${DIM}(DNS challenge via GoDaddy API)${RESET}"
-  echo "  5) Namecheap       ${DIM}(DNS challenge via Namecheap API)${RESET}"
+  echo -e "  1) HTTP challenge  ${DIM}(default — ports 80/443 must be open)${RESET}"
+  echo -e "  2) Cloudflare      ${DIM}(DNS challenge via Cloudflare API)${RESET}"
+  echo -e "  3) DuckDNS         ${DIM}(DNS challenge via DuckDNS token)${RESET}"
+  echo -e "  4) GoDaddy         ${DIM}(DNS challenge via GoDaddy API)${RESET}"
+  echo -e "  5) Namecheap       ${DIM}(DNS challenge via Namecheap API)${RESET}"
   echo ""
-  read -rp "  Select provider [current: ${TRAEFIK_ACME_PROVIDER:-http}]: " sel
+  echo -n "  Select provider [current: ${TRAEFIK_ACME_PROVIDER:-http}]: "
+  read -r sel
 
   local provider
   case "${sel:-}" in
@@ -1358,11 +1364,13 @@ _traefik_provider_cloudflare() {
   echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
 
-  read -rp "Cloudflare account email [${CF_API_EMAIL:-}]: " input
+  echo -n "Cloudflare account email [${CF_API_EMAIL:-}]: "
+  read -r input
   local cf_email="${input:-${CF_API_EMAIL:-}}"
   [[ -z "$cf_email" ]] && { warn "Email required."; return 1; }
 
-  read -srp "Cloudflare API token (press Enter to keep existing): " input; echo ""
+  echo -n "Cloudflare API token (press Enter to keep existing): "
+  read -rs input; echo ""
   local cf_token
   if [[ -n "$input" ]]; then
     cf_token="$input"
@@ -1386,7 +1394,8 @@ _traefik_provider_duckdns() {
   echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
 
-  read -srp "DuckDNS token (press Enter to keep existing): " input; echo ""
+  echo -n "DuckDNS token (press Enter to keep existing): "
+  read -rs input; echo ""
   local duck_token
   if [[ -n "$input" ]]; then
     duck_token="$input"
@@ -1410,11 +1419,13 @@ _traefik_provider_godaddy() {
   echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
 
-  read -rp "GoDaddy API key [${GODADDY_API_KEY:-}]: " input
+  echo -n "GoDaddy API key [${GODADDY_API_KEY:-}]: "
+  read -r input
   local gd_key="${input:-${GODADDY_API_KEY:-}}"
   [[ -z "$gd_key" ]] && { warn "API key required."; return 1; }
 
-  read -srp "GoDaddy API secret (press Enter to keep existing): " input; echo ""
+  echo -n "GoDaddy API secret (press Enter to keep existing): "
+  read -rs input; echo ""
   local gd_secret
   if [[ -n "$input" ]]; then
     gd_secret="$input"
@@ -1439,11 +1450,13 @@ _traefik_provider_namecheap() {
   echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
 
-  read -rp "Namecheap API username [${NAMECHEAP_API_USER:-}]: " input
+  echo -n "Namecheap API username [${NAMECHEAP_API_USER:-}]: "
+  read -r input
   local nc_user="${input:-${NAMECHEAP_API_USER:-}}"
   [[ -z "$nc_user" ]] && { warn "API username required."; return 1; }
 
-  read -srp "Namecheap API key (press Enter to keep existing): " input; echo ""
+  echo -n "Namecheap API key (press Enter to keep existing): "
+  read -rs input; echo ""
   local nc_key
   if [[ -n "$input" ]]; then
     nc_key="$input"
@@ -1725,8 +1738,10 @@ ensure_acme() {
   local acme_path="${INSTALL_DIR}/config/traefik/acme.json"
   mkdir -p "$(dirname "$acme_path")"
   [[ -f "$acme_path" ]] || touch "$acme_path"
+  # Own as PUID:PGID — Traefik requires 600 but does NOT require root ownership
+  _own "$acme_path"
   chmod 600 "$acme_path"
-  success "acme.json ready (permissions: 600)."
+  success "acme.json ready (owner: 1000:1000, permissions: 600)."
   # Always (re)generate traefik.yml from current settings before deploying
   _traefik_write_config
   # Always (re)generate the standalone redeploy helper before deploying
@@ -1808,10 +1823,13 @@ provision_directories() {
     chown -R "${uid}:${gid}" "${media}/netboot"
   fi
 
-  # acme.json must stay root-owned at 600 for Traefik
+  # acme.json must be 600 — Traefik requires it, but does NOT require root ownership
   local acme="${cfg}/traefik/acme.json"
-  [[ -f "$acme" ]] || touch "$acme"
-  chmod 600 "$acme"
+  if [[ -f "$acme" ]]; then
+    chown "${uid}:${gid}" "$acme"
+    chmod 600 "$acme"
+    success "  ${acme}  [${uid}:${gid} 600]"
+  fi
 
   echo ""
   success "✅ Provisioned ${created} container config dirs + media subdirs."

@@ -382,28 +382,22 @@ auto_update() {
 
   curl -fsSL --max-time 10 "${REPO_URL}/docker-compose.yml" \
       -o "${COMPOSE_FILE}.new"                                            2>/dev/null || failed=$((failed+1))
-  curl -fsSL --max-time 10 "${REPO_URL}/scripts/redeploy.sh" \
-      -o "${INSTALL_DIR}/scripts/redeploy.sh.new"                        2>/dev/null || failed=$((failed+1))
   curl -fsSL --max-time 10 "${REPO_URL}/setup.sh" \
       -o "/usr/local/bin/friendbox.new"                                  2>/dev/null || failed=$((failed+1))
 
   if [[ $failed -gt 0 ]]; then
     echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub — running with local files."
     rm -f "${COMPOSE_FILE}.new" \
-          "${INSTALL_DIR}/scripts/redeploy.sh.new" \
           "/usr/local/bin/friendbox.new"
     return 0
   fi
 
   # ── Atomically replace files ─────────────────────────────────────────────────
   mv "${COMPOSE_FILE}.new"                               "${COMPOSE_FILE}"
-  mv "${INSTALL_DIR}/scripts/redeploy.sh.new"           "${INSTALL_DIR}/scripts/redeploy.sh"
-  chmod +x "${INSTALL_DIR}/scripts/redeploy.sh"
 
   # ── Write update notice for main_menu to display after re-exec ───────────────
   cat > "${INSTALL_DIR}/.update_notice" <<EOF
 docker-compose.yml
-scripts/redeploy.sh
 /usr/local/bin/friendbox
 EOF
 
@@ -437,8 +431,6 @@ sync_repo() {
   }
 
   _sync_file "docker-compose.yml"    "docker-compose.yml"   "${COMPOSE_FILE}"
-  _sync_file "scripts/redeploy.sh"   "scripts/redeploy.sh"  "${INSTALL_DIR}/scripts/redeploy.sh"
-  [[ -f "${INSTALL_DIR}/scripts/redeploy.sh" ]] && chmod +x "${INSTALL_DIR}/scripts/redeploy.sh"
 
   # friendbox script — do last so a partial download doesn't corrupt the running script
   printf "  %-30s " "/usr/local/bin/friendbox"
@@ -1615,6 +1607,81 @@ _creds_configure_mumble() {
   success "Mumble password saved."
 }
 
+generate_redeploy_sh() {
+  local dest="${INSTALL_DIR}/scripts/redeploy.sh"
+  mkdir -p "${INSTALL_DIR}/scripts"
+
+  cat > "$dest" <<'REDEPLOY'
+#!/usr/bin/env bash
+# /opt/friendbox/scripts/redeploy.sh — standalone redeploy helper
+# Usage:
+#   sudo redeploy.sh              # pull latest images + recreate all containers
+#   sudo redeploy.sh sonarr       # pull + recreate a single container
+#   sudo redeploy.sh --restart    # restart all containers without pulling
+#   sudo redeploy.sh --health     # show running container health/status
+
+set -euo pipefail
+
+INSTALL_DIR="/opt/friendbox"
+COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+ENV_FILE="${INSTALL_DIR}/.env"
+SELECTED_FILE="${INSTALL_DIR}/.selected_containers"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'
+BOLD='\033[1m'; RESET='\033[0m'
+
+info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
+success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
+error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; exit 1; }
+
+[[ $EUID -ne 0 ]] && error "Run as root: sudo $0 $*"
+[[ -f "$COMPOSE_FILE" ]] || error "docker-compose.yml not found at ${COMPOSE_FILE}"
+[[ -f "$ENV_FILE" ]]     || error ".env not found at ${ENV_FILE}"
+
+# Build --profile args from saved selection
+profile_args=()
+if [[ -f "$SELECTED_FILE" ]]; then
+  while IFS= read -r svc; do
+    [[ -n "$svc" ]] && profile_args+=(--profile "$svc")
+  done < "$SELECTED_FILE"
+fi
+
+dc() { docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"; }
+
+case "${1:-}" in
+  --restart)
+    info "Restarting all active containers..."
+    dc restart
+    success "All containers restarted."
+    ;;
+  --health)
+    dc ps
+    ;;
+  "")
+    info "Pulling latest images..."
+    dc pull
+    info "Recreating all active containers..."
+    dc up -d --force-recreate
+    success "All containers redeployed."
+    ;;
+  -*)
+    echo "Usage: $0 [--restart|--health|<container-name>]" >&2
+    exit 1
+    ;;
+  *)
+    svc="$1"
+    info "Pulling latest image for ${svc}..."
+    dc pull "$svc"
+    info "Recreating ${svc}..."
+    dc up -d --force-recreate "$svc"
+    success "${svc} redeployed."
+    ;;
+esac
+REDEPLOY
+
+  chmod +x "$dest"
+}
+
 ensure_network() {
   if ! docker network inspect medianet &>/dev/null; then
     docker network create --driver bridge medianet
@@ -1638,6 +1705,8 @@ ensure_acme() {
   success "acme.json ready (permissions: 600)."
   # Always (re)generate traefik.yml from current settings before deploying
   _traefik_write_config
+  # Always (re)generate the standalone redeploy helper before deploying
+  generate_redeploy_sh
 }
 
 # ── Directory provisioning ────────────────────────────────────────────────────

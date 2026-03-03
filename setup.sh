@@ -680,12 +680,11 @@ _mergerfs_add_disk() {
   echo ""
   echo "  Mode for ${disk}:"
   echo "  1) RW — Read/Write  (normal, files can be created here)"
-  echo "  2) NC — No-Create   (existing files readable, no new files written here)"
-  echo "  3) RO — Read-Only   (existing files readable, no writes at all)"
+  echo "  2) RO — Read-Only   (existing files readable, no writes at all)"
   read -rp "  Mode (press Enter for default) [1]: " msel
   local mode
   case "${msel:-1}" in
-    1) mode="RW" ;; 2) mode="NC" ;; 3) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
+    1) mode="RW" ;; 2) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
   esac
   DISK_MODES[$disk]="$mode"
   _mergerfs_save_modes
@@ -710,12 +709,11 @@ _mergerfs_change_mode() {
   [[ -z "${IDX[$sel]+_}" ]] && { warn "Invalid selection."; return; }
   local chosen="${IDX[$sel]}"
   echo ""
-  echo "  1) RW — Read/Write  2) NC — No-Create  3) RO — Read-Only"
+  echo "  1) RW — Read/Write  2) RO — Read-Only"
   read -rp "  New mode [current: ${DISK_MODES[$chosen]}]: " msel
   case "${msel:-}" in
     1) DISK_MODES[$chosen]="RW" ;;
-    2) DISK_MODES[$chosen]="NC" ;;
-    3) DISK_MODES[$chosen]="RO" ;;
+    2) DISK_MODES[$chosen]="RO" ;;
     *) warn "No change made."; return ;;
   esac
   _mergerfs_save_modes
@@ -746,30 +744,6 @@ _mergerfs_remove_disk() {
   _mergerfs_save_modes
   [[ -n "$MERGERFS_POOL" ]] && { _mergerfs_write_fstab "$MERGERFS_POOL"; _mergerfs_remount "$MERGERFS_POOL"; }
   success "${chosen} removed from pool."
-}
-
-_mergerfs_protect_os() {
-  _mergerfs_load_modes; _mergerfs_load_pool
-  echo ""
-  echo -e "${BOLD}Protect OS Drive${RESET}"
-  echo -e "${DIM}Adds the OS filesystem as NC — mergerfs reads existing data but"
-  echo -e "redirects all new writes to your RW disks, draining it over time.${RESET}"
-  echo ""
-  local os_mount
-  os_mount=$(df / 2>/dev/null | awk 'NR==2{print $6}')
-  echo -e "  Detected OS mount: ${CYAN}${os_mount:-/}${RESET}"
-  echo ""
-  read -rp "OS mount path to add as NC (press Enter to use detected path) [${os_mount:-/}]: " input
-  local os_path="${input:-${os_mount:-/}}"
-  if [[ -n "${DISK_MODES[$os_path]+_}" ]]; then
-    warn "${os_path} is already in the pool as ${DISK_MODES[$os_path]}."
-    read -rp "Update it to NC? [y/N] " yn
-    [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return; }
-  fi
-  DISK_MODES[$os_path]="NC"
-  _mergerfs_save_modes
-  [[ -n "$MERGERFS_POOL" ]] && { _mergerfs_write_fstab "$MERGERFS_POOL"; _mergerfs_remount "$MERGERFS_POOL"; }
-  success "OS drive ${os_path} added as NC."
 }
 
 _mergerfs_initial_setup() {
@@ -808,10 +782,10 @@ _mergerfs_initial_setup() {
     read -rp "Disk mount path (or Enter to finish): " disk
     [[ -z "$disk" ]] && break
     [[ ! -d "$disk" ]] && { warn "${disk} does not exist. Creating it..."; mkdir -p "$disk"; }
-    echo "  1) RW — Read/Write (default)  2) NC — No-Create  3) RO — Read-Only"
+    echo "  1) RW — Read/Write (default)  2) RO — Read-Only"
     read -rp "  Mode [1]: " msel
     case "${msel:-1}" in
-      1) mode="RW" ;; 2) mode="NC" ;; 3) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
+      1) mode="RW" ;; 2) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
     esac
     DISK_MODES[$disk]="$mode"
     success "  → ${disk} added as ${mode}"
@@ -832,9 +806,6 @@ _mergerfs_initial_setup() {
   _mergerfs_write_fstab "$pool_path"
   _mergerfs_remount "$pool_path"
 
-  echo ""
-  read -rp "Would you like to protect the OS drive as NC now? [y/N] " yn
-  [[ "$yn" =~ ^[Yy]$ ]] && _mergerfs_protect_os
   success "MergerFS pool configured at ${pool_path}."
 }
 
@@ -1011,12 +982,11 @@ setup_mergerfs() {
     _mergerfs_show_status
     echo "  1) Initial pool setup (first time)"
     echo "  2) Add a disk to the pool"
-    echo "  3) Change a disk's mode (RW / NC / RO)"
+    echo "  3) Change a disk's mode (RW / RO)"
     echo "  4) Remove a disk from the pool"
-    echo "  5) Protect OS drive (set as NC)"
-    echo "  6) Show pool & drive details"
-    echo "  7) Deploy stack"
-    echo "  8) Back to main menu"
+    echo "  5) Show pool & drive details"
+    echo "  6) Deploy stack"
+    echo "  7) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
@@ -1024,10 +994,9 @@ setup_mergerfs() {
       2) _mergerfs_add_disk         || true; pause ;;
       3) _mergerfs_change_mode      || true; pause ;;
       4) _mergerfs_remove_disk      || true; pause ;;
-      5) _mergerfs_protect_os       || true; pause ;;
-      6) _mergerfs_show_pool_detail || true; pause ;;
-      7) _mergerfs_deploy           || true; pause ;;
-      8) return ;;
+      5) _mergerfs_show_pool_detail || true; pause ;;
+      6) _mergerfs_deploy           || true; pause ;;
+      7) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

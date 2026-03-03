@@ -24,8 +24,8 @@ services:
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${CONFIG_ROOT}/traefik/traefik.yml:/traefik.yml:ro
-      - ${CONFIG_ROOT}/traefik/acme.json:/acme.json
+      - ${CONFIG_ROOT}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ${CONFIG_ROOT}/traefik/acme.json:/etc/traefik/acme.json
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"

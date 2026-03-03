@@ -427,26 +427,20 @@ auto_update() {
   _ensure_install_dir
 
   # ── Download repo files ──────────────────────────────────────────────────────
+  # Only sync the script itself — docker-compose.yml is user-managed and must
+  # not be overwritten automatically.
   local failed=0
-  curl -fsSL --max-time 10 "${REPO_URL}/docker-compose.yml" \
-      -o "${COMPOSE_FILE}.new"                                            2>/dev/null || failed=$((failed+1))
   curl -fsSL --max-time 10 "${REPO_URL}/setup.sh" \
       -o "/usr/local/bin/friendbox.new"                                  2>/dev/null || failed=$((failed+1))
 
   if [[ $failed -gt 0 ]]; then
     echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub — running with local files."
-    rm -f "${COMPOSE_FILE}.new" \
-          "/usr/local/bin/friendbox.new"
+    rm -f "/usr/local/bin/friendbox.new"
     return 0
   fi
 
-  # ── Atomically replace files and fix ownership ───────────────────────────────
-  mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
-  _own "${COMPOSE_FILE}"
-
   # ── Write update notice for main_menu to display after re-exec ───────────────
   cat > "${INSTALL_DIR}/.update_notice" <<EOF
-docker-compose.yml
 /usr/local/bin/friendbox
 EOF
   _own "${INSTALL_DIR}/.update_notice"
@@ -466,24 +460,8 @@ sync_repo() {
 
   local failed=0 updated=0
 
-  _sync_file() {
-    local label="$1" remote="$2" dest="$3"
-    printf "  %-30s " "$label"
-    if fetch_remote "$remote" "${dest}.new" 2>/dev/null; then
-      mv "${dest}.new" "${dest}"
-      _own "${dest}"
-      echo -e "${GREEN}[OK]${RESET}"
-      updated=$((updated + 1))
-    else
-      rm -f "${dest}.new"
-      echo -e "${RED}[FAILED]${RESET}"
-      failed=$((failed + 1))
-    fi
-  }
-
-  _sync_file "docker-compose.yml"    "docker-compose.yml"   "${COMPOSE_FILE}"
-
-  # friendbox script — do last so a partial download doesn't corrupt the running script
+  # Only the friendbox script is synced — docker-compose.yml is user-managed
+  # and must not be overwritten (it holds local edits like image versions).
   printf "  %-30s " "/usr/local/bin/friendbox"
   if fetch_remote "setup.sh" "/usr/local/bin/friendbox.new" 2>/dev/null; then
     mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
@@ -499,9 +477,9 @@ sync_repo() {
   echo ""
   if [[ $failed -eq 0 ]]; then
     success "${updated} file(s) synced from GitHub."
-    info "Run option 12 (Redeploy) to apply any docker-compose.yml changes to running containers."
+    info "docker-compose.yml is not synced — edit it directly to change image versions or services."
   else
-    warn "${updated} file(s) updated, ${failed} failed. Check your internet connection."
+    warn "Sync failed. Check your internet connection."
     return 1
   fi
 }

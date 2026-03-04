@@ -645,19 +645,37 @@ _mergerfs_provision_branches() {
     return 1
   fi
 
-  local subdirs=("movies" "tv" "downloads" "music")
+  load_selected
+  local subdirs=("movies" "tv" "music")
+  # Only include downloads if a download client is selected
+  local _dl
+  for _dl in qbittorrent qbittorrentvpn delugevpn nzbget; do
+    if [[ -n "${SELECTED[$_dl]+_}" ]]; then
+      subdirs+=("downloads")
+      break
+    fi
+  done
   local _p created=0
 
   for _p in "${!DISK_MODES[@]}"; do
+    local _mode="${DISK_MODES[$_p]}"
     [[ ! -d "$_p" ]] && mkdir -p "$_p"
-    # Create subdirs on this branch
-    local sub
-    for sub in "${subdirs[@]}"; do
-      mkdir -p "${_p}/${sub}"
-    done
-    # Fix ownership recursively on the entire branch
-    chown -R "${uid}:${gid}" "$_p" 2>/dev/null || true
-    success "  ${_p}  [${uid}:${gid}] (recursive, subdirs created)"
+
+    if [[ "$_mode" == "RO" ]]; then
+      # RO branch — only fix ownership on existing content, never create new dirs.
+      # Creating subdirs on a RO branch would give mergerfs a writable-looking
+      # directory entry and break RO semantics.
+      chown -R "${uid}:${gid}" "$_p" 2>/dev/null || true
+      success "  ${_p}  [${uid}:${gid}] (RO — ownership fixed, no subdirs created)"
+    else
+      # RW/NC branch — create the standard subdirectory structure
+      local sub
+      for sub in "${subdirs[@]}"; do
+        mkdir -p "${_p}/${sub}"
+      done
+      chown -R "${uid}:${gid}" "$_p" 2>/dev/null || true
+      success "  ${_p}  [${uid}:${gid}] (${_mode} — subdirs created, ownership fixed)"
+    fi
     created=$((created + 1))
   done
 
@@ -2347,9 +2365,18 @@ provision_directories() {
     _mergerfs_provision_branches
   else
     local subdir
-    for subdir in movies tv downloads music; do
+    for subdir in movies tv music; do
       mkdir -p "${media}/${subdir}"
       chown "${uid}:${gid}" "${media}/${subdir}"
+    done
+    # Only create downloads if a download client is selected
+    local _dl_client
+    for _dl_client in qbittorrent qbittorrentvpn delugevpn nzbget; do
+      if [[ -n "${SELECTED[$_dl_client]+_}" ]]; then
+        mkdir -p "${media}/downloads"
+        chown "${uid}:${gid}" "${media}/downloads"
+        break
+      fi
     done
   fi
 

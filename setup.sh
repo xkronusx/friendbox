@@ -635,6 +635,18 @@ _mergerfs_write_fstab() {
 
 _mergerfs_remount() {
   local pool_path="$1"
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local uid="${PUID:-1000}" gid="${PGID:-1000}"
+
+  # Chown all branch directories before mounting so the pool root is correct
+  _mergerfs_load_modes
+  local _p
+  for _p in "${!DISK_MODES[@]}"; do
+    if [[ -d "$_p" ]]; then
+      chown "${uid}:${gid}" "$_p" 2>/dev/null || true
+    fi
+  done
+
   if mountpoint -q "$pool_path"; then
     umount "$pool_path" 2>/dev/null && mount "$pool_path" \
       && success "Pool remounted at ${pool_path}." \
@@ -643,6 +655,11 @@ _mergerfs_remount() {
     mount "$pool_path" 2>/dev/null \
       && success "Pool mounted at ${pool_path}." \
       || warn "Mount may require a reboot."
+  fi
+
+  # Chown the pool root after mounting
+  if mountpoint -q "$pool_path" 2>/dev/null; then
+    chown "${uid}:${gid}" "$pool_path" 2>/dev/null || true
   fi
 }
 
@@ -690,7 +707,11 @@ _mergerfs_add_disk() {
   echo -e "${BOLD}Add Disk to Pool${RESET}"
   read -rp "Disk mount path (e.g. /mnt/disk3): " disk
   [[ -z "$disk" ]] && { warn "No path entered."; return; }
-  [[ ! -d "$disk" ]] && { warn "${disk} does not exist. Creating it..."; mkdir -p "$disk"; }
+  if [[ ! -d "$disk" ]]; then
+    warn "${disk} does not exist. Creating it..."
+    mkdir -p "$disk"
+  fi
+  chown "${PUID:-1000}:${PGID:-1000}" "$disk" 2>/dev/null || true
   echo ""
   echo "  Mode for ${disk}:"
   echo "  1) RW — Read/Write  (normal, files can be created here)"
@@ -795,7 +816,11 @@ _mergerfs_initial_setup() {
   while true; do
     read -rp "Disk mount path (or Enter to finish): " disk
     [[ -z "$disk" ]] && break
-    [[ ! -d "$disk" ]] && { warn "${disk} does not exist. Creating it..."; mkdir -p "$disk"; }
+    if [[ ! -d "$disk" ]]; then
+      warn "${disk} does not exist. Creating it..."
+      mkdir -p "$disk"
+    fi
+    chown "${PUID:-1000}:${PGID:-1000}" "$disk" 2>/dev/null || true
     echo "  1) RW — Read/Write (default)  2) RO — Read-Only"
     read -rp "  Mode [1]: " msel
     case "${msel:-1}" in
@@ -814,6 +839,7 @@ _mergerfs_initial_setup() {
 
   local pool_path="$MEDIA_ROOT"
   mkdir -p "$pool_path"
+  chown "${PUID:-1000}:${PGID:-1000}" "$pool_path" 2>/dev/null || true
 
   _mergerfs_save_modes
   _mergerfs_save_pool "$pool_path"

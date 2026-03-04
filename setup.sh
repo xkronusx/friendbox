@@ -578,27 +578,58 @@ _mergerfs_save_pool() {
 }
 
 _mergerfs_build_branch_list() {
-  local rw_branches=() ro_branches=() path
+  # Returns plain colon-separated source paths (RW first, then RO).
+  # Mode suffixes go in branch-config= option, NOT in the source field.
+  local rw_paths=() ro_paths=() path
   for path in "${!DISK_MODES[@]}"; do
     case "${DISK_MODES[$path]}" in
-      RW) rw_branches+=("${path}=RW") ;;
-      RO) ro_branches+=("${path}=RO") ;;
-      NC) ro_branches+=("${path}=NC") ;;
+      RW|NC) rw_paths+=("$path") ;;
+      RO)    ro_paths+=("$path") ;;
     esac
   done
   local all=()
-  [[ ${#rw_branches[@]} -gt 0 ]] && all+=("${rw_branches[@]}")
-  [[ ${#ro_branches[@]} -gt 0 ]] && all+=("${ro_branches[@]}")
+  [[ ${#rw_paths[@]} -gt 0 ]] && all+=("${rw_paths[@]}")
+  [[ ${#ro_paths[@]} -gt 0 ]] && all+=("${ro_paths[@]}")
+  local IFS=:
+  echo "${all[*]-}"
+}
+
+_mergerfs_build_branch_config() {
+  # Returns the branch-config= value with per-path mode suffixes, e.g.:
+  # /mnt/disk1=RW:/mnt/disk2=RO
+  local rw_parts=() ro_parts=() path
+  for path in "${!DISK_MODES[@]}"; do
+    case "${DISK_MODES[$path]}" in
+      RW) rw_parts+=("${path}=RW") ;;
+      RO) ro_parts+=("${path}=RO") ;;
+      NC) rw_parts+=("${path}=NC") ;;
+    esac
+  done
+  local all=()
+  [[ ${#rw_parts[@]} -gt 0 ]] && all+=("${rw_parts[@]}")
+  [[ ${#ro_parts[@]} -gt 0 ]] && all+=("${ro_parts[@]}")
   local IFS=:
   echo "${all[*]-}"
 }
 
 _mergerfs_write_fstab() {
   local pool_path="$1"
-  local branch_list
+  local branch_list branch_config
   branch_list=$(_mergerfs_build_branch_list)
+  branch_config=$(_mergerfs_build_branch_config)
+
+  if [[ -z "$branch_list" ]]; then
+    warn "No disks configured — fstab not updated."
+    return 1
+  fi
+
+  # Remove any existing mergerfs entry for this pool
   sed -i "\|${pool_path}.*fuse.mergerfs|d" /etc/fstab
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerfs  0  0" >> /etc/fstab
+
+  # Correct fstab format:
+  #   source field  = plain colon-separated paths (no =MODE suffixes)
+  #   branch-config = per-branch RW/RO/NC modes in the options field
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,branch-config=${branch_config},fsname=mergerfs  0  0" >> /etc/fstab
   success "fstab updated."
 }
 

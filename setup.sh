@@ -953,6 +953,30 @@ _mergerfs_deploy() {
   print_urls
 }
 
+_mergerfs_mount_pool() {
+  _mergerfs_load_pool
+  echo ""
+  echo -e "${BOLD}Mount / Remount MergerFS Pool${RESET}"
+  echo ""
+  if [[ -z "$MERGERFS_POOL" ]]; then
+    warn "No pool configured. Run option 1 (Initial pool setup) first."
+    return 1
+  fi
+  if [[ ${#DISK_MODES[@]} -eq 0 ]]; then
+    warn "No disks in pool. Run option 1 or 2 to add disks first."
+    return 1
+  fi
+  echo -e "  Pool path : ${CYAN}${MERGERFS_POOL}${RESET}"
+  echo -e "  Disks     : ${#DISK_MODES[@]}"
+  echo ""
+  if mountpoint -q "$MERGERFS_POOL" 2>/dev/null; then
+    info "Pool is currently mounted. Remounting with latest fstab settings..."
+  else
+    info "Pool is not mounted. Mounting now..."
+  fi
+  _mergerfs_remount "$MERGERFS_POOL"
+}
+
 setup_mergerfs() {
   require_root
   while true; do
@@ -968,7 +992,7 @@ setup_mergerfs() {
     echo "  3) Change a disk's mode (RW / RO)"
     echo "  4) Remove a disk from the pool"
     echo "  5) Show pool & drive details"
-    echo "  6) Deploy stack"
+    echo "  6) Mount / remount pool"
     echo "  7) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
@@ -978,7 +1002,7 @@ setup_mergerfs() {
       3) _mergerfs_change_mode      || true; pause ;;
       4) _mergerfs_remove_disk      || true; pause ;;
       5) _mergerfs_show_pool_detail || true; pause ;;
-      6) _mergerfs_deploy           || true; pause ;;
+      6) _mergerfs_mount_pool       || true; pause ;;
       7) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac

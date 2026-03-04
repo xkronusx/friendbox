@@ -25,7 +25,7 @@ MERGERFS_MODES_FILE="${INSTALL_DIR}/.mergerfs_modes"
 MERGERFS_POOL_FILE="${INSTALL_DIR}/.mergerfs_pool"
 DNS_STATE_FILE="${INSTALL_DIR}/.dns_config"
 INSTALL_FLAG="${INSTALL_DIR}/.installed"
-MEDIA_ROOT="/mnt/media"
+MEDIA_ROOT="/mnt/mergerpool"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -108,9 +108,9 @@ _fix_install_dir_ownership() {
 }
 
 ensure_media_root() {
-  # Create /mnt/media on every interactive launch so it always exists as a
+  # Create /mnt/mergerpool on every interactive launch so it always exists as a
   # mount point for MergerFS, or as a plain directory for single-drive setups.
-  # Sets ownership of /mnt and /mnt/media to PUID:PGID (default 1000:1000).
+  # Sets ownership of /mnt and /mnt/mergerpool to PUID:PGID (default 1000:1000).
   # Requires root — silently skipped otherwise.
   [[ $EUID -ne 0 ]] && return 0
 
@@ -129,7 +129,7 @@ ensure_media_root() {
     success "Created media root directory: ${MEDIA_ROOT}"
   fi
 
-  # Own /mnt and /mnt/media — containers and the media user need traversal rights
+  # Own /mnt and /mnt/mergerpool — containers and the media user need traversal rights
   chown "${uid}:${gid}" /mnt
   chown "${uid}:${gid}" "$MEDIA_ROOT"
 }
@@ -1062,7 +1062,7 @@ _mergerfs_mount_pool() {
 
 _mergerfs_clear_mountpoint() {
   _mergerfs_load_pool
-  local pool_path="${MERGERFS_POOL:-/mnt/media}"
+  local pool_path="${MERGERFS_POOL:-/mnt/mergerpool}"
   echo ""
   echo -e "${BOLD}Clear MergerFS Mountpoint${RESET}"
   echo -e "${DIM}  Safely moves any stale contents out of ${pool_path} so mergerfs can mount.${RESET}"
@@ -1107,7 +1107,7 @@ _mergerfs_clear_mountpoint() {
   warn "They will be MOVED (not deleted) to a timestamped backup directory."
   echo ""
 
-  local backup_dir="/mnt/media_backup_$(date +%Y%m%d_%H%M%S)"
+  local backup_dir="/mnt/mergerpool_backup_$(date +%Y%m%d_%H%M%S)"
   echo -e "  Backup destination: ${CYAN}${backup_dir}${RESET}"
   echo ""
   read -rp "  Move contents to backup and clear mountpoint? [y/N] " yn
@@ -2277,7 +2277,7 @@ provision_directories() {
   local uid="${PUID:-1000}"
   local gid="${PGID:-1000}"
   local cfg="${CONFIG_ROOT:-/opt/friendbox/config}"
-  local media="${MEDIA_ROOT:-/mnt/media}"
+  local media="${MEDIA_ROOT:-/mnt/mergerpool}"
 
   info "Provisioning directories (owner ${uid}:${gid})..."
 

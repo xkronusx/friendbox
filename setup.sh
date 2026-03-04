@@ -1010,82 +1010,6 @@ _mergerfs_show_pool_detail() {
   echo ""
 }
 
-_mergerfs_deploy() {
-  echo ""
-  echo -e "${BOLD}Deploy Stack with MergerFS Pool${RESET}"
-  echo -e "${DIM}Provisions directories, starts all selected containers, and marks the install complete.${RESET}"
-  echo ""
-
-  # ── Pre-flight checks ────────────────────────────────────────────────────────
-  local abort=false
-
-  # .env must exist and have a domain set
-  if [[ ! -f "$ENV_FILE" ]]; then
-    error "No .env file found at ${ENV_FILE}."
-    error "Run menu option 3 (Configure .env) before deploying."
-    abort=true
-  else
-    local domain_check
-    domain_check=$(grep '^DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
-    if [[ -z "$domain_check" || "$domain_check" == "example.com" ]]; then
-      warn "DOMAIN in .env is not set or is still the placeholder value."
-      warn "Run menu option 3 to configure your domain before deploying."
-      abort=true
-    fi
-  fi
-
-  # compose file must exist
-  if [[ ! -f "$COMPOSE_FILE" ]]; then
-    error "No docker-compose.yml found at ${COMPOSE_FILE}."
-    error "Run menu option 9 (Sync files from GitHub) first."
-    abort=true
-  fi
-
-  # at least one container must be selected
-  load_selected
-  if [[ ${#SELECTED[@]} -eq 0 ]]; then
-    warn "No containers are selected. Run menu option 2 to select containers first."
-    abort=true
-  fi
-
-  # warn (but don't abort) if the pool path isn't mounted
-  _mergerfs_load_pool
-  if [[ -n "$MERGERFS_POOL" ]] && ! mountpoint -q "$MERGERFS_POOL" 2>/dev/null; then
-    warn "MergerFS pool is configured at ${MERGERFS_POOL} but is not currently mounted."
-    warn "Containers will start, but media directories may be missing or empty until the pool is mounted."
-    echo ""
-    read -rp "  Continue anyway? [y/N] " yn
-    [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
-    echo ""
-  fi
-
-  [[ "$abort" == "true" ]] && return 1
-
-  # ── Confirm before deploying ─────────────────────────────────────────────────
-  info "Selected containers (${#SELECTED[@]}):"
-  local key
-  for key in "${CONTAINER_ORDER[@]}"; do
-    [[ -n "${SELECTED[$key]+_}" ]] && echo "    ✔ ${CONTAINER_NAMES[$key]}"
-  done
-  echo ""
-  read -rp "Deploy now? [y/N] " yn
-  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
-  echo ""
-
-  # ── Deploy sequence ──────────────────────────────────────────────────────────
-  ensure_network    || return 1
-  ensure_acme       || return 1
-  provision_directories || return 1
-
-  info "Starting selected containers..."
-  compose_selected up -d || { error "docker compose failed — check logs with menu option 14."; return 1; }
-
-  mark_installed
-  echo ""
-  success "✅ Stack deployed successfully!"
-  echo ""
-  print_urls
-}
 
 _mergerfs_mount_pool() {
   _mergerfs_load_modes
@@ -1583,10 +1507,13 @@ _traefik_validate() {
   local acme="${INSTALL_DIR}/config/traefik/acme.json"
   if [[ -f "$acme" ]]; then
     local perms; perms=$(stat -c "%a" "$acme" 2>/dev/null)
-    if [[ "$perms" == "600" ]]; then
+    local owner; owner=$(stat -c "%U:%G" "$acme" 2>/dev/null)
+    if [[ "$perms" == "600" && "$owner" == "root:root" ]]; then
       _chk "acme.json exists (root:root 600)" 1 "$acme"
-    else
+    elif [[ "$perms" != "600" ]]; then
       _chk "acme.json permissions" 0 "got ${perms}, need 600 — run: chmod 600 $acme"
+    else
+      _chk "acme.json ownership" 0 "got ${owner}, need root:root — run: chown root:root $acme"
     fi
   else
     _chk "acme.json exists" 0 "run option 8 (Provision directories) to create it"
@@ -2725,7 +2652,7 @@ _dns_get_subdomains() {
     [qbittorrent]="qbt"       [qbittorrentvpn]="qbtvpn"
     [delugevpn]="deluge"      [nzbget]="nzbget"
     [overseerr]="overseerr"   [ombi]="ombi"
-    [jellyseerr]="jellyseerr" [teamspeak6]="ts6"
+    [jellyseerr]="jellyseerr" [teamspeak6]="ts6"         [mumble]="mumble"
     [ampmc]="amp"             [netbootxyz]="netboot"
   )
   local key

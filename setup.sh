@@ -1379,6 +1379,10 @@ _traefik_write_config() {
   # For DuckDNS: declare the wildcard domain on the entrypoint so Traefik requests
   # *.domain.duckdns.org once. Individual routers use tls: true (not certresolver=)
   # so they inherit the wildcard without triggering per-host ACME requests.
+  # All providers: set certResolver at the entrypoint level so routers with
+  # tls=true inherit it automatically — no per-router certresolver label needed.
+  # DuckDNS additionally declares the wildcard domain because its API cannot
+  # set sub-subdomain TXT records needed for per-host ACME validation.
   local tls_block
   if [[ "$provider" == "duckdns" ]]; then
     tls_block="    http:
@@ -1429,27 +1433,6 @@ ${resolvers_block}
 EOF
 
   _own "$traefik_cfg"
-
-  # Write TRAEFIK_CERTRESOLVER to .env so docker-compose uses the right label.
-  # DuckDNS: routers must NOT request per-host certs — use the entrypoint wildcard.
-  # All other providers: each router requests its own cert normally.
-  if [[ -f "$ENV_FILE" ]]; then
-    local _env_set_local
-    _env_set_local() {
-      local k="$1" v="$2"
-      if grep -q "^${k}=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^${k}=.*|${k}=${v}|" "$ENV_FILE"
-      else
-        echo "${k}=${v}" >> "$ENV_FILE"
-      fi
-    }
-    if [[ "$provider" == "duckdns" ]]; then
-      _env_set_local TRAEFIK_CERTRESOLVER ""
-      info "DuckDNS: routers will use entrypoint wildcard cert (tls.certresolver unset)."
-    else
-      _env_set_local TRAEFIK_CERTRESOLVER "letsencrypt"
-    fi
-  fi
 
   success "traefik.yml written (provider: ${provider})."
 }

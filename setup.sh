@@ -687,9 +687,6 @@ _mergerfs_remount() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   local uid="${PUID:-1000}" gid="${PGID:-1000}"
 
-  # Provision subdirs on every branch and fix ownership before mounting
-  _mergerfs_provision_branches
-
   # branch_list (with =MODE) is used by fstab; plain_paths for direct mount below
   local branch_list
   branch_list=$(_mergerfs_build_branch_list)
@@ -1084,6 +1081,7 @@ _mergerfs_deploy() {
 }
 
 _mergerfs_mount_pool() {
+  _mergerfs_load_modes
   _mergerfs_load_pool
   echo ""
   echo -e "${BOLD}Mount / Remount MergerFS Pool${RESET}"
@@ -1100,10 +1098,11 @@ _mergerfs_mount_pool() {
   echo -e "  Disks     : ${#DISK_MODES[@]}"
   echo ""
   if mountpoint -q "$MERGERFS_POOL" 2>/dev/null; then
-    info "Pool is currently mounted. Remounting with latest fstab settings..."
+    info "Pool is currently mounted. Remounting..."
   else
     info "Pool is not mounted. Mounting now..."
   fi
+  info "(Run option 7 to create subdirs and fix ownership on branch disks.)"
   _mergerfs_remount "$MERGERFS_POOL"
 }
 

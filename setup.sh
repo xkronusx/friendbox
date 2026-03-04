@@ -25,7 +25,7 @@ MERGERFS_MODES_FILE="${INSTALL_DIR}/.mergerfs_modes"
 MERGERFS_POOL_FILE="${INSTALL_DIR}/.mergerfs_pool"
 DNS_STATE_FILE="${INSTALL_DIR}/.dns_config"
 INSTALL_FLAG="${INSTALL_DIR}/.installed"
-MEDIA_ROOT="/mnt/mergerfspool"
+MEDIA_ROOT="/mnt/mergerpool"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -108,9 +108,9 @@ _fix_install_dir_ownership() {
 }
 
 ensure_media_root() {
-  # Create /mnt/mergerfspool on every interactive launch so it always exists as a
+  # Create /mnt/mergerpool on every interactive launch so it always exists as a
   # mount point for MergerFS, or as a plain directory for single-drive setups.
-  # Sets ownership of /mnt and /mnt/mergerfspool to PUID:PGID (default 1000:1000).
+  # Sets ownership of /mnt and /mnt/mergerpool to PUID:PGID (default 1000:1000).
   # Requires root — silently skipped otherwise.
   [[ $EUID -ne 0 ]] && return 0
 
@@ -129,7 +129,7 @@ ensure_media_root() {
     success "Created media root directory: ${MEDIA_ROOT}"
   fi
 
-  # Own /mnt and /mnt/mergerfspool — containers and the media user need traversal rights
+  # Own /mnt and /mnt/mergerpool — containers and the media user need traversal rights
   chown "${uid}:${gid}" /mnt
   chown "${uid}:${gid}" "$MEDIA_ROOT"
 }
@@ -578,8 +578,8 @@ _mergerfs_save_pool() {
 }
 
 _mergerfs_build_branch_list() {
-  # mergerfs v2 (apt default): per-branch modes go in the SOURCE field as path=MODE.
-  # RW branches first, then RO/NC. Format: /mnt/disk1=RW:/mnt/disk2=RO
+  # For fstab: mergerfs v2 parses path=MODE in the source/device field.
+  # RW/NC branches first, then RO. Format: /mnt/disk1=RW:/mnt/disk2=RO
   local rw_parts=() ro_parts=() path
   for path in "${!DISK_MODES[@]}"; do
     case "${DISK_MODES[$path]}" in
@@ -591,6 +591,23 @@ _mergerfs_build_branch_list() {
   local all=()
   [[ ${#rw_parts[@]} -gt 0 ]] && all+=("${rw_parts[@]}")
   [[ ${#ro_parts[@]} -gt 0 ]] && all+=("${ro_parts[@]}")
+  local IFS=:
+  echo "${all[*]-}"
+}
+
+_mergerfs_build_plain_paths() {
+  # For direct mergerfs binary invocation: plain colon-separated paths, no =MODE.
+  # The binary does not parse =MODE suffixes — those are fstab-only.
+  local rw_paths=() ro_paths=() path
+  for path in "${!DISK_MODES[@]}"; do
+    case "${DISK_MODES[$path]}" in
+      RW|NC) rw_paths+=("$path") ;;
+      RO)    ro_paths+=("$path") ;;
+    esac
+  done
+  local all=()
+  [[ ${#rw_paths[@]} -gt 0 ]] && all+=("${rw_paths[@]}")
+  [[ ${#ro_paths[@]} -gt 0 ]] && all+=("${ro_paths[@]}")
   local IFS=:
   echo "${all[*]-}"
 }
@@ -611,7 +628,7 @@ _mergerfs_write_fstab() {
   # mergerfs v2 fstab format:
   #   source = path=RW:path=RW  (mode suffixes in source field, parsed by mergerfs)
   #   pool_path = the union mount point
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerfspool  0  0" >> /etc/fstab
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
   success "fstab updated."
 }
 
@@ -655,6 +672,7 @@ _mergerfs_remount() {
   # Provision subdirs on every branch and fix ownership before mounting
   _mergerfs_provision_branches
 
+  # branch_list (with =MODE) is used by fstab; plain_paths for direct mount below
   local branch_list
   branch_list=$(_mergerfs_build_branch_list)
 
@@ -673,13 +691,28 @@ _mergerfs_remount() {
     }
   fi
 
-  # Mount directly via mergerfs command (more reliable than fstab/mount for
-  # manual invocations — avoids stale fstab state)
-  mergerfs \
-    -o defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerfspool \
-    "${branch_list}" "${pool_path}" \
-    && success "Pool mounted at ${pool_path}." \
-    || { warn "mergerfs mount failed — check branch paths and permissions."; return 1; }
+  # Use plain paths (no =MODE) for direct binary invocation — =MODE is fstab-only.
+  local plain_paths
+  plain_paths=$(_mergerfs_build_plain_paths)
+
+  if [[ -z "$plain_paths" ]]; then
+    warn "No branch paths available — cannot mount."
+    return 1
+  fi
+
+  # Mount directly via mergerfs binary
+  local mount_out
+  mount_out=$(mergerfs     -o allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool     "${plain_paths}" "${pool_path}" 2>&1)
+  local mount_rc=$?
+  if [[ $mount_rc -eq 0 ]]; then
+    success "Pool mounted at ${pool_path}."
+  else
+    warn "mergerfs mount failed (exit ${mount_rc}):"
+    warn "  ${mount_out}"
+    warn "  Branch paths: ${plain_paths}"
+    warn "  Mount point:  ${pool_path}"
+    return 1
+  fi
 
   # Fix ownership of pool root after mounting
   chown "${uid}:${gid}" "$pool_path" 2>/dev/null || true
@@ -1058,7 +1091,7 @@ _mergerfs_mount_pool() {
 
 _mergerfs_clear_mountpoint() {
   _mergerfs_load_pool
-  local pool_path="${MERGERFS_POOL:-/mnt/mergerfspool}"
+  local pool_path="${MERGERFS_POOL:-/mnt/mergerpool}"
   echo ""
   echo -e "${BOLD}Clear MergerFS Mountpoint${RESET}"
   echo -e "${DIM}  Safely moves any stale contents out of ${pool_path} so mergerfs can mount.${RESET}"
@@ -1103,7 +1136,7 @@ _mergerfs_clear_mountpoint() {
   warn "They will be MOVED (not deleted) to a timestamped backup directory."
   echo ""
 
-  local backup_dir="/mnt/mergerfspool_backup_$(date +%Y%m%d_%H%M%S)"
+  local backup_dir="/mnt/mergerpool_backup_$(date +%Y%m%d_%H%M%S)"
   echo -e "  Backup destination: ${CYAN}${backup_dir}${RESET}"
   echo ""
   read -rp "  Move contents to backup and clear mountpoint? [y/N] " yn
@@ -2273,7 +2306,7 @@ provision_directories() {
   local uid="${PUID:-1000}"
   local gid="${PGID:-1000}"
   local cfg="${CONFIG_ROOT:-/opt/friendbox/config}"
-  local media="${MEDIA_ROOT:-/mnt/mergerfspool}"
+  local media="${MEDIA_ROOT:-/mnt/mergerpool}"
 
   info "Provisioning directories (owner ${uid}:${gid})..."
 

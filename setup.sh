@@ -1395,23 +1395,20 @@ _traefik_write_config() {
   # For DuckDNS: declare the wildcard domain on the entrypoint so Traefik requests
   # *.domain.duckdns.org once. Individual routers use tls: true (not certresolver=)
   # so they inherit the wildcard without triggering per-host ACME requests.
-  # All providers: set certResolver at the entrypoint level so routers with
-  # tls=true inherit it automatically — no per-router certresolver label needed.
-  # DuckDNS additionally declares the wildcard domain because its API cannot
-  # set sub-subdomain TXT records needed for per-host ACME validation.
   local tls_block
   if [[ "$provider" == "duckdns" ]]; then
+    # DuckDNS: declare wildcard domains at the entrypoint so Traefik requests
+    # *.domain.duckdns.org via DNS challenge. Each router still has an explicit
+    # tls.certresolver label — the entrypoint domains block only controls
+    # which cert gets acquired, not which resolver the router uses.
     tls_block="    http:
       tls:
-        certResolver: letsencrypt
         domains:
           - main: \"${DOMAIN}\"
             sans:
               - \"*.${DOMAIN}\""
   else
-    tls_block="    http:
-      tls:
-        certResolver: letsencrypt"
+    tls_block=""
   fi
 
   cat > "$traefik_cfg" <<EOF
@@ -1823,6 +1820,136 @@ PYEOF
   echo ""
 }
 
+_traefik_live_diag() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local api="http://localhost:8080/api"
+  echo ""
+  echo -e "${BOLD}${CYAN}Traefik Live Routing Diagnostics${RESET}"
+  echo "══════════════════════════════════════════════════════════════"
+
+  # ── Is Traefik API reachable? ────────────────────────────────────────────────
+  if ! curl -fs --max-time 3 "${api}/overview" >/dev/null 2>&1; then
+    error "Traefik API not reachable at localhost:8080 — is Traefik running?"
+    error "Start it with: docker compose up -d traefik"
+    return 1
+  fi
+  success "Traefik API reachable at localhost:8080"
+
+  # ── Registered routers ───────────────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}HTTP Routers:${RESET}"
+  local routers_json
+  routers_json=$(curl -fs --max-time 5 "${api}/http/routers" 2>/dev/null)
+  if [[ -z "$routers_json" || "$routers_json" == "[]" ]]; then
+    warn "No HTTP routers registered — Traefik has not picked up any container labels."
+    warn "Check: docker inspect <container> | grep traefik"
+  else
+    echo "$routers_json" | python3 -c "
+import json, sys
+routers = json.load(sys.stdin)
+for r in sorted(routers, key=lambda x: x.get('name','')):
+    name   = r.get('name','?')
+    rule   = r.get('rule','?')
+    status = r.get('status','?')
+    ep     = ','.join(r.get('using', r.get('entryPoints',[])))
+    err    = r.get('err','') or r.get('error','') or ''
+    marker = '✓' if status == 'enabled' else '✗'
+    print(f'  {marker} {name:<30} {rule}')
+    if err:
+        print(f'    ERROR: {err}')
+" 2>/dev/null || echo "$routers_json" | python3 -m json.tool | grep -E '"name"|"rule"|"status"|"error"'
+  fi
+
+  # ── Services and backend health ──────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}HTTP Services (backend health):${RESET}"
+  local services_json
+  services_json=$(curl -fs --max-time 5 "${api}/http/services" 2>/dev/null)
+  if [[ -n "$services_json" && "$services_json" != "[]" ]]; then
+    echo "$services_json" | python3 -c "
+import json, sys
+services = json.load(sys.stdin)
+for s in sorted(services, key=lambda x: x.get('name','')):
+    name = s.get('name','?')
+    if '@internal' in name: continue
+    status = s.get('status','?')
+    servers = s.get('loadBalancer',{}).get('servers',[]) or []
+    urls = [srv.get('url','?') for srv in servers]
+    server_statuses = s.get('serverStatus',{}) or {}
+    marker = '✓' if status == 'enabled' else '✗'
+    print(f'  {marker} {name:<35} {status}')
+    for url, st in server_statuses.items():
+        health_marker = '✓' if st == 'UP' else '✗'
+        print(f'      {health_marker} {url}  [{st}]')
+    if not server_statuses and urls:
+        for u in urls: print(f'      → {u}')
+" 2>/dev/null || true
+  fi
+
+  # ── Container network check ──────────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}Container → medianet IP addresses:${RESET}"
+  local cname
+  for cname in traefik portainer plex jellyfin sonarr radarr prowlarr; do
+    if docker inspect "$cname" &>/dev/null 2>&1; then
+      local ip
+      ip=$(docker inspect "$cname" \
+        --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "medianet"}}{{$v.IPAddress}}{{end}}{{end}}' \
+        2>/dev/null)
+      if [[ -n "$ip" ]]; then
+        echo -e "  ${GREEN}✓${RESET} ${cname}: ${ip}"
+      else
+        echo -e "  ${YELLOW}○${RESET} ${cname}: not on medianet (or not running)"
+      fi
+    fi
+  done
+
+  # ── DOMAIN sanity check ──────────────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}DOMAIN sanity:${RESET}"
+  local raw_domain
+  raw_domain=$(grep '^DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+  local trimmed_domain="${raw_domain// /}"   # strip spaces
+  trimmed_domain="${trimmed_domain//[$'\t\r\n']/}"  # strip whitespace
+  if [[ "$raw_domain" != "$trimmed_domain" ]]; then
+    warn "DOMAIN in .env has trailing whitespace: '${raw_domain}'"
+    warn "This breaks Host() rules — run option 2 to resave it."
+  else
+    echo -e "  ${GREEN}✓${RESET} DOMAIN='${trimmed_domain}' (no whitespace)"
+  fi
+
+  # ── acme.json cert check ─────────────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}Certificates in acme.json:${RESET}"
+  local acme_file="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  if [[ -f "$acme_file" && -s "$acme_file" ]]; then
+    python3 -c "
+import json, sys
+try:
+    with open('${acme_file}') as f: data = json.load(f)
+    resolver = data.get('letsencrypt', {})
+    certs = resolver.get('Certificates') or []
+    if not certs:
+        print('  No certificates stored yet — ACME has not completed successfully')
+    else:
+        for c in certs:
+            domain = c.get('domain',{})
+            main   = domain.get('main','?')
+            sans   = domain.get('sans',[])
+            print(f'  ✓ {main}  SANs: {sans}')
+except Exception as e:
+    print(f'  Could not parse acme.json: {e}')
+" 2>/dev/null
+  else
+    warn "acme.json is empty or missing — no certs issued yet"
+  fi
+
+  echo ""
+  echo "══════════════════════════════════════════════════════════════"
+  echo -e "${DIM}Full router list: curl -s http://localhost:8080/api/http/routers | python3 -m json.tool${RESET}"
+  echo ""
+}
+
 configure_traefik() {
   while true; do
     clear
@@ -1838,16 +1965,18 @@ configure_traefik() {
     echo "  3) Configure ACME challenge provider"
     echo "  4) Toggle staging / production CA"
     echo "  5) Run pre-flight checks"
-    echo "  6) Back to main menu"
+    echo "  6) Live routing diagnostics"
+    echo "  7) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _traefik_set_auth     || true; pause ;;
-      2) _traefik_set_domain   || true; pause ;;
-      3) _traefik_set_provider || true; pause ;;
-      4) _traefik_toggle_staging || true; pause ;;
-      5) _traefik_validate     || true; pause ;;
-      6) return ;;
+      1) _traefik_set_auth        || true; pause ;;
+      2) _traefik_set_domain      || true; pause ;;
+      3) _traefik_set_provider    || true; pause ;;
+      4) _traefik_toggle_staging  || true; pause ;;
+      5) _traefik_validate        || true; pause ;;
+      6) _traefik_live_diag       || true; pause ;;
+      7) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

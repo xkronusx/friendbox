@@ -633,19 +633,45 @@ _mergerfs_write_fstab() {
   success "fstab updated."
 }
 
+_mergerfs_provision_branches() {
+  # Creates the standard media subdirectory structure on every branch disk
+  # and fixes ownership recursively. Must be called before/after mounting so
+  # mergerfs can union-merge the directories across all drives.
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local uid="${PUID:-1000}" gid="${PGID:-1000}"
+  _mergerfs_load_modes
+
+  if [[ ${#DISK_MODES[@]} -eq 0 ]]; then
+    warn "No disks configured — nothing to provision."
+    return 1
+  fi
+
+  local subdirs=("movies" "tv" "downloads" "music")
+  local _p created=0
+
+  for _p in "${!DISK_MODES[@]}"; do
+    [[ ! -d "$_p" ]] && mkdir -p "$_p"
+    # Create subdirs on this branch
+    local sub
+    for sub in "${subdirs[@]}"; do
+      mkdir -p "${_p}/${sub}"
+    done
+    # Fix ownership recursively on the entire branch
+    chown -R "${uid}:${gid}" "$_p" 2>/dev/null || true
+    success "  ${_p}  [${uid}:${gid}] (recursive, subdirs created)"
+    created=$((created + 1))
+  done
+
+  success "Branch provisioning complete (${created} disk(s), owner ${uid}:${gid})."
+}
+
 _mergerfs_remount() {
   local pool_path="$1"
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   local uid="${PUID:-1000}" gid="${PGID:-1000}"
 
-  # Chown all branch directories before mounting so the pool root is correct
-  _mergerfs_load_modes
-  local _p
-  for _p in "${!DISK_MODES[@]}"; do
-    if [[ -d "$_p" ]]; then
-      chown "${uid}:${gid}" "$_p" 2>/dev/null || true
-    fi
-  done
+  # Provision subdirs on every branch and fix ownership before mounting
+  _mergerfs_provision_branches
 
   if mountpoint -q "$pool_path"; then
     umount "$pool_path" 2>/dev/null && mount "$pool_path" \
@@ -1138,19 +1164,21 @@ setup_mergerfs() {
     echo "  4) Remove a disk from the pool"
     echo "  5) Show pool & drive details"
     echo "  6) Mount / remount pool"
-    echo "  7) Clear mountpoint (fix 'not empty' error)"
-    echo "  8) Back to main menu"
+    echo "  7) Fix ownership & create subdirs on all drives"
+    echo "  8) Clear mountpoint (fix 'not empty' error)"
+    echo "  9) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _mergerfs_initial_setup    || true; pause ;;
-      2) _mergerfs_add_disk         || true; pause ;;
-      3) _mergerfs_change_mode      || true; pause ;;
-      4) _mergerfs_remove_disk      || true; pause ;;
-      5) _mergerfs_show_pool_detail || true; pause ;;
-      6) _mergerfs_mount_pool       || true; pause ;;
-      7) _mergerfs_clear_mountpoint || true; pause ;;
-      8) return ;;
+      1) _mergerfs_initial_setup      || true; pause ;;
+      2) _mergerfs_add_disk           || true; pause ;;
+      3) _mergerfs_change_mode        || true; pause ;;
+      4) _mergerfs_remove_disk        || true; pause ;;
+      5) _mergerfs_show_pool_detail   || true; pause ;;
+      6) _mergerfs_mount_pool         || true; pause ;;
+      7) _mergerfs_provision_branches || true; pause ;;
+      8) _mergerfs_clear_mountpoint   || true; pause ;;
+      9) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
@@ -2275,17 +2303,23 @@ provision_directories() {
   mkdir -p "${cfg}/traefik" "${cfg}/portainer"
   chown -R "${uid}:${gid}" "${cfg}/traefik" "${cfg}/portainer"
 
-  # /mnt and media root — containers and the media user need traversal rights
+  # /mnt and media root
   chown "${uid}:${gid}" /mnt
   mkdir -p "$media"
   chown "${uid}:${gid}" "$media"
 
-  # Media subdirs
-  local subdir
-  for subdir in movies tv downloads music; do
-    mkdir -p "${media}/${subdir}"
-    chown "${uid}:${gid}" "${media}/${subdir}"
-  done
+  # Media subdirs — create on every mergerfs branch so the union shows them all.
+  # If mergerfs is not configured, fall back to creating directly on the pool path.
+  _mergerfs_load_modes
+  if [[ ${#DISK_MODES[@]} -gt 0 ]]; then
+    _mergerfs_provision_branches
+  else
+    local subdir
+    for subdir in movies tv downloads music; do
+      mkdir -p "${media}/${subdir}"
+      chown "${uid}:${gid}" "${media}/${subdir}"
+    done
+  fi
 
   # Per-selected-container config dirs
   declare -A CFG_DIRS=(

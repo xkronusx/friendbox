@@ -85,7 +85,7 @@ mkdir -p /mnt/media && chown 1000:1000 /mnt/media
 
 > **Drive details (option 5)** uses `findmnt` to detect whether a real filesystem is mounted at each drive path — not just whether the directory exists. It shows the device name (e.g. `● /dev/sdb1`) in green when mounted, `○ not mounted` in yellow when not, and `? path missing` in red when the directory is absent entirely.
 
-> **Subdirectory creation (option 7)** writes `movies/`, `tv/`, `music/` (and `downloads/` if a download client is selected) directly on each RW/NC branch disk. RO branches are never written to. Subdirs are never created through the mounted pool path.
+> **Subdirectory creation (option 7)** writes `movies/`, `tv/`, and `downloads/` (if any download client, Sonarr, or Radarr is selected) directly on each RW/NC branch disk. RO branches are never written to. Subdirs are never created through the mounted pool path.
 
 ---
 
@@ -154,7 +154,7 @@ Runs the complete first-time setup in sequence:
 5. Opens container selection
 6. Creates the `medianet` Docker bridge network
 7. Creates `acme.json` with correct permissions (`root:root 600`)
-8. Provisions config and media directories
+8. Provisions config and media directories (creates `traefik.yml`, `acme.json`, all config and media dirs)
 9. Starts all selected containers with `docker compose up -d`
 
 If Friendbox is already installed, option 1 warns before proceeding.

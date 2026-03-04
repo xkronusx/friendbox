@@ -630,10 +630,10 @@ _mergerfs_provision_branches() {
   fi
 
   load_selected
-  local subdirs=("movies" "tv" "music")
-  # Only include downloads if a download client is selected
+  local subdirs=("movies" "tv")
+  # Include downloads if any download client OR any arr that uses it is selected
   local _dl
-  for _dl in qbittorrent qbittorrentvpn delugevpn nzbget; do
+  for _dl in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr; do
     if [[ -n "${SELECTED[$_dl]+_}" ]]; then
       subdirs+=("downloads")
       break
@@ -2531,6 +2531,29 @@ provision_directories() {
   mkdir -p "${cfg}/traefik" "${cfg}/portainer"
   chown -R "${uid}:${gid}" "${cfg}/traefik" "${cfg}/portainer"
 
+  # traefik.yml and acme.json must exist as FILES before Traefik starts.
+  # Docker auto-creates missing host paths as root:root directories — a dir at
+  # either path breaks Traefik silently. Create them here so option 8 is safe.
+  if [[ -n "${SELECTED[traefik]+_}" ]]; then
+    local _yml="${cfg}/traefik/traefik.yml"
+    local _acme="${cfg}/traefik/acme.json"
+    # Remove accidental directories at these paths
+    [[ -d "$_yml" ]]  && rm -rf "$_yml"  && warn "Removed dir at ${_yml} — replacing with file."
+    [[ -d "$_acme" ]] && rm -rf "$_acme" && warn "Removed dir at ${_acme} — replacing with file."
+    # Generate traefik.yml if missing or empty
+    if [[ ! -s "$_yml" ]]; then
+      _traefik_write_config
+      success "  ${_yml}  (generated)"
+    fi
+    # Create acme.json as an empty file with correct ownership if missing
+    if [[ ! -f "$_acme" ]]; then
+      touch "$_acme"
+      success "  ${_acme}  (created)"
+    fi
+    chown root:root "$_acme"
+    chmod 600 "$_acme"
+  fi
+
   # /mnt and media root
   chown "${uid}:${gid}" /mnt
   mkdir -p "$media"
@@ -2543,13 +2566,13 @@ provision_directories() {
     _mergerfs_provision_branches
   else
     local subdir
-    for subdir in movies tv music; do
+    for subdir in movies tv; do
       mkdir -p "${media}/${subdir}"
       chown "${uid}:${gid}" "${media}/${subdir}"
     done
-    # Only create downloads if a download client is selected
+    # Create downloads if any download client OR any arr that uses it is selected
     local _dl_client
-    for _dl_client in qbittorrent qbittorrentvpn delugevpn nzbget; do
+    for _dl_client in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr; do
       if [[ -n "${SELECTED[$_dl_client]+_}" ]]; then
         mkdir -p "${media}/downloads"
         chown "${uid}:${gid}" "${media}/downloads"

@@ -95,10 +95,11 @@ _fix_install_dir_ownership() {
 
   chown -R "${uid}:${gid}" "${INSTALL_DIR}"
 
-  # acme.json must be 600 — Traefik requires it, but does NOT require root ownership
+  # acme.json must be root:root 600 — Traefik v3 runs as root inside the
+  # container and needs write access. Exclude it from the PUID:PGID chown.
   local acme="${INSTALL_DIR}/config/traefik/acme.json"
   if [[ -f "$acme" ]]; then
-    chown "${uid}:${gid}" "$acme"
+    chown root:root "$acme"
     chmod 600 "$acme"
   fi
 
@@ -1387,6 +1388,9 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
 
 providers:
   docker:
@@ -1509,7 +1513,7 @@ _traefik_validate() {
   if [[ -f "$acme" ]]; then
     local perms; perms=$(stat -c "%a" "$acme" 2>/dev/null)
     if [[ "$perms" == "600" ]]; then
-      _chk "acme.json exists (600)" 1 "$acme"
+      _chk "acme.json exists (root:root 600)" 1 "$acme"
     else
       _chk "acme.json permissions" 0 "got ${perms}, need 600 — run: chmod 600 $acme"
     fi
@@ -2295,10 +2299,12 @@ ensure_acme() {
   local acme_path="${INSTALL_DIR}/config/traefik/acme.json"
   mkdir -p "$(dirname "$acme_path")"
   [[ -f "$acme_path" ]] || touch "$acme_path"
-  # Own as PUID:PGID — Traefik requires 600 but does NOT require root ownership
-  _own "$acme_path"
+  # Traefik v3 runs as root inside the container — acme.json must be root:root 600.
+  # If owned by another user, Traefik can read but not write it, causing the
+  # "Testing certificate renew" loop.
+  chown root:root "$acme_path"
   chmod 600 "$acme_path"
-  success "acme.json ready (owner: 1000:1000, permissions: 600)."
+  success "acme.json ready (owner: root:root, permissions: 600)."
   # Always (re)generate traefik.yml from current settings before deploying
   _traefik_write_config
   # Always (re)generate the standalone redeploy helper before deploying
@@ -2395,12 +2401,12 @@ provision_directories() {
     chown -R "${uid}:${gid}" "${media}/netboot"
   fi
 
-  # acme.json must be 600 — Traefik requires it, but does NOT require root ownership
+  # acme.json must be root:root 600 — Traefik v3 runs as root inside the container
   local acme="${cfg}/traefik/acme.json"
   if [[ -f "$acme" ]]; then
-    chown "${uid}:${gid}" "$acme"
+    chown root:root "$acme"
     chmod 600 "$acme"
-    success "  ${acme}  [${uid}:${gid} 600]"
+    success "  ${acme}  [root:root 600]"
   fi
 
   echo ""

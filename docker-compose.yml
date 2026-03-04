@@ -420,6 +420,7 @@ services:
     volumes:
       - ${CONFIG_ROOT}/delugevpn:/config
       - ${MEDIA_ROOT}/downloads:/downloads
+      - ${MEDIA_ROOT}/downloads/incomplete:/data/incomplete
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "8112:8112"

@@ -639,6 +639,8 @@ _mergerfs_provision_branches() {
       break
     fi
   done
+  # DelugeVPN uses /data/incomplete for in-progress downloads
+  [[ -n "${SELECTED[delugevpn]+_}" ]] && subdirs+=("downloads/incomplete")
   local _p created=0
 
   for _p in "${!DISK_MODES[@]}"; do
@@ -2579,6 +2581,11 @@ provision_directories() {
         break
       fi
     done
+    # DelugeVPN uses /data/incomplete for in-progress downloads
+    if [[ -n "${SELECTED[delugevpn]+_}" ]]; then
+      mkdir -p "${media}/downloads/incomplete"
+      chown "${uid}:${gid}" "${media}/downloads/incomplete"
+    fi
   fi
 
   # Per-selected-container config dirs

@@ -1008,6 +1008,94 @@ _mergerfs_mount_pool() {
   _mergerfs_remount "$MERGERFS_POOL"
 }
 
+_mergerfs_clear_mountpoint() {
+  _mergerfs_load_pool
+  local pool_path="${MERGERFS_POOL:-/mnt/media}"
+  echo ""
+  echo -e "${BOLD}Clear MergerFS Mountpoint${RESET}"
+  echo -e "${DIM}  Safely moves any stale contents out of ${pool_path} so mergerfs can mount.${RESET}"
+  echo ""
+
+  # ── Guard: already a live mergerfs mountpoint ────────────────────────────────
+  if mountpoint -q "$pool_path" 2>/dev/null; then
+    local fstype; fstype=$(findmnt -no FSTYPE "$pool_path" 2>/dev/null)
+    if [[ "$fstype" == "fuse.mergerfs" ]]; then
+      info "Pool is already correctly mounted as mergerfs — nothing to clear."
+      return 0
+    else
+      warn "${pool_path} is mounted as ${fstype:-unknown}, not mergerfs."
+      warn "Unmount it manually before clearing: sudo umount ${pool_path}"
+      return 1
+    fi
+  fi
+
+  # ── Check if directory exists and is non-empty ───────────────────────────────
+  if [[ ! -d "$pool_path" ]]; then
+    info "${pool_path} does not exist — creating it."
+    mkdir -p "$pool_path"
+    success "Created ${pool_path} — ready to mount."
+    return 0
+  fi
+
+  local contents
+  contents=$(ls -A "$pool_path" 2>/dev/null)
+  if [[ -z "$contents" ]]; then
+    info "${pool_path} is already empty — nothing to clear."
+    return 0
+  fi
+
+  # ── Show exactly what is in the directory ────────────────────────────────────
+  echo -e "${YELLOW}  The following items are inside ${pool_path}:${RESET}"
+  echo ""
+  ls -lh "$pool_path" 2>/dev/null | tail -n +2 | while IFS= read -r line; do
+    echo "    $line"
+  done
+  echo ""
+  warn "These are likely leftover files from before mergerfs was set up."
+  warn "They will be MOVED (not deleted) to a timestamped backup directory."
+  echo ""
+
+  local backup_dir="/mnt/media_backup_$(date +%Y%m%d_%H%M%S)"
+  echo -e "  Backup destination: ${CYAN}${backup_dir}${RESET}"
+  echo ""
+  read -rp "  Move contents to backup and clear mountpoint? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted — nothing changed."; return 0; }
+  echo ""
+
+  # ── Move contents to backup ──────────────────────────────────────────────────
+  mkdir -p "$backup_dir"
+  local item failed=0
+  for item in "$pool_path"/* "$pool_path"/.*; do
+    # Skip . and ..
+    [[ "$item" == "$pool_path/." || "$item" == "$pool_path/.." ]] && continue
+    [[ ! -e "$item" && ! -L "$item" ]] && continue
+    if mv "$item" "$backup_dir/" 2>/dev/null; then
+      info "  Moved: $(basename "$item") → ${backup_dir}/"
+    else
+      warn "  Could not move: ${item}"
+      failed=$((failed + 1))
+    fi
+  done
+
+  if [[ $failed -gt 0 ]]; then
+    warn "${failed} item(s) could not be moved — ${pool_path} may not be fully clear."
+    warn "Check for open file handles: lsof +D ${pool_path}"
+    return 1
+  fi
+
+  # ── Verify empty and mount ───────────────────────────────────────────────────
+  contents=$(ls -A "$pool_path" 2>/dev/null)
+  if [[ -n "$contents" ]]; then
+    warn "${pool_path} still has contents after move — aborting mount."
+    return 1
+  fi
+
+  success "${pool_path} is now empty. Backup is at ${backup_dir}"
+  echo ""
+  info "Attempting to mount the pool now..."
+  _mergerfs_remount "$pool_path"
+}
+
 setup_mergerfs() {
   require_root
   while true; do
@@ -1024,7 +1112,8 @@ setup_mergerfs() {
     echo "  4) Remove a disk from the pool"
     echo "  5) Show pool & drive details"
     echo "  6) Mount / remount pool"
-    echo "  7) Back to main menu"
+    echo "  7) Clear mountpoint (fix 'not empty' error)"
+    echo "  8) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
@@ -1034,7 +1123,8 @@ setup_mergerfs() {
       4) _mergerfs_remove_disk      || true; pause ;;
       5) _mergerfs_show_pool_detail || true; pause ;;
       6) _mergerfs_mount_pool       || true; pause ;;
-      7) return ;;
+      7) _mergerfs_clear_mountpoint || true; pause ;;
+      8) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

@@ -595,23 +595,6 @@ _mergerfs_build_branch_list() {
   echo "${all[*]-}"
 }
 
-_mergerfs_build_plain_paths() {
-  # For direct mergerfs binary invocation: plain colon-separated paths, no =MODE.
-  # The binary does not parse =MODE suffixes — those are fstab-only.
-  local rw_paths=() ro_paths=() path
-  for path in "${!DISK_MODES[@]}"; do
-    case "${DISK_MODES[$path]}" in
-      RW|NC) rw_paths+=("$path") ;;
-      RO)    ro_paths+=("$path") ;;
-    esac
-  done
-  local all=()
-  [[ ${#rw_paths[@]} -gt 0 ]] && all+=("${rw_paths[@]}")
-  [[ ${#ro_paths[@]} -gt 0 ]] && all+=("${ro_paths[@]}")
-  local IFS=:
-  echo "${all[*]-}"
-}
-
 _mergerfs_write_fstab() {
   local pool_path="$1"
   local branch_list
@@ -706,26 +689,20 @@ _mergerfs_remount() {
     }
   fi
 
-  # Use plain paths (no =MODE) for direct binary invocation — =MODE is fstab-only.
-  local plain_paths
-  plain_paths=$(_mergerfs_build_plain_paths)
-
-  if [[ -z "$plain_paths" ]]; then
-    warn "No branch paths available — cannot mount."
-    return 1
-  fi
-
-  # Mount directly via mergerfs binary
+  # mergerfs v2 binary accepts path=MODE in the source argument (same as fstab).
+  # branch_list already contains the correct path=RW:path=RO format.
   local mount_out
-  mount_out=$(mergerfs     -o allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool     "${plain_paths}" "${pool_path}" 2>&1)
+  mount_out=$(mergerfs \
+    -o allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool \
+    "${branch_list}" "${pool_path}" 2>&1)
   local mount_rc=$?
   if [[ $mount_rc -eq 0 ]]; then
     success "Pool mounted at ${pool_path}."
   else
     warn "mergerfs mount failed (exit ${mount_rc}):"
     warn "  ${mount_out}"
-    warn "  Branch paths: ${plain_paths}"
-    warn "  Mount point:  ${pool_path}"
+    warn "  Branch list: ${branch_list}"
+    warn "  Mount point: ${pool_path}"
     return 1
   fi
 
@@ -968,13 +945,23 @@ _mergerfs_show_pool_detail() {
       size="n/a"; used="n/a"; avail="n/a"; mounted_marker=""
 
       if [[ -d "$path" ]]; then
-        size=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $2}') || size="n/a"
-        used=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $3}') || used="n/a"
-        avail=$(df -h "$path" 2>/dev/null | awk 'NR==2{print $4}') || avail="n/a"
-        # Check if something is actually mounted at this path (not just a directory)
-        mountpoint -q "$path" 2>/dev/null && mounted_marker=" ${GREEN}●${RESET}" || mounted_marker=" ${DIM}○${RESET}"
+        # Use findmnt to check if a filesystem is mounted at exactly this path.
+        # mountpoint -q fails for paths that are directories but not mount roots.
+        # findmnt also lets us show what device is mounted there.
+        local fmnt_dev
+        fmnt_dev=$(findmnt -n -o SOURCE "$path" 2>/dev/null)
+        if [[ -n "$fmnt_dev" ]]; then
+          mounted_marker=" ${GREEN}● ${fmnt_dev}${RESET}"
+          # Only use df on confirmed-mounted paths for accurate per-drive stats
+          size=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $2}') || size="n/a"
+          used=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $3}') || used="n/a"
+          avail=$(df -h "$path" 2>/dev/null | awk 'NR==2{print $4}') || avail="n/a"
+        else
+          mounted_marker=" ${YELLOW}○ not mounted${RESET}"
+          size="n/a"; used="n/a"; avail="n/a"
+        fi
       else
-        mounted_marker=" ${YELLOW}?${RESET}"
+        mounted_marker=" ${RED}? path missing${RESET}"
       fi
 
       case "$mode" in

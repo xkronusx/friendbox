@@ -263,10 +263,10 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/tv`, connect Prowlarr + download client |
 | Radarr | `https://radarr.yourdomain.com` | Add root folder `/movies`, connect Prowlarr + download client |
 | Prowlarr | `https://prowlarr.yourdomain.com` | Add indexers, sync to Sonarr/Radarr |
-| qBittorrent | `https://qbt.yourdomain.com` | Default: `admin` / `adminadmin` — **change immediately** |
+| qBittorrent | `https://qbt.yourdomain.com` (`http://IP:8082` direct) | Default: `admin` / `adminadmin` — **change immediately** |
 | Bazarr | `https://bazarr.yourdomain.com` | Connect Sonarr + Radarr, configure subtitle providers |
 | Overseerr | `https://overseerr.yourdomain.com` | Sign in with Plex account |
-| Jellyseerr | `https://jellyseerr.yourdomain.com` | Sign in with Jellyfin account |
+| Jellyseerr | `https://jellyseerr.yourdomain.com` (`http://IP:5056` direct) | Sign in with Jellyfin account |
 
 ---
 
@@ -451,6 +451,8 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - qBittorrent default credentials (`admin` / `adminadmin`) must be changed immediately after first login
 - `exposedByDefault: false` — only explicitly labeled containers get Traefik routes
 - All inter-container traffic uses the `medianet` bridge — nothing reaches the internet except through Traefik on ports 80 and 443
+- qBittorrent binds host port `8082` (not 8080) to avoid conflicting with Traefik's API on port 8080
+- Jellyseerr binds host port `5056` (not 5055) to avoid conflicting with Overseerr when both are selected
 
 ---
 

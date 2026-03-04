@@ -334,7 +334,7 @@ services:
       - ${CONFIG_ROOT}/qbittorrent:/config
       - ${MEDIA_ROOT}/downloads:/downloads
     ports:
-      - "8080:8080"
+      - "8082:8080"
       - "6881:6881"
       - "6881:6881/udp"
     labels:
@@ -520,7 +520,7 @@ services:
     volumes:
       - ${CONFIG_ROOT}/jellyseerr:/app/config
     ports:
-      - "5055:5055"
+      - "5056:5055"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"

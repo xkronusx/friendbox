@@ -763,11 +763,12 @@ _mergerfs_add_disk() {
   echo ""
   echo "  Mode for ${disk}:"
   echo "  1) RW — Read/Write  (normal, files can be created here)"
-  echo "  2) RO — Read-Only   (existing files readable, no writes at all)"
+  echo "  2) NC — No-Create   (reads fine, no new files written here)"
+  echo "  3) RO — Read-Only   (existing files readable, no writes at all)"
   read -rp "  Mode (press Enter for default) [1]: " msel
   local mode
   case "${msel:-1}" in
-    1) mode="RW" ;; 2) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
+    1) mode="RW" ;; 2) mode="NC" ;; 3) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
   esac
   DISK_MODES[$disk]="$mode"
   _mergerfs_save_modes
@@ -792,11 +793,12 @@ _mergerfs_change_mode() {
   [[ -z "${IDX[$sel]+_}" ]] && { warn "Invalid selection."; return; }
   local chosen="${IDX[$sel]}"
   echo ""
-  echo "  1) RW — Read/Write  2) RO — Read-Only"
+  echo "  1) RW — Read/Write  2) NC — No-Create  3) RO — Read-Only"
   read -rp "  New mode [current: ${DISK_MODES[$chosen]}]: " msel
   case "${msel:-}" in
     1) DISK_MODES[$chosen]="RW" ;;
-    2) DISK_MODES[$chosen]="RO" ;;
+    2) DISK_MODES[$chosen]="NC" ;;
+    3) DISK_MODES[$chosen]="RO" ;;
     *) warn "No change made."; return ;;
   esac
   _mergerfs_save_modes
@@ -869,10 +871,10 @@ _mergerfs_initial_setup() {
       mkdir -p "$disk"
     fi
     chown "${PUID:-1000}:${PGID:-1000}" "$disk" 2>/dev/null || true
-    echo "  1) RW — Read/Write (default)  2) RO — Read-Only"
+    echo "  1) RW — Read/Write (default)  2) NC — No-Create  3) RO — Read-Only"
     read -rp "  Mode [1]: " msel
     case "${msel:-1}" in
-      1) mode="RW" ;; 2) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
+      1) mode="RW" ;; 2) mode="NC" ;; 3) mode="RO" ;; *) warn "Defaulting to RW."; mode="RW" ;;
     esac
     DISK_MODES[$disk]="$mode"
     success "  → ${disk} added as ${mode}"
@@ -1940,7 +1942,7 @@ for s in sorted(services, key=lambda x: x.get('name','')):
   # ── acme.json cert check ─────────────────────────────────────────────────────
   echo ""
   echo -e "${BOLD}Certificates in acme.json:${RESET}"
-  local acme_file="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  local acme_file="${INSTALL_DIR}/config/traefik/acme.json"
   if [[ -f "$acme_file" && -s "$acme_file" ]]; then
     python3 -c "
 import json, sys
@@ -3212,16 +3214,16 @@ print_urls() {
       [radarr]="http://${host_ip}:7878"
       [prowlarr]="http://${host_ip}:9696"
       [bazarr]="http://${host_ip}:6767"
-      [qbittorrent]="http://${host_ip}:8080"
+      [qbittorrent]="http://${host_ip}:8082"
       [qbittorrentvpn]="http://${host_ip}:8181"
       [delugevpn]="http://${host_ip}:8112"
       [nzbget]="http://${host_ip}:6789"
       [overseerr]="http://${host_ip}:5055"
       [ombi]="http://${host_ip}:3579"
-      [jellyseerr]="http://${host_ip}:5055"
+      [jellyseerr]="http://${host_ip}:5056"
       [teamspeak6]="${host_ip}:9987 (UDP voice)"
       [mumble]="${host_ip}:64738"
-      [ampmc]="http://${host_ip}:8080"
+      [ampmc]="http://${host_ip}:8085"
       [netbootxyz]="http://${host_ip}:3000"
     )
   fi

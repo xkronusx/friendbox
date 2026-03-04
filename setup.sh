@@ -578,25 +578,8 @@ _mergerfs_save_pool() {
 }
 
 _mergerfs_build_branch_list() {
-  # Returns plain colon-separated source paths (RW first, then RO).
-  # Mode suffixes go in branch-config= option, NOT in the source field.
-  local rw_paths=() ro_paths=() path
-  for path in "${!DISK_MODES[@]}"; do
-    case "${DISK_MODES[$path]}" in
-      RW|NC) rw_paths+=("$path") ;;
-      RO)    ro_paths+=("$path") ;;
-    esac
-  done
-  local all=()
-  [[ ${#rw_paths[@]} -gt 0 ]] && all+=("${rw_paths[@]}")
-  [[ ${#ro_paths[@]} -gt 0 ]] && all+=("${ro_paths[@]}")
-  local IFS=:
-  echo "${all[*]-}"
-}
-
-_mergerfs_build_branch_config() {
-  # Returns the branch-config= value with per-path mode suffixes, e.g.:
-  # /mnt/disk1=RW:/mnt/disk2=RO
+  # mergerfs v2 (apt default): per-branch modes go in the SOURCE field as path=MODE.
+  # RW branches first, then RO/NC. Format: /mnt/disk1=RW:/mnt/disk2=RO
   local rw_parts=() ro_parts=() path
   for path in "${!DISK_MODES[@]}"; do
     case "${DISK_MODES[$path]}" in
@@ -614,9 +597,8 @@ _mergerfs_build_branch_config() {
 
 _mergerfs_write_fstab() {
   local pool_path="$1"
-  local branch_list branch_config
+  local branch_list
   branch_list=$(_mergerfs_build_branch_list)
-  branch_config=$(_mergerfs_build_branch_config)
 
   if [[ -z "$branch_list" ]]; then
     warn "No disks configured — fstab not updated."
@@ -626,10 +608,10 @@ _mergerfs_write_fstab() {
   # Remove any existing mergerfs entry for this pool
   sed -i "\|${pool_path}.*fuse.mergerfs|d" /etc/fstab
 
-  # Correct fstab format:
-  #   source field  = plain colon-separated paths (no =MODE suffixes)
-  #   branch-config = per-branch RW/RO/NC modes in the options field
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,branch-config=${branch_config},fsname=mergerfs  0  0" >> /etc/fstab
+  # mergerfs v2 fstab format:
+  #   source = path=RW:path=RW  (mode suffixes in source field, parsed by mergerfs)
+  #   pool_path = the union mount point
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerfspool  0  0" >> /etc/fstab
   success "fstab updated."
 }
 
@@ -673,20 +655,34 @@ _mergerfs_remount() {
   # Provision subdirs on every branch and fix ownership before mounting
   _mergerfs_provision_branches
 
-  if mountpoint -q "$pool_path"; then
-    umount "$pool_path" 2>/dev/null && mount "$pool_path" \
-      && success "Pool remounted at ${pool_path}." \
-      || warn "Could not remount — reboot may be required."
-  else
-    mount "$pool_path" 2>/dev/null \
-      && success "Pool mounted at ${pool_path}." \
-      || warn "Mount may require a reboot."
+  local branch_list
+  branch_list=$(_mergerfs_build_branch_list)
+
+  if [[ -z "$branch_list" ]]; then
+    warn "No disks configured — cannot mount pool."
+    return 1
   fi
 
-  # Chown the pool root after mounting
+  mkdir -p "$pool_path"
+
+  # Unmount first if already mounted
   if mountpoint -q "$pool_path" 2>/dev/null; then
-    chown "${uid}:${gid}" "$pool_path" 2>/dev/null || true
+    umount "$pool_path" 2>/dev/null || {
+      warn "Could not unmount ${pool_path} — it may be in use."
+      return 1
+    }
   fi
+
+  # Mount directly via mergerfs command (more reliable than fstab/mount for
+  # manual invocations — avoids stale fstab state)
+  mergerfs \
+    -o defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerfspool \
+    "${branch_list}" "${pool_path}" \
+    && success "Pool mounted at ${pool_path}." \
+    || { warn "mergerfs mount failed — check branch paths and permissions."; return 1; }
+
+  # Fix ownership of pool root after mounting
+  chown "${uid}:${gid}" "$pool_path" 2>/dev/null || true
 }
 
 _mergerfs_show_status() {

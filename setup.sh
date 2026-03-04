@@ -1310,6 +1310,17 @@ _traefik_write_config() {
   local provider="${TRAEFIK_ACME_PROVIDER:-http}"
   local email="${ACME_EMAIL:-admin@example.com}"
 
+  # Staging CA has much higher rate limits — use for testing until certs work.
+  # Switch to production once you confirm the full ACME flow succeeds.
+  local ca_server
+  if [[ "${ACME_STAGING:-false}" == "true" ]]; then
+    ca_server="https://acme-staging-v02.api.letsencrypt.org/directory"
+    warn "ACME staging CA active — certs will be issued but NOT trusted by browsers."
+    warn "Set ACME_STAGING=false and clear acme.json when ready for production."
+  else
+    ca_server="https://acme-v02.api.letsencrypt.org/directory"
+  fi
+
   # ── Build the certificatesResolvers block based on provider ─────────────────
   local resolvers_block
   case "$provider" in
@@ -1318,6 +1329,7 @@ _traefik_write_config() {
     acme:
       email: ${email}
       storage: /etc/traefik/acme.json
+      caServer: ${ca_server}
       dnsChallenge:
         provider: cloudflare
         resolvers:
@@ -1339,6 +1351,7 @@ _traefik_write_config() {
     acme:
       email: ${email}
       storage: /etc/traefik/acme.json
+      caServer: ${ca_server}
       dnsChallenge:
         provider: duckdns
         delayBeforeCheck: 60
@@ -1351,6 +1364,7 @@ _traefik_write_config() {
     acme:
       email: ${email}
       storage: /etc/traefik/acme.json
+      caServer: ${ca_server}
       dnsChallenge:
         provider: godaddy
         resolvers:
@@ -1361,6 +1375,7 @@ _traefik_write_config() {
     acme:
       email: ${email}
       storage: /etc/traefik/acme.json
+      caServer: ${ca_server}
       dnsChallenge:
         provider: namecheap
         resolvers:
@@ -1371,6 +1386,7 @@ _traefik_write_config() {
     acme:
       email: ${email}
       storage: /etc/traefik/acme.json
+      caServer: ${ca_server}
       httpChallenge:
         entryPoint: web"
       ;;
@@ -1405,7 +1421,7 @@ _traefik_write_config() {
 
 api:
   dashboard: true
-  insecure: false
+  insecure: true
 
 log:
   level: INFO
@@ -1421,6 +1437,8 @@ entryPoints:
   websecure:
     address: ":443"
 ${tls_block}
+  traefik:
+    address: ":8080"
 
 providers:
   docker:
@@ -1469,6 +1487,11 @@ _traefik_show_status() {
   fi
   echo -e "  ${BOLD}ACME provider :${RESET} ${provider_label}"
   echo -e "  ${BOLD}Dashboard     :${RESET} ${auth_set}"
+  if [[ "${ACME_STAGING:-false}" == "true" ]]; then
+    echo -e "  ${BOLD}ACME CA       :${RESET} ${YELLOW}STAGING (untrusted certs — use option 4 to switch to production)${RESET}"
+  else
+    echo -e "  ${BOLD}ACME CA       :${RESET} ${GREEN}production${RESET}"
+  fi
 
   # Per-provider credential summary
   case "${TRAEFIK_ACME_PROVIDER:-}" in
@@ -1814,19 +1837,75 @@ configure_traefik() {
     echo "  1) Set dashboard credentials (username + password)"
     echo "  2) Update domain / ACME email"
     echo "  3) Configure ACME challenge provider"
-    echo "  4) Run pre-flight checks"
-    echo "  5) Back to main menu"
+    echo "  4) Toggle staging / production CA"
+    echo "  5) Run pre-flight checks"
+    echo "  6) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
       1) _traefik_set_auth     || true; pause ;;
       2) _traefik_set_domain   || true; pause ;;
       3) _traefik_set_provider || true; pause ;;
-      4) _traefik_validate     || true; pause ;;
-      5) return ;;
+      4) _traefik_toggle_staging || true; pause ;;
+      5) _traefik_validate     || true; pause ;;
+      6) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
+}
+
+_traefik_toggle_staging() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}ACME Staging / Production CA${RESET}"
+  echo ""
+  local current="${ACME_STAGING:-false}"
+
+  if [[ "$current" == "true" ]]; then
+    echo -e "  Current mode : ${YELLOW}STAGING${RESET} (Let's Encrypt staging CA — certs not trusted by browsers)"
+    echo ""
+    echo "  Staging certs confirm the ACME flow works without burning production quota."
+    echo "  Switch to production once you see a successful certificate in the logs."
+    echo ""
+    read -rp "  Switch to PRODUCTION CA? [y/N] " yn
+    if [[ "$yn" =~ ^[Yy]$ ]]; then
+      sed -i 's/^ACME_STAGING=.*/ACME_STAGING=false/' "$ENV_FILE"
+      success "Switched to PRODUCTION CA."
+      warn "Clear acme.json now so Traefik requests a trusted cert from scratch:"
+      warn "  sudo truncate -s 0 ${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+      warn "  docker restart traefik"
+    else
+      info "Staying on staging CA."
+      return 0
+    fi
+  else
+    echo -e "  Current mode : ${GREEN}PRODUCTION${RESET} (Let's Encrypt production CA)"
+    echo ""
+    warn "Rate limit reached or testing? Switch to staging to verify your config."
+    warn "Staging certs are signed by a fake CA — browsers will warn, but the"
+    warn "ACME flow is identical so you can confirm everything works."
+    echo ""
+    read -rp "  Switch to STAGING CA? [y/N] " yn
+    if [[ "$yn" =~ ^[Yy]$ ]]; then
+      if grep -q '^ACME_STAGING=' "$ENV_FILE" 2>/dev/null; then
+        sed -i 's/^ACME_STAGING=.*/ACME_STAGING=true/' "$ENV_FILE"
+      else
+        echo "ACME_STAGING=true" >> "$ENV_FILE"
+      fi
+      success "Switched to STAGING CA."
+      warn "Clear acme.json so Traefik re-runs ACME against staging:"
+      warn "  sudo truncate -s 0 ${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+      warn "  docker restart traefik"
+    else
+      info "Staying on production CA."
+      return 0
+    fi
+  fi
+
+  # Regenerate traefik.yml immediately with the new CA
+  _traefik_write_config
+  info "traefik.yml regenerated. Restart Traefik to apply:"
+  info "  docker restart traefik"
 }
 
 _traefik_set_auth() {

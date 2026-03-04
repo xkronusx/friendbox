@@ -17,6 +17,14 @@ services:
     container_name: traefik
     profiles: [traefik]
     restart: unless-stopped
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     healthcheck:
@@ -27,11 +35,12 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONFIG_ROOT}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ${CONFIG_ROOT}/traefik/acme.json:/etc/traefik/acme.json
+      - ${CONFIG_ROOT}/traefik/dynamic:/etc/traefik/dynamic:ro
     environment:
       # DNS challenge provider credentials — only the active provider's vars are used
       - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN:-}
@@ -69,6 +78,14 @@ services:
     container_name: portainer
     profiles: [portainer]
     restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     volumes:
@@ -91,6 +108,14 @@ services:
     container_name: plex
     profiles: [plex]
     restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -126,6 +151,14 @@ services:
     container_name: jellyfin
     profiles: [jellyfin]
     restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -157,6 +190,14 @@ services:
     container_name: sonarr
     profiles: [sonarr]
     restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -184,6 +225,14 @@ services:
     container_name: radarr
     profiles: [radarr]
     restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -211,6 +260,14 @@ services:
     container_name: prowlarr
     profiles: [prowlarr]
     restart: unless-stopped
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -236,6 +293,14 @@ services:
     container_name: bazarr
     profiles: [bazarr]
     restart: unless-stopped
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -263,6 +328,14 @@ services:
     container_name: ombi
     profiles: [ombi]
     restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -288,6 +361,14 @@ services:
     container_name: overseerr
     profiles: [overseerr]
     restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -313,6 +394,14 @@ services:
     container_name: nzbget
     profiles: [nzbget]
     restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -339,6 +428,14 @@ services:
     container_name: qbittorrent
     profiles: [qbittorrent]
     restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -369,6 +466,12 @@ services:
     container_name: qbittorrentvpn
     profiles: [qbittorrentvpn]
     restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     cap_add:
@@ -413,6 +516,12 @@ services:
     container_name: delugevpn
     profiles: [delugevpn]
     restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     cap_add:
@@ -459,6 +568,14 @@ services:
     container_name: netbootxyz
     profiles: [netbootxyz]
     restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -487,6 +604,14 @@ services:
     container_name: teamspeak6
     profiles: [teamspeak6]
     restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -513,6 +638,14 @@ services:
     container_name: mumble
     profiles: [mumble]
     restart: unless-stopped
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -532,6 +665,14 @@ services:
     container_name: jellyseerr
     profiles: [jellyseerr]
     restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:
@@ -555,6 +696,14 @@ services:
     container_name: ampmc
     profiles: [ampmc]
     restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - medianet
     environment:

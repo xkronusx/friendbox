@@ -1352,13 +1352,18 @@ _traefik_write_config() {
     # tls.certresolver label — the entrypoint domains block only controls
     # which cert gets acquired, not which resolver the router uses.
     tls_block="    http:
+      middlewares:
+        - secHeaders@file
       tls:
         domains:
           - main: \"${DOMAIN}\"
             sans:
               - \"*.${DOMAIN}\""
   else
-    tls_block=""
+    # Non-DuckDNS: inject middleware block into websecure entrypoint
+    tls_block="    http:
+      middlewares:
+        - secHeaders@file"
   fi
 
   cat > "$traefik_cfg" <<EOF
@@ -1374,6 +1379,8 @@ ping: {}
 
 log:
   level: INFO
+
+accessLog: {}
 
 entryPoints:
   web:
@@ -1393,12 +1400,35 @@ providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
 
 certificatesResolvers:
 ${resolvers_block}
 EOF
 
   _own "$traefik_cfg"
+
+  # ── Write dynamic config — security headers middleware ───────────────────────
+  local dynamic_dir="${traefik_dir}/dynamic"
+  mkdir -p "$dynamic_dir"
+  cat > "${dynamic_dir}/headers.yml" <<'HDEOF'
+http:
+  middlewares:
+    secHeaders:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        customFrameOptionsValue: "SAMEORIGIN"
+        contentTypeNosniff: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
+HDEOF
+  _own "$dynamic_dir"
 
   success "traefik.yml written (provider: ${provider})."
 }
@@ -2475,8 +2505,11 @@ REDEPLOY
 
 ensure_network() {
   if ! docker network inspect medianet &>/dev/null; then
-    docker network create --driver bridge medianet
-    success "Docker network 'medianet' created."
+    # Fixed subnet avoids Docker randomly reassigning address space on restart,
+    # which can break LAN_NETWORK firewall rules in VPN containers.
+    docker network create --driver bridge \
+      --subnet=172.28.0.0/16 --gateway=172.28.0.1 medianet
+    success "Docker network 'medianet' created (172.28.0.0/16)."
   else
     info "Docker network 'medianet' already exists."
   fi
@@ -2535,7 +2568,7 @@ provision_directories() {
   success "  ${INSTALL_DIR}  [${uid}:${gid}] (recursive)"
 
   # Always-on config dirs
-  mkdir -p "${cfg}/traefik" "${cfg}/portainer"
+  mkdir -p "${cfg}/traefik" "${cfg}/traefik/dynamic" "${cfg}/portainer"
   chown -R "${uid}:${gid}" "${cfg}/traefik" "${cfg}/portainer"
 
   # traefik.yml and acme.json must exist as FILES before Traefik starts.

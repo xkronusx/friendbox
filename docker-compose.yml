@@ -38,12 +38,22 @@ services:
       - NAMECHEAP_API_KEY=${NAMECHEAP_API_KEY:-}
     labels:
       - "traefik.enable=true"
+      # Dashboard router — https://traefik.${DOMAIN}
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.tls=true"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.middlewares=auth"
       - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_AUTH}"
+      # Bare domain redirect — https://${DOMAIN} → https://portainer.${DOMAIN}
+      - "traefik.http.routers.root.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.root.entrypoints=websecure"
+      - "traefik.http.routers.root.tls=true"
+      - "traefik.http.routers.root.middlewares=redirect-root"
+      - "traefik.http.routers.root.service=api@internal"
+      - "traefik.http.middlewares.redirect-root.redirectregex.regex=^https://${DOMAIN}(.*)"
+      - "traefik.http.middlewares.redirect-root.redirectregex.replacement=https://portainer.${DOMAIN}$${1}"
+      - "traefik.http.middlewares.redirect-root.redirectregex.permanent=true"
 
   # ── Portainer — Docker management UI ───────────────────────────────────────
   portainer:

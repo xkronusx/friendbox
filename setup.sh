@@ -1444,7 +1444,6 @@ providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
-    network: medianet
 
 certificatesResolvers:
 ${resolvers_block}

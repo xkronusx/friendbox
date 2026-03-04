@@ -38,6 +38,7 @@ services:
       - NAMECHEAP_API_KEY=${NAMECHEAP_API_KEY:-}
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       # Dashboard router — https://traefik.${DOMAIN}
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
@@ -70,6 +71,7 @@ services:
       - "9000:9000"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
       - "traefik.http.routers.portainer.entrypoints=websecure"
       - "traefik.http.routers.portainer.tls=true"
@@ -96,6 +98,7 @@ services:
       - "32400:32400"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.plex.rule=Host(`plex.${DOMAIN}`)"
       - "traefik.http.routers.plex.entrypoints=websecure"
       - "traefik.http.routers.plex.tls=true"
@@ -121,6 +124,7 @@ services:
       - "8096:8096"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.${DOMAIN}`)"
       - "traefik.http.routers.jellyfin.entrypoints=websecure"
       - "traefik.http.routers.jellyfin.tls=true"
@@ -146,6 +150,7 @@ services:
       - "8989:8989"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.sonarr.rule=Host(`sonarr.${DOMAIN}`)"
       - "traefik.http.routers.sonarr.entrypoints=websecure"
       - "traefik.http.routers.sonarr.tls=true"
@@ -171,6 +176,7 @@ services:
       - "7878:7878"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.radarr.rule=Host(`radarr.${DOMAIN}`)"
       - "traefik.http.routers.radarr.entrypoints=websecure"
       - "traefik.http.routers.radarr.tls=true"
@@ -194,6 +200,7 @@ services:
       - "9696:9696"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.prowlarr.rule=Host(`prowlarr.${DOMAIN}`)"
       - "traefik.http.routers.prowlarr.entrypoints=websecure"
       - "traefik.http.routers.prowlarr.tls=true"
@@ -219,6 +226,7 @@ services:
       - "6767:6767"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.bazarr.rule=Host(`bazarr.${DOMAIN}`)"
       - "traefik.http.routers.bazarr.entrypoints=websecure"
       - "traefik.http.routers.bazarr.tls=true"
@@ -242,6 +250,7 @@ services:
       - "3579:3579"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.ombi.rule=Host(`ombi.${DOMAIN}`)"
       - "traefik.http.routers.ombi.entrypoints=websecure"
       - "traefik.http.routers.ombi.tls=true"
@@ -265,6 +274,7 @@ services:
       - "5055:5055"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.overseerr.rule=Host(`overseerr.${DOMAIN}`)"
       - "traefik.http.routers.overseerr.entrypoints=websecure"
       - "traefik.http.routers.overseerr.tls=true"
@@ -289,6 +299,7 @@ services:
       - "6789:6789"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.nzbget.rule=Host(`nzbget.${DOMAIN}`)"
       - "traefik.http.routers.nzbget.entrypoints=websecure"
       - "traefik.http.routers.nzbget.tls=true"
@@ -316,6 +327,7 @@ services:
       - "6881:6881/udp"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.qbt.rule=Host(`qbt.${DOMAIN}`)"
       - "traefik.http.routers.qbt.entrypoints=websecure"
       - "traefik.http.routers.qbt.tls=true"
@@ -357,6 +369,7 @@ services:
       - "8181:8080"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.qbtvpn.rule=Host(`qbtvpn.${DOMAIN}`)"
       - "traefik.http.routers.qbtvpn.entrypoints=websecure"
       - "traefik.http.routers.qbtvpn.tls=true"
@@ -399,6 +412,7 @@ services:
       - "58846:58846"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.delugevpn.rule=Host(`deluge.${DOMAIN}`)"
       - "traefik.http.routers.delugevpn.entrypoints=websecure"
       - "traefik.http.routers.delugevpn.tls=true"
@@ -424,6 +438,7 @@ services:
       - "3000:3000"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.netbootxyz.rule=Host(`netboot.${DOMAIN}`)"
       - "traefik.http.routers.netbootxyz.entrypoints=websecure"
       - "traefik.http.routers.netbootxyz.tls=true"
@@ -448,6 +463,7 @@ services:
       - "30033:30033"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
       - "traefik.http.routers.ts6.entrypoints=websecure"
       - "traefik.http.routers.ts6.tls=true"
@@ -490,6 +506,7 @@ services:
       - "5055:5055"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.jellyseerr.rule=Host(`jellyseerr.${DOMAIN}`)"
       - "traefik.http.routers.jellyseerr.entrypoints=websecure"
       - "traefik.http.routers.jellyseerr.tls=true"
@@ -514,6 +531,7 @@ services:
       - "25565:25565"
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
       - "traefik.http.routers.ampmc.rule=Host(`amp.${DOMAIN}`)"
       - "traefik.http.routers.ampmc.entrypoints=websecure"
       - "traefik.http.routers.ampmc.tls=true"

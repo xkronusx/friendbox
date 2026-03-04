@@ -1093,88 +1093,91 @@ _mergerfs_clear_mountpoint() {
   _mergerfs_load_pool
   local pool_path="${MERGERFS_POOL:-/mnt/mergerpool}"
   echo ""
-  echo -e "${BOLD}Clear MergerFS Mountpoint${RESET}"
-  echo -e "${DIM}  Safely moves any stale contents out of ${pool_path} so mergerfs can mount.${RESET}"
+  echo -e "${BOLD}Unmount MergerFS Pool${RESET}"
+  echo -e "${DIM}  Cleanly unmounts ${pool_path} without touching data on any branch disk.${RESET}"
   echo ""
 
-  # ── Guard: already a live mergerfs mountpoint ────────────────────────────────
-  if mountpoint -q "$pool_path" 2>/dev/null; then
-    local fstype; fstype=$(findmnt -no FSTYPE "$pool_path" 2>/dev/null)
-    if [[ "$fstype" == "fuse.mergerfs" ]]; then
-      info "Pool is already correctly mounted as mergerfs — nothing to clear."
-      return 0
+  # ── Guard: not mounted ───────────────────────────────────────────────────────
+  if ! mountpoint -q "$pool_path" 2>/dev/null; then
+    info "${pool_path} is not currently mounted — nothing to unmount."
+    return 0
+  fi
+
+  # ── Show what is mounted ─────────────────────────────────────────────────────
+  local fstype; fstype=$(findmnt -no FSTYPE "$pool_path" 2>/dev/null)
+  local source;  source=$(findmnt -no SOURCE "$pool_path" 2>/dev/null)
+  echo -e "  Mount point : ${CYAN}${pool_path}${RESET}"
+  echo -e "  FS type     : ${fstype:-unknown}"
+  echo -e "  Source      : ${source:-unknown}"
+  echo ""
+
+  # ── Check for processes with open file handles ───────────────────────────────
+  local open_procs=""
+  if command -v lsof &>/dev/null; then
+    open_procs=$(lsof +D "$pool_path" 2>/dev/null | awk 'NR>1 {print $1, $2}' | sort -u)
+  fi
+
+  if [[ -n "$open_procs" ]]; then
+    warn "The following processes have open files on ${pool_path}:"
+    echo "$open_procs" | while IFS= read -r line; do
+      echo -e "    ${YELLOW}${line}${RESET}"
+    done
+    echo ""
+    warn "Unmounting while these are running may interrupt them."
+    echo ""
+    echo "  Options:"
+    echo "  1) Stop Docker containers using the pool first, then unmount"
+    echo "  2) Force unmount now (lazy — detaches immediately, safe for data)"
+    echo "  3) Abort"
+    echo ""
+    read -rp "  Choice [1/2/3]: " choice
+    case "$choice" in
+      1)
+        echo ""
+        info "Stopping all running Docker containers..."
+        docker stop $(docker ps -q) 2>/dev/null || true
+        sleep 2
+        ;;
+      2)
+        echo ""
+        warn "Proceeding with lazy unmount..."
+        ;;
+      3|*)
+        info "Aborted — pool remains mounted."
+        return 0
+        ;;
+    esac
+  else
+    echo ""
+    read -rp "  Unmount ${pool_path}? [y/N] " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted — pool remains mounted."; return 0; }
+    echo ""
+  fi
+
+  # ── Attempt clean unmount, fall back to lazy ─────────────────────────────────
+  info "Unmounting ${pool_path}..."
+  if umount "$pool_path" 2>/dev/null; then
+    success "Pool unmounted cleanly."
+  else
+    info "Clean unmount busy — trying lazy unmount (umount -l)..."
+    if umount -l "$pool_path" 2>/dev/null; then
+      success "Pool detached (lazy unmount). Processes will finish with existing handles."
     else
-      warn "${pool_path} is mounted as ${fstype:-unknown}, not mergerfs."
-      warn "Unmount it manually before clearing: sudo umount ${pool_path}"
+      warn "Could not unmount ${pool_path}."
+      warn "Still in use — check with: lsof +D ${pool_path}"
       return 1
     fi
   fi
 
-  # ── Check if directory exists and is non-empty ───────────────────────────────
-  if [[ ! -d "$pool_path" ]]; then
-    info "${pool_path} does not exist — creating it."
-    mkdir -p "$pool_path"
-    success "Created ${pool_path} — ready to mount."
-    return 0
-  fi
-
-  local contents
-  contents=$(ls -A "$pool_path" 2>/dev/null)
-  if [[ -z "$contents" ]]; then
-    info "${pool_path} is already empty — nothing to clear."
-    return 0
-  fi
-
-  # ── Show exactly what is in the directory ────────────────────────────────────
-  echo -e "${YELLOW}  The following items are inside ${pool_path}:${RESET}"
-  echo ""
-  ls -lh "$pool_path" 2>/dev/null | tail -n +2 | while IFS= read -r line; do
-    echo "    $line"
-  done
-  echo ""
-  warn "These are likely leftover files from before mergerfs was set up."
-  warn "They will be MOVED (not deleted) to a timestamped backup directory."
-  echo ""
-
-  local backup_dir="/mnt/mergerpool_backup_$(date +%Y%m%d_%H%M%S)"
-  echo -e "  Backup destination: ${CYAN}${backup_dir}${RESET}"
-  echo ""
-  read -rp "  Move contents to backup and clear mountpoint? [y/N] " yn
-  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted — nothing changed."; return 0; }
-  echo ""
-
-  # ── Move contents to backup ──────────────────────────────────────────────────
-  mkdir -p "$backup_dir"
-  local item failed=0
-  for item in "$pool_path"/* "$pool_path"/.*; do
-    # Skip . and ..
-    [[ "$item" == "$pool_path/." || "$item" == "$pool_path/.." ]] && continue
-    [[ ! -e "$item" && ! -L "$item" ]] && continue
-    if mv "$item" "$backup_dir/" 2>/dev/null; then
-      info "  Moved: $(basename "$item") → ${backup_dir}/"
-    else
-      warn "  Could not move: ${item}"
-      failed=$((failed + 1))
-    fi
-  done
-
-  if [[ $failed -gt 0 ]]; then
-    warn "${failed} item(s) could not be moved — ${pool_path} may not be fully clear."
-    warn "Check for open file handles: lsof +D ${pool_path}"
+  # ── Confirm no longer mounted ────────────────────────────────────────────────
+  if mountpoint -q "$pool_path" 2>/dev/null; then
+    warn "${pool_path} still appears mounted after unmount attempt."
     return 1
   fi
 
-  # ── Verify empty and mount ───────────────────────────────────────────────────
-  contents=$(ls -A "$pool_path" 2>/dev/null)
-  if [[ -n "$contents" ]]; then
-    warn "${pool_path} still has contents after move — aborting mount."
-    return 1
-  fi
-
-  success "${pool_path} is now empty. Backup is at ${backup_dir}"
   echo ""
-  info "Attempting to mount the pool now..."
-  _mergerfs_remount "$pool_path"
+  success "${pool_path} is now unmounted. Branch disks are untouched."
+  info "Run option 6 (Mount / remount pool) to mount again."
 }
 
 setup_mergerfs() {
@@ -1194,7 +1197,7 @@ setup_mergerfs() {
     echo "  5) Show pool & drive details"
     echo "  6) Mount / remount pool"
     echo "  7) Fix ownership & create subdirs on all drives"
-    echo "  8) Clear mountpoint (fix 'not empty' error)"
+    echo "  8) Unmount pool"
     echo "  9) Back to main menu"
     echo ""
     read -rp "  Choice: " choice

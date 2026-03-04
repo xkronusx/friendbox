@@ -2612,6 +2612,21 @@ provision_directories() {
     created=$((created + 1))
   done
 
+  # Plex transcode dir — keeps transcode temp files out of the config volume
+  if [[ -n "${SELECTED[plex]+_}" ]]; then
+    mkdir -p "${cfg}/plex-transcode"
+    chown -R "${uid}:${gid}" "${cfg}/plex-transcode"
+    success "  ${cfg}/plex-transcode  [${uid}:${gid}]"
+  fi
+
+  # Jellyfin cache dir — must be a persistent host mount or cache is lost on every
+  # container recreate, forcing a full metadata/thumbnail regeneration
+  if [[ -n "${SELECTED[jellyfin]+_}" ]]; then
+    mkdir -p "${cfg}/jellyfin-cache"
+    chown -R "${uid}:${gid}" "${cfg}/jellyfin-cache"
+    success "  ${cfg}/jellyfin-cache  [${uid}:${gid}]"
+  fi
+
   if [[ -n "${SELECTED[netbootxyz]+_}" ]]; then
     mkdir -p "${media}/netboot/assets"
     chown -R "${uid}:${gid}" "${media}/netboot"

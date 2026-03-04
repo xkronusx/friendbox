@@ -95,6 +95,7 @@ services:
       - VERSION=docker
     volumes:
       - ${CONFIG_ROOT}/plex:/config
+      - ${CONFIG_ROOT}/plex-transcode:/transcode
       - ${MEDIA_ROOT}/tv:/tv
       - ${MEDIA_ROOT}/movies:/movies
     ports:
@@ -122,6 +123,7 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/jellyfin:/config
+      - ${CONFIG_ROOT}/jellyfin-cache:/cache
       - ${MEDIA_ROOT}/tv:/data/tv
       - ${MEDIA_ROOT}/movies:/data/movies
     ports:

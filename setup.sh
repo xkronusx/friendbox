@@ -25,7 +25,7 @@ MERGERFS_MODES_FILE="${INSTALL_DIR}/.mergerfs_modes"
 MERGERFS_POOL_FILE="${INSTALL_DIR}/.mergerfs_pool"
 DNS_STATE_FILE="${INSTALL_DIR}/.dns_config"
 INSTALL_FLAG="${INSTALL_DIR}/.installed"
-MEDIA_ROOT="/mnt/mergerpool"
+MEDIA_ROOT="/mnt/media"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -109,9 +109,9 @@ _fix_install_dir_ownership() {
 }
 
 ensure_media_root() {
-  # Create /mnt/mergerpool on every interactive launch so it always exists as a
+  # Create MEDIA_ROOT on every interactive launch so it always exists as a
   # mount point for MergerFS, or as a plain directory for single-drive setups.
-  # Sets ownership of /mnt and /mnt/mergerpool to PUID:PGID (default 1000:1000).
+  # Sets ownership of /mnt and MEDIA_ROOT to PUID:PGID (default 1000:1000).
   # Requires root — silently skipped otherwise.
   [[ $EUID -ne 0 ]] && return 0
 
@@ -130,7 +130,7 @@ ensure_media_root() {
     success "Created media root directory: ${MEDIA_ROOT}"
   fi
 
-  # Own /mnt and /mnt/mergerpool — containers and the media user need traversal rights
+  # Own /mnt and MEDIA_ROOT — containers and the media user need traversal rights
   chown "${uid}:${gid}" /mnt
   chown "${uid}:${gid}" "$MEDIA_ROOT"
 }
@@ -885,7 +885,12 @@ _mergerfs_initial_setup() {
     return
   fi
 
-  local pool_path="$MEDIA_ROOT"
+  # Source .env so MEDIA_ROOT reflects any value already configured
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local current_media="${MEDIA_ROOT:-/mnt/media}"
+  echo ""
+  read -rp "Pool mount path [${current_media}]: " pool_input
+  local pool_path="${pool_input:-${current_media}}"
   mkdir -p "$pool_path"
   chown "${PUID:-1000}:${PGID:-1000}" "$pool_path" 2>/dev/null || true
 
@@ -893,6 +898,18 @@ _mergerfs_initial_setup() {
   _mergerfs_save_pool "$pool_path"
   _mergerfs_write_fstab "$pool_path"
   _mergerfs_remount "$pool_path"
+
+  # Keep MEDIA_ROOT in .env in sync with the actual pool path so containers
+  # mount the right directory.
+  if [[ -f "$ENV_FILE" ]]; then
+    if grep -q "^MEDIA_ROOT=" "$ENV_FILE" 2>/dev/null; then
+      sed -i "s|^MEDIA_ROOT=.*|MEDIA_ROOT=${pool_path}|" "$ENV_FILE"
+    else
+      echo "MEDIA_ROOT=${pool_path}" >> "$ENV_FILE"
+    fi
+    MEDIA_ROOT="$pool_path"
+    success "MEDIA_ROOT updated to ${pool_path} in .env"
+  fi
 
   success "MergerFS pool configured at ${pool_path}."
 }
@@ -1096,7 +1113,7 @@ _mergerfs_mount_pool() {
 
 _mergerfs_clear_mountpoint() {
   _mergerfs_load_pool
-  local pool_path="${MERGERFS_POOL:-/mnt/mergerpool}"
+  local pool_path="${MERGERFS_POOL:-/mnt/media}"
   echo ""
   echo -e "${BOLD}Unmount MergerFS Pool${RESET}"
   echo -e "${DIM}  Cleanly unmounts ${pool_path} without touching data on any branch disk.${RESET}"
@@ -1239,6 +1256,8 @@ configure_env() {
   ACME_EMAIL="${input:-${ACME_EMAIL:-admin@example.com}}"
   read -rp "Config root path [${CONFIG_ROOT:-/opt/friendbox/config}]: " input
   CONFIG_ROOT="${input:-${CONFIG_ROOT:-/opt/friendbox/config}}"
+  read -rp "Media root path [${MEDIA_ROOT:-/mnt/media}]: " input
+  MEDIA_ROOT="${input:-${MEDIA_ROOT:-/mnt/media}}"
   read -rp "PUID [${PUID:-1000}]: " input; PUID="${input:-${PUID:-1000}}"
   read -rp "PGID [${PGID:-1000}]: " input; PGID="${input:-${PGID:-1000}}"
   read -rp "Timezone [${TZ:-America/Toronto}]: " input
@@ -2557,7 +2576,7 @@ provision_directories() {
   local uid="${PUID:-1000}"
   local gid="${PGID:-1000}"
   local cfg="${CONFIG_ROOT:-/opt/friendbox/config}"
-  local media="${MEDIA_ROOT:-/mnt/mergerpool}"
+  local media="${MEDIA_ROOT:-/mnt/media}"
 
   info "Provisioning directories (owner ${uid}:${gid})..."
 

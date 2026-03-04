@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 24.04.4 LTS.
+A fully automated, menu-driven Docker media server stack for Ubuntu 24.04 LTS.
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Overseerr · Ombi · Jellyseerr · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -10,14 +10,13 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 24.04.4 LTS.
 
 | Requirement | Details |
 |---|---|
-| **OS** | Ubuntu 24.04.4 LTS (Noble Numbat) — tested and supported |
+| **OS** | Ubuntu 24.04 LTS (Noble Numbat) — tested and supported |
 | **Architecture** | x86_64 (amd64) |
 | **RAM** | 4 GB minimum, 8 GB+ recommended |
-| **Disk** | 20 GB minimum for OS + config; separate drives for media |
-| **Network** | Public IP with ports 80 and 443 forwarded to this machine |
-| **Domain** | A registered domain name (or DuckDNS free subdomain) |
+| **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
+| **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
-> Friendbox will warn you and ask for confirmation if run on a non-Ubuntu 24.04 system. It may still work on other Debian-based distros but is not tested or supported.
+> Friendbox will warn you and ask for confirmation if run on a non-Ubuntu 24.04 system. It may work on other Debian-based distros but is not tested or supported.
 
 ---
 
@@ -29,7 +28,7 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 24.04.4 LTS.
 curl -fsSL https://raw.githubusercontent.com/xkronusx/friendbox/main/setup.sh | sudo bash
 ```
 
-This downloads the setup script to `/usr/local/bin/friendbox`. It does **not** install anything else — just makes the `friendbox` command available.
+This installs the `friendbox` command to `/usr/local/bin/friendbox`. It does **not** install Docker or start any containers.
 
 ### 2. Launch the menu
 
@@ -37,82 +36,109 @@ This downloads the setup script to `/usr/local/bin/friendbox`. It does **not** i
 sudo friendbox
 ```
 
-Every time you run `sudo friendbox`, the script automatically pulls the latest files from GitHub before opening the menu, so you are always running the most current version. If GitHub is unreachable, it falls back to the local copy silently.
+Every launch automatically pulls the latest files from GitHub before opening the menu. If GitHub is unreachable, it falls back to the local copy silently.
 
 ---
 
 ## 🗂 First-Time Setup — Step by Step
 
-Follow these steps **in order**. Steps 1–4 are required. Steps 5–6 are optional but recommended.
+Follow these steps **in order**. Steps 1–4 are required. The rest depend on which services you select.
 
 ---
 
 ### Step 1 — MergerFS storage pool *(skip if using a single drive)*
 **`sudo friendbox` → option 7**
 
-If you have multiple physical drives you want to pool into a single `/mnt/media` path, set this up first — before configuring your environment — because the pool path becomes your media root.
+If you have multiple physical drives to pool into a single path, set this up first — before configuring your environment — so the pool path can be used as your media root.
 
-**Before running this step:**
-- Mount each drive to its own path (e.g. `/mnt/disk1`, `/mnt/disk2`).
-- Ensure drives are formatted (ext4 recommended) and in `/etc/fstab` so they survive reboots.
+**Before running:**
+- Mount each drive to its own path (e.g. `/mnt/disk1`, `/mnt/disk2`)
+- Format drives as ext4 and add them to `/etc/fstab` for persistence across reboots
 
-**During setup:**
-1. Enter each disk path one at a time and assign a mode:
-   - `RW` — Read/Write. New files can be written here.
-   - `NC` — No-Create. Existing files are readable, but no new files land here. Good for an OS drive or an almost-full drive you want to drain gradually.
-   - `RO` — Read-Only. No writes at all.
-2. Set the pool mount point (default: `/mnt/media`).
-3. Optionally mark the OS drive as `NC` to prevent media writes to your system disk.
+**During setup, assign each disk a mode:**
 
-MergerFS writes an `fstab` entry and mounts the pool live — no reboot needed.
+| Mode | Meaning |
+|---|---|
+| `RW` | Read/Write — new files can be created here |
+| `NC` | No-Create — existing files readable, no new files written here. Useful for an almost-full drive you want to drain gradually |
+| `RO` | Read-Only — no writes at all |
 
-**If you skip MergerFS**, make sure your intended media root exists and is writable before continuing:
+MergerFS writes an `/etc/fstab` entry and mounts the pool live at `/mnt/media`. No reboot needed.
+
+**If you skip MergerFS**, ensure your media root exists before continuing:
 ```bash
 mkdir -p /mnt/media && chown 1000:1000 /mnt/media
 ```
+
+**MergerFS sub-menu (option 7):**
+
+| Sub-option | Function |
+|---|---|
+| 1 | Initial pool setup (first time) |
+| 2 | Add a disk to the pool |
+| 3 | Change a disk's mode (RW / NC / RO) |
+| 4 | Remove a disk from the pool |
+| 5 | Show pool & drive details (size, used, free, mount status per disk) |
+| 6 | Mount / remount pool |
+| 7 | Fix ownership & create subdirs on all drives |
+| 8 | Unmount pool |
+
+> **Drive details (option 5)** uses `findmnt` to detect whether a real filesystem is mounted at each drive path — not just whether the directory exists. It shows the device name (e.g. `● /dev/sdb1`) in green when mounted, `○ not mounted` in yellow when not, and `? path missing` in red when the directory is absent entirely.
+
+> **Subdirectory creation (option 7)** writes `movies/`, `tv/`, `music/` (and `downloads/` if a download client is selected) directly on each RW/NC branch disk. RO branches are never written to. Subdirs are never created through the mounted pool path.
 
 ---
 
 ### Step 2 — Configure your environment
 **`sudo friendbox` → option 3**
 
-Sets the core variables written to `/opt/friendbox/.env`. All other steps depend on this.
-
-You will be prompted for:
+Sets core variables in `/opt/friendbox/.env`. All other steps depend on this.
 
 | Prompt | Description |
 |---|---|
-| **Domain** | Your registered domain (e.g. `example.com`). Must be a domain you control. |
-| **ACME email** | Used by Let's Encrypt to issue HTTPS certificates. Use a real address. |
-| **Media root** | Where your media library lives. If you completed Step 1, this should match your MergerFS pool path (default: `/mnt/media`). |
-| **Config root** | Where container config data is stored (default: `/opt/friendbox/config`). |
-| **PUID / PGID** | The Linux user and group ID containers will run as. Default `1000:1000` is correct for the first non-root user on a fresh Ubuntu install. Run `id` to confirm. |
-| **Timezone** | e.g. `America/Toronto`. Used by all containers for correct timestamps. |
+| **Domain** | Your domain (e.g. `temperus.duckdns.org`). Must be a domain you control. |
+| **ACME email** | Used by Let's Encrypt for certificate notifications. Use a real address. |
+| **Config root** | Where container config data lives (default: `/opt/friendbox/config`) |
+| **PUID / PGID** | Linux user/group ID containers run as. Default `1000:1000` is correct for the first non-root user. Run `id` to confirm. |
+| **Timezone** | e.g. `America/Toronto` |
 
-Press **Enter** on any prompt to keep the current value shown in brackets.
-
-> ⚠️ The domain and ACME email cannot be changed after containers start without clearing `acme.json` and restarting Traefik. Set these correctly the first time.
+Press **Enter** on any prompt to keep the current value.
 
 ---
 
 ### Step 3 — Select containers
 **`sudo friendbox` → option 2**
 
-Choose which services to deploy. Toggle with the item number. Press `d` when done.
+Toggle services with their number, press `d` when done. Your selection persists between runs.
+
+**Available containers:**
+
+| Container | Description |
+|---|---|
+| `traefik` | Reverse proxy with automatic HTTPS via Let's Encrypt |
+| `portainer` | Docker management web UI |
+| `plex` | Media server (requires Plex account) |
+| `jellyfin` | Open-source media server (no account required) |
+| `sonarr` | TV show library manager |
+| `radarr` | Movie library manager |
+| `prowlarr` | Indexer manager for Sonarr/Radarr |
+| `bazarr` | Subtitle downloader for Sonarr/Radarr |
+| `qbittorrent` | BitTorrent download client |
+| `qbittorrentvpn` | qBittorrent with built-in VPN kill switch |
+| `delugevpn` | Deluge with built-in VPN kill switch |
+| `nzbget` | Usenet download client |
+| `overseerr` | Media request manager (Plex) |
+| `ombi` | Media request manager (Plex/Jellyfin) |
+| `jellyseerr` | Media request manager (Jellyfin) |
+| `netbootxyz` | Network boot server |
+| `teamspeak6` | TeamSpeak 6 voice server |
+| `mumble` | Mumble voice server |
+| `ampmc` | AMP game server management panel |
 
 **Recommended minimum for a media server:**
-- ✔ Plex or Jellyfin (media playback)
-- ✔ Sonarr + Radarr (TV show and movie library management)
-- ✔ Prowlarr (indexer manager — required for Sonarr/Radarr)
-- ✔ qBittorrent or qBittorrentVPN/DelugeVPN (download client)
-
-**Notes on specific containers:**
-- **qBittorrentVPN / DelugeVPN** — require VPN credentials. Set these via option 5 (Service credentials) before deploying.
-- **AMP** — requires an admin username and password. Set these via option 5.
-- **Mumble** — requires a superuser password. Set via option 5.
-- **Prowlarr** — uses the `nightly` tag for the latest indexer support.
-
-Your selection is saved and persists between runs.
+- Plex or Jellyfin
+- Sonarr + Radarr + Prowlarr
+- qBittorrent or a VPN download client
 
 ---
 
@@ -121,125 +147,150 @@ Your selection is saved and persists between runs.
 
 Runs the complete first-time setup in sequence:
 
-1. OS compatibility check (warns if not Ubuntu 24.04.4)
-2. Installs dependencies: Docker CE, curl, apache2-utils. Reports mergerfs status (installed separately via option 7 if needed).
+1. OS compatibility check
+2. Installs Docker CE, curl, apache2-utils
 3. Pulls latest `docker-compose.yml` and config files from GitHub
-4. Prompts for environment configuration (your `.env`)
+4. Prompts to confirm environment settings
 5. Opens container selection
 6. Creates the `medianet` Docker bridge network
-7. Sets up `acme.json` with correct permissions for Traefik
-8. Provisions all config and media directories
+7. Creates `acme.json` with correct permissions (`root:root 600`)
+8. Provisions config and media directories
 9. Starts all selected containers with `docker compose up -d`
 
-If Friendbox is already installed, option 1 will warn you and ask for confirmation before proceeding — this prevents accidentally overwriting a running stack.
+If Friendbox is already installed, option 1 warns before proceeding.
 
 ---
 
 ### Step 5 — Configure Traefik *(required if Traefik is selected)*
 **`sudo friendbox` → option 4**
 
-Sets the dashboard credentials for the Traefik web UI. This is separate from the main `.env` so you can update it without re-running the full environment setup.
-
-| Sub-option | What it does |
+| Sub-option | Function |
 |---|---|
-| 1) Set dashboard credentials | Prompts for username and password, generates a bcrypt hash |
-| 2) Update domain / ACME email | Updates just the domain and ACME email in `.env` |
+| 1 | Set dashboard credentials (username + bcrypt password) |
+| 2 | Update domain / ACME email |
+| 3 | Configure ACME challenge provider |
+| 4 | Toggle staging / production CA |
+| 5 | Run pre-flight checks |
+| 6 | Live routing diagnostics |
 
-Press Enter on the password prompt to keep the existing credentials.
+**ACME challenge providers:**
+
+| Provider | Challenge type | Notes |
+|---|---|---|
+| `http` | HTTP-01 | Requires ports 80/443 forwarded to this machine |
+| `cloudflare` | DNS-01 | Requires CF API token with Zone:DNS:Edit permission |
+| `duckdns` | DNS-01 | Requires DuckDNS token. Wildcard cert only — see note below |
+| `godaddy` | DNS-01 | Requires GoDaddy API key + secret |
+| `namecheap` | DNS-01 | Requires Namecheap Dynamic DNS credentials |
+
+> **DuckDNS note:** The DuckDNS API can only set TXT records on the root subdomain — not on sub-subdomains. Per-host certificates (e.g. `portainer.temperus.duckdns.org`) cannot be validated individually. Friendbox automatically requests a single wildcard cert (`*.temperus.duckdns.org`) that covers all subdomains. No manual configuration needed.
+
+**Staging CA (option 4):**
+
+Use the Let's Encrypt staging CA while testing. Staging has much higher rate limits — the production CA allows only 5 duplicate certs per week per domain. Staging certs are signed by a fake CA so browsers show an untrusted cert warning, but the full ACME flow is identical to production. Switch to production once you confirm cert issuance works end-to-end.
+
+When staging is active, the Traefik status line shows:
+```
+ACME CA : STAGING (untrusted certs — use option 4 to switch to production)
+```
+
+**Live routing diagnostics (option 6):**
+
+Queries the Traefik API at `localhost:8080` and shows:
+- All registered HTTP routers with rules and enabled/error status
+- All service backends with health (UP/DOWN) and resolved IP:port
+- Container IP addresses on `medianet`
+- `DOMAIN` whitespace check (trailing spaces silently break `Host()` rules)
+- Certificates currently stored in `acme.json`
+
+**Traefik dashboard access:**
+
+The dashboard is always available at `http://YOUR_SERVER_IP:8080/dashboard/` regardless of certificate status — useful when HTTPS is not working yet. The secured HTTPS dashboard at `https://traefik.yourdomain.com` requires a valid cert and the credentials set in option 1.
+
+> ⚠️ Do not expose port 8080 to the internet — the insecure API has no authentication.
 
 ---
 
 ### Step 6 — Set service credentials *(required for VPN, AMP, Mumble)*
 **`sudo friendbox` → option 5**
 
-The menu is dynamic — it only shows options for services you have selected. Press Enter to keep any existing value.
+Only shows options for services you have selected.
 
 | Service | What is configured |
 |---|---|
-| **VPN** (qBittorrentVPN / DelugeVPN) | Provider (pia, mullvad, airvpn, custom), client type (openvpn/wireguard), username, password, LAN CIDR |
+| **qBittorrentVPN / DelugeVPN** | VPN provider, client type (openvpn/wireguard), username, password, LAN CIDR |
 | **AMP** | Admin username and password |
 | **Mumble** | Superuser password |
 
 ---
 
-### Step 7 — Configure DNS A records *(required for HTTPS)*
+### Step 7 — Configure DNS records *(required for HTTPS)*
 **`sudo friendbox` → option 6**
 
-Your domain must resolve to your server's public IP before Let's Encrypt can issue a certificate. Each selected container gets its own subdomain:
+Each selected container gets its own subdomain (e.g. `portainer.yourdomain.com`, `sonarr.yourdomain.com`). Your domain must resolve to your server's public IP before Let's Encrypt can issue certificates.
 
-```
-traefik.yourdomain.com
-portainer.yourdomain.com
-plex.yourdomain.com
-sonarr.yourdomain.com
-... etc.
-```
-
-**Supported providers:**
-
-| Provider | Notes |
+| Sub-option | Function |
 |---|---|
-| **Cloudflare** | Creates/updates A records via API. Zone ID is auto-detected. |
-| **DuckDNS** | Updates a single free subdomain (e.g. `myhome.duckdns.org`). |
-| **GoDaddy** | Creates/updates A records via GoDaddy Production API. |
-| **Namecheap** | Updates via Namecheap Dynamic DNS (one host per request). |
+| 1–4 | Configure Cloudflare / DuckDNS / GoDaddy / Namecheap credentials |
+| 5 | Update DNS now (push current public IP to all A records) |
+| 6 | Show subdomains that will be managed |
+| 7 | Install auto-update cron job (runs every 5 minutes) |
+| 8 | Remove auto-update cron job |
 
-After configuring your provider, use **"Update DNS now"** (sub-option 5) to push all records immediately. Optionally install the **cron job** (sub-option 7) to keep records current every 5 minutes — useful if your home IP changes.
-
-> ⚠️ DNS propagation can take minutes to hours. Traefik retries certificate issuance automatically — you do not need to restart anything.
-
-> ⚠️ Ports 80 and 443 must be open and forwarded to this machine before Let's Encrypt will issue certificates.
+> DNS propagation can take minutes to hours. Traefik retries certificate issuance automatically — no restart needed.
 
 ---
 
 ### Step 8 — Verify everything is running
 **`sudo friendbox` → option 10 and option 11**
 
-Check that all containers are healthy:
-
 ```
-sudo friendbox  →  option 10  (Show container status)
-sudo friendbox  →  option 11  (View service URLs)
+sudo friendbox  →  option 10   (Show container status)
+sudo friendbox  →  option 11   (View service URLs)
 ```
 
-Option 11 shows the real URLs for your stack — with Traefik it shows the full HTTPS subdomain addresses; without Traefik it detects your server's local IPv4 and shows direct `http://ip:port` addresses.
-
-Traefik issues HTTPS certificates automatically — this typically completes within 1–2 minutes of first startup.
+Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses.
 
 **First-time login reference:**
 
-| Service | URL (with Traefik) | First-time setup |
+| Service | Default URL | First login |
 |---|---|---|
-| Traefik | `https://traefik.yourdomain.com` | Login with your configured dashboard credentials |
+| Traefik dashboard | `http://IP:8080/dashboard/` | No auth (LAN only) |
+| Traefik (HTTPS) | `https://traefik.yourdomain.com` | Credentials set in option 4 → option 1 |
 | Portainer | `https://portainer.yourdomain.com` | Create admin account on first visit |
-| Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths |
-| Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/tv`, connect to download client and Prowlarr |
-| Radarr | `https://radarr.yourdomain.com` | Add root folder `/movies`, connect to download client and Prowlarr |
-| Prowlarr | `https://prowlarr.yourdomain.com` | Add indexers, then sync to Sonarr/Radarr |
-| qBittorrent | `https://qbt.yourdomain.com` | Default login: `admin` / `adminadmin` — **change immediately** |
+| Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths to `/movies`, `/tv` |
+| Jellyfin | `https://jellyfin.yourdomain.com` | Create admin account, set library paths |
+| Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/tv`, connect Prowlarr + download client |
+| Radarr | `https://radarr.yourdomain.com` | Add root folder `/movies`, connect Prowlarr + download client |
+| Prowlarr | `https://prowlarr.yourdomain.com` | Add indexers, sync to Sonarr/Radarr |
+| qBittorrent | `https://qbt.yourdomain.com` | Default: `admin` / `adminadmin` — **change immediately** |
+| Bazarr | `https://bazarr.yourdomain.com` | Connect Sonarr + Radarr, configure subtitle providers |
+| Overseerr | `https://overseerr.yourdomain.com` | Sign in with Plex account |
+| Jellyseerr | `https://jellyseerr.yourdomain.com` | Sign in with Jellyfin account |
 
 ---
 
 ### Step 9 — Connect Sonarr / Radarr / Prowlarr
 
-All containers share the `medianet` Docker bridge network and communicate by container name — not by external domain or IP. Use these internal addresses when connecting services to each other:
+All containers share the `medianet` Docker bridge and communicate by container name. Use these internal addresses when connecting services to each other — not external domains or host IPs:
 
 | Service | Internal address |
 |---|---|
+| Prowlarr | `http://prowlarr:9696` |
+| Sonarr | `http://sonarr:8989` |
+| Radarr | `http://radarr:7878` |
+| Bazarr | `http://bazarr:6767` |
+| Jellyfin | `http://jellyfin:8096` |
 | qBittorrent | `http://qbittorrent:8080` |
 | qBittorrentVPN | `http://qbittorrentvpn:8080` |
 | DelugeVPN | `http://delugevpn:8112` |
 | NZBGet | `http://nzbget:6789` |
-| Prowlarr | `http://prowlarr:9696` |
-| Sonarr | `http://sonarr:8989` |
-| Radarr | `http://radarr:7878` |
-| Jellyfin | `http://jellyfin:8096` |
 
 **Recommended connection order:**
 1. Prowlarr → add your indexers
 2. Sonarr → Settings → Download Clients → add qBittorrent at `http://qbittorrent:8080`
-3. Sonarr → Settings → Apps → connect Prowlarr
-4. Radarr → repeat the same as Sonarr
+3. Sonarr → Settings → Apps → connect Prowlarr at `http://prowlarr:9696`
+4. Radarr → repeat the same steps as Sonarr
 5. Overseerr / Jellyseerr → connect to Plex or Jellyfin, then Sonarr and Radarr
 
 ---
@@ -253,25 +304,82 @@ All containers share the `medianet` Docker bridge network and communicate by con
 | 1 | Full Install | Runs all setup steps in sequence. Warns if already installed. |
 | 2 | Select containers | Toggle which services to deploy. |
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
-| 4 | Traefik configuration | Dashboard credentials, domain, ACME email. |
-| 5 | Service credentials | VPN, AMP, Mumble credentials (dynamic — shows only what's selected). |
-| 6 | DNS A record manager | Configure Cloudflare / DuckDNS / GoDaddy / Namecheap. |
-| 7 | MergerFS storage manager | Pool setup, disk management, drive detail view. |
+| 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics. |
+| 5 | Service credentials | VPN, AMP, Mumble credentials. Only shows selected services. |
+| 6 | DNS A record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. |
+| 7 | MergerFS storage manager | Pool setup, disk management, drive details, ownership fix. |
 
 ### Operations
 
 | Option | Function | Notes |
 |---|---|---|
 | 8 | Provision / fix directory ownership | Creates config and media dirs, fixes permissions. |
-| 9 | Sync latest files from GitHub | Re-downloads compose file, Traefik config, and the friendbox script. |
-| 10 | Show container status | Runs `docker compose ps` for all selected containers. |
-| 11 | View service URLs | Shows HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
-| 12 | Redeploy containers | Pull latest images, redeploy all or a single container, restart, or change selection. |
+| 9 | Sync latest files from GitHub | Re-downloads compose file and setup script. |
+| 10 | Show container status | Runs `docker compose ps` for selected containers. |
+| 11 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
+| 12 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
 | 13 | Update stack | Pulls latest images and restarts the stack. |
 | 14 | View logs | Tail logs for all containers or a specific one. |
-| 15 | Teardown | Stops and removes all containers. Config and data are preserved. Clears the installed flag so option 1 can be used again. |
+| 15 | Teardown | Stops and removes containers. Config and data preserved. |
 
-> **Operations (10–15) are blocked until a Full Install has been completed.** The menu shows `● INSTALLED` or `○ NOT YET INSTALLED` at the top so you always know the current state.
+> **Options 10–15 are blocked until Full Install has been completed.** The menu header shows `● INSTALLED` or `○ NOT YET INSTALLED`.
+
+---
+
+## 🔒 Traefik & HTTPS Details
+
+### How routing works
+
+- `exposedByDefault: false` — only containers with `traefik.enable=true` get routes
+- Every container has `traefik.enable=true` and `traefik.docker.network=medianet` hardcoded in its labels
+- The Docker `profiles:` key controls whether a container starts — a stopped container is simply not routed
+- Each router has `tls=true` and `tls.certresolver=letsencrypt` — Traefik requests and renews certs automatically
+- All containers also expose direct host ports for LAN access without Traefik
+
+### DuckDNS wildcard certificate
+
+When DuckDNS is selected as the ACME provider, Friendbox configures the `websecure` entrypoint to request a wildcard cert covering all subdomains at once:
+
+```yaml
+websecure:
+  address: ":443"
+  http:
+    tls:
+      domains:
+        - main: "temperus.duckdns.org"
+          sans:
+            - "*.temperus.duckdns.org"
+```
+
+The DuckDNS API sets `_acme-challenge.temperus.duckdns.org` — Let's Encrypt validates it once for the wildcard rather than attempting per-subdomain validation (which DuckDNS cannot support).
+
+### acme.json permissions
+
+`acme.json` must be `root:root 600`. Traefik v3 runs as root inside the container — if the file is owned by another user, Traefik can read existing certs but cannot write renewals, causing an endless `Testing certificate renew` loop in the logs.
+
+### Testing behind a firewall (LAN-only HTTPS)
+
+If ports 80/443 on your router point to a different machine, you can still test HTTPS internally by adding DNS overrides in OPNsense (or your local DNS resolver):
+
+**Services → Unbound DNS → Host Overrides — add two entries:**
+
+| Host | Domain | IP |
+|---|---|---|
+| `*` | `temperus.duckdns.org` | Friendbox LAN IP |
+| `temperus` | `duckdns.org` | Friendbox LAN IP |
+
+This makes `*.temperus.duckdns.org` resolve to your Friendbox machine from inside the LAN only. Internet traffic is unaffected. DNS-01 cert acquisition still works because it uses the DuckDNS API directly and requires no inbound connections.
+
+### Running alongside another reverse proxy (OPNsense HAProxy SNI routing)
+
+If another reverse proxy is already handling ports 80/443 on your LAN for a different domain, use OPNsense HAProxy with SNI passthrough:
+
+- HAProxy reads the TLS SNI hostname before decryption and routes accordingly
+- `*.temperus.duckdns.org` → Friendbox machine port 443
+- `*.otherdomain.com` → other machine port 443
+- Each machine handles its own certificates independently with no conflicts
+
+Enable HAProxy via: **System → Firmware → Plugins → `os-haproxy`**
 
 ---
 
@@ -279,7 +387,7 @@ All containers share the `medianet` Docker bridge network and communicate by con
 
 ### Auto-update on launch
 
-Every time you run `sudo friendbox`, the script silently downloads the latest `docker-compose.yml`, Traefik config, and `setup.sh` from GitHub before opening the menu. If an update is downloaded, the script re-launches itself so you are always running the freshest code. No manual sync is needed.
+Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `setup.sh` from GitHub. If an update is found the script re-executes itself automatically. No manual sync needed.
 
 ### Pull latest container images
 
@@ -293,19 +401,13 @@ sudo friendbox  →  option 13
 sudo friendbox  →  option 12  →  option 2  →  enter container name
 ```
 
-### Redeploy all containers
-
-```bash
-sudo friendbox  →  option 12  →  option 1
-```
-
 ### Redeploy via helper script
 
 ```bash
-sudo /opt/friendbox/scripts/redeploy.sh            # redeploy all
-sudo /opt/friendbox/scripts/redeploy.sh sonarr     # redeploy one
-sudo /opt/friendbox/scripts/redeploy.sh --restart  # restart without pulling
-sudo /opt/friendbox/scripts/redeploy.sh --health   # health check
+sudo /opt/friendbox/scripts/redeploy.sh              # redeploy all
+sudo /opt/friendbox/scripts/redeploy.sh sonarr        # redeploy one
+sudo /opt/friendbox/scripts/redeploy.sh --restart     # restart without pulling
+sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 ```
 
 ---
@@ -313,71 +415,85 @@ sudo /opt/friendbox/scripts/redeploy.sh --health   # health check
 ## 📁 File Layout
 
 ```
-/usr/local/bin/friendbox          # The friendbox command (auto-updated on launch)
+/usr/local/bin/friendbox              # The friendbox command (auto-updated on launch)
 
 /opt/friendbox/
-├── .env                          # Environment variables (domain, paths, UID/GID)
-├── .state                        # Internal state (media root path)
-├── .installed                    # Install timestamp — written by Full Install, cleared by Teardown
-├── .selected_containers          # Which containers are active
-├── .mergerfs_modes               # Per-disk MergerFS mode (RW/NC/RO)
-├── .mergerfs_pool                # MergerFS pool mount path
-├── .dns_config                   # DNS provider credentials (chmod 600)
-├── docker-compose.yml            # Full service stack (auto-updated on launch)
+├── .env                              # Environment variables (domain, paths, UID/GID)
+├── .state                            # Internal state
+├── .installed                        # Written by Full Install, cleared by Teardown
+├── .selected_containers              # Active container selection
+├── .mergerfs_modes                   # Per-disk MergerFS mode (RW/NC/RO)
+├── .mergerfs_pool                    # MergerFS pool mount path
+├── .dns_config                       # DNS provider credentials (chmod 600)
+├── docker-compose.yml                # Full service stack
 ├── config/
 │   ├── traefik/
-│   │   ├── traefik.yml           # Traefik static config (auto-updated on launch)
-│   │   └── acme.json             # Let's Encrypt certificates (chmod 600, root-owned)
+│   │   ├── traefik.yml               # Generated by Friendbox — do not edit manually
+│   │   └── acme.json                 # Let's Encrypt certificates (root:root 600)
 │   ├── portainer/
-│   ├── plex/                     # One folder per selected container
+│   ├── plex/
 │   ├── sonarr/
-│   └── ...
+│   └── ...                           # One folder per container
 └── scripts/
-    └── redeploy.sh               # Standalone redeploy helper (auto-updated on launch)
+    └── redeploy.sh                   # Standalone redeploy helper
 ```
+
+> `traefik.yml` is fully generated from your `.env` settings and ACME provider selection. Do not edit manually — it will be overwritten. Use option 4 to make changes.
 
 ---
 
 ## 🔒 Security Notes
 
-- `acme.json` is always `chmod 600` and root-owned — Traefik requires this.
-- `.dns_config` is `chmod 600` — contains API keys.
-- The Traefik dashboard is protected by bcrypt HTTP Basic Auth (set via option 4).
-- qBittorrent's default credentials (`admin` / `adminadmin`) must be changed immediately after first login.
-- `exposedByDefault: false` in Traefik — only containers with explicit labels get public routes.
-- All containers communicate internally via the `medianet` bridge — nothing is exposed to the internet except through Traefik on ports 80 and 443.
+- `acme.json` is always `root:root 600` — required for Traefik v3 to write cert renewals
+- `.dns_config` is `chmod 600` — contains DNS provider API keys
+- The Traefik HTTPS dashboard requires bcrypt Basic Auth credentials (option 4 → option 1)
+- The Traefik API at `:8080` is insecure by design for LAN diagnostics — **do not expose port 8080 to the internet**
+- qBittorrent default credentials (`admin` / `adminadmin`) must be changed immediately after first login
+- `exposedByDefault: false` — only explicitly labeled containers get Traefik routes
+- All inter-container traffic uses the `medianet` bridge — nothing reaches the internet except through Traefik on ports 80 and 443
 
 ---
 
 ## 🐛 Troubleshooting
 
-**Certificates not issuing**
-- Confirm ports 80 and 443 are open and forwarded to this machine.
-- Confirm DNS A records point to your server's public IP: `dig +short traefik.yourdomain.com`
-- Check Traefik logs: `sudo friendbox` → option 14 → enter `traefik`
+**`Testing certificate renew` loop in Traefik logs**
+- `acme.json` is owned by the wrong user. Fix: `sudo chown root:root /opt/friendbox/config/traefik/acme.json && sudo chmod 600 /opt/friendbox/config/traefik/acme.json`
+- Clear stale data and restart: `sudo truncate -s 0 /opt/friendbox/config/traefik/acme.json && docker restart traefik`
 
-**Container won't start**
-- Check logs: `sudo friendbox` → option 14 → enter the container name
-- Re-run directory provisioning: option 8
-- Verify `.env` is correct: `cat /opt/friendbox/.env`
+**Hit Let's Encrypt rate limit (5 certs/week)**
+- Switch to staging CA to continue testing: option 4 → option 4
+- The pre-flight check (option 4 → option 5) queries crt.sh and shows remaining slots and reset time
 
-**Permission errors in container logs**
-- Run `sudo friendbox` → option 8 to fix directory ownership
-- Confirm PUID/PGID in `.env` match the owner of your media files: `ls -lan /mnt/media`
+**404 on HTTPS subdomain after accepting cert warning**
+- Run live routing diagnostics: option 4 → option 6
+- Check all routers are registered and backends show UP
+- Confirm `DOMAIN` in `.env` has no trailing whitespace — the diagnostics check will flag this
+- Restart containers to apply latest labels: `docker compose down && docker compose up -d`
 
-**VPN containers not connecting**
-- Confirm credentials are saved: `sudo friendbox` → option 5
-- Check that `VPN_PROV`, `VPN_CLIENT`, `VPN_USER`, `VPN_PASS`, and `LAN_NETWORK` are all set in `/opt/friendbox/.env`
-- Check container logs: `sudo friendbox` → option 14 → enter `qbittorrentvpn` or `delugevpn`
+**Subdomain accessible via IP:port but not via HTTPS**
+- Confirm container is on `medianet`: `docker inspect <container> --format '{{json .NetworkSettings.Networks}}'`
+- Check Traefik sees the backend: `curl -s http://localhost:8080/api/http/services/<name>@docker | python3 -m json.tool`
+- Confirm DNS resolves correctly: `nslookup portainer.yourdomain.com`
+
+**MergerFS: writes appearing on RO drive**
+- RO branches must never have subdirectories created on them
+- Run option 7 → option 7 to fix ownership and recreate subdirs only on RW/NC branches
+- Remount pool to apply current mode settings: option 7 → option 6
 
 **MergerFS pool not mounted after reboot**
-- Confirm the pool entry exists in `/etc/fstab`: `grep mergerfs /etc/fstab`
-- Check pool status: `sudo friendbox` → option 7 → option 6
-- Manually mount: `sudo mount /mnt/media`
+- Check fstab entry: `grep mergerfs /etc/fstab`
+- Manually remount: option 7 → option 6
+- Check individual drive mount status: option 7 → option 5
+
+**Permission errors in container logs**
+- Run option 8 to fix all directory ownership
+- Confirm PUID/PGID match your media files: `ls -lan /mnt/media`
+
+**VPN containers not connecting**
+- Confirm credentials are saved: option 5
+- Check required vars are present: `grep -E "VPN_PROV|VPN_CLIENT|VPN_USER|VPN_PASS|LAN_NETWORK" /opt/friendbox/.env`
+- Check logs: option 14 → `qbittorrentvpn` or `delugevpn`
 
 **Script not updating on launch**
-- The auto-update requires root. Always run `sudo friendbox`, not `friendbox`.
-- If offline, the script falls back to the local copy — run `sudo friendbox` → option 9 when connectivity is restored.
-
-**Wrong OS warning**
-- Friendbox is tested on Ubuntu 24.04.4 LTS. Other distros may require manual adjustment of the Docker install steps in `check_deps()`.
+- Always use `sudo friendbox` — auto-update requires root
+- Manually trigger sync: option 9

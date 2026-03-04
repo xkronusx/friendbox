@@ -39,7 +39,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
-      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.middlewares=auth"
       - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_AUTH}"
@@ -61,7 +61,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
       - "traefik.http.routers.portainer.entrypoints=websecure"
-      - "traefik.http.routers.portainer.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.portainer.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
   # ── Plex — media playback ───────────────────────────────────────────────────
@@ -87,7 +87,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.plex.rule=Host(`plex.${DOMAIN}`)"
       - "traefik.http.routers.plex.entrypoints=websecure"
-      - "traefik.http.routers.plex.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.plex.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.plex.loadbalancer.server.port=32400"
 
   # ── Jellyfin — open-source media server ────────────────────────────────────
@@ -112,7 +112,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.${DOMAIN}`)"
       - "traefik.http.routers.jellyfin.entrypoints=websecure"
-      - "traefik.http.routers.jellyfin.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.jellyfin.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
 
   # ── Sonarr — TV show management ─────────────────────────────────────────────
@@ -137,7 +137,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.sonarr.rule=Host(`sonarr.${DOMAIN}`)"
       - "traefik.http.routers.sonarr.entrypoints=websecure"
-      - "traefik.http.routers.sonarr.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.sonarr.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
 
   # ── Radarr — movie management ───────────────────────────────────────────────
@@ -162,7 +162,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.radarr.rule=Host(`radarr.${DOMAIN}`)"
       - "traefik.http.routers.radarr.entrypoints=websecure"
-      - "traefik.http.routers.radarr.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.radarr.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.radarr.loadbalancer.server.port=7878"
 
   # ── Prowlarr — indexer management (nightly) ─────────────────────────────────
@@ -185,7 +185,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.prowlarr.rule=Host(`prowlarr.${DOMAIN}`)"
       - "traefik.http.routers.prowlarr.entrypoints=websecure"
-      - "traefik.http.routers.prowlarr.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.prowlarr.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.prowlarr.loadbalancer.server.port=9696"
 
   # ── Bazarr — subtitle management ────────────────────────────────────────────
@@ -210,7 +210,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.bazarr.rule=Host(`bazarr.${DOMAIN}`)"
       - "traefik.http.routers.bazarr.entrypoints=websecure"
-      - "traefik.http.routers.bazarr.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.bazarr.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
 
   # ── Ombi — media request manager (v3) ──────────────────────────────────────
@@ -233,7 +233,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.ombi.rule=Host(`ombi.${DOMAIN}`)"
       - "traefik.http.routers.ombi.entrypoints=websecure"
-      - "traefik.http.routers.ombi.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.ombi.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.ombi.loadbalancer.server.port=3579"
 
   # ── Overseerr — media request & discovery manager ───────────────────────────
@@ -256,7 +256,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.overseerr.rule=Host(`overseerr.${DOMAIN}`)"
       - "traefik.http.routers.overseerr.entrypoints=websecure"
-      - "traefik.http.routers.overseerr.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.overseerr.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.overseerr.loadbalancer.server.port=5055"
 
   # ── NZBGet — Usenet download client ────────────────────────────────────────
@@ -280,7 +280,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.nzbget.rule=Host(`nzbget.${DOMAIN}`)"
       - "traefik.http.routers.nzbget.entrypoints=websecure"
-      - "traefik.http.routers.nzbget.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nzbget.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.nzbget.loadbalancer.server.port=6789"
 
   # ── qBittorrent — torrent client (no VPN) ──────────────────────────────────
@@ -307,7 +307,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.qbt.rule=Host(`qbt.${DOMAIN}`)"
       - "traefik.http.routers.qbt.entrypoints=websecure"
-      - "traefik.http.routers.qbt.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.qbt.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.qbt.loadbalancer.server.port=8080"
 
   # ── qBittorrentVPN — torrent client behind VPN ─────────────────────────────
@@ -348,7 +348,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.qbtvpn.rule=Host(`qbtvpn.${DOMAIN}`)"
       - "traefik.http.routers.qbtvpn.entrypoints=websecure"
-      - "traefik.http.routers.qbtvpn.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.qbtvpn.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.qbtvpn.loadbalancer.server.port=8080"
 
   # ── DelugeVPN — Deluge torrent client behind VPN ───────────────────────────
@@ -390,7 +390,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.delugevpn.rule=Host(`deluge.${DOMAIN}`)"
       - "traefik.http.routers.delugevpn.entrypoints=websecure"
-      - "traefik.http.routers.delugevpn.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.delugevpn.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.delugevpn.loadbalancer.server.port=8112"
 
   # ── NetbootXYZ — network boot server ───────────────────────────────────────
@@ -415,7 +415,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.netbootxyz.rule=Host(`netboot.${DOMAIN}`)"
       - "traefik.http.routers.netbootxyz.entrypoints=websecure"
-      - "traefik.http.routers.netbootxyz.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.netbootxyz.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.netbootxyz.loadbalancer.server.port=3000"
 
   # ── TeamSpeak 6 — voice communication server ────────────────────────────────
@@ -439,7 +439,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
       - "traefik.http.routers.ts6.entrypoints=websecure"
-      - "traefik.http.routers.ts6.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.ts6.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.ts6.loadbalancer.server.port=10080"
 
   # ── Mumble — open-source voice chat server ──────────────────────────────────
@@ -481,7 +481,7 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.jellyseerr.rule=Host(`jellyseerr.${DOMAIN}`)"
       - "traefik.http.routers.jellyseerr.entrypoints=websecure"
-      - "traefik.http.routers.jellyseerr.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.jellyseerr.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
 
   # ── AMP (AMP-MC) — game server management panel ────────────────────────────
@@ -505,5 +505,5 @@ services:
       - "traefik.enable=${USE_TRAEFIK:-false}"
       - "traefik.http.routers.ampmc.rule=Host(`amp.${DOMAIN}`)"
       - "traefik.http.routers.ampmc.entrypoints=websecure"
-      - "traefik.http.routers.ampmc.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.ampmc.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.ampmc.loadbalancer.server.port=8080"

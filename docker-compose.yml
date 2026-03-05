@@ -622,16 +622,19 @@ services:
     ports:
       - "9987:9987/udp"
       - "10011:10011"
-      - "10080:10080"
+      # Port 10080 (WebAuth) is disabled by default — enable manually if needed:
+      # - "10080:10080"
       - "30033:30033"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"
-      - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
-      - "traefik.http.routers.ts6.entrypoints=websecure"
-      - "traefik.http.routers.ts6.tls=true"
-      - "traefik.http.routers.ts6.tls.certresolver=letsencrypt"
-      - "traefik.http.services.ts6.loadbalancer.server.port=10080"
+      # Traefik routing for TS6 WebAuth (port 10080) is disabled by default.
+      # Uncomment the lines below and the port mapping above to enable it.
+      # - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
+      # - "traefik.http.routers.ts6.entrypoints=websecure"
+      # - "traefik.http.routers.ts6.tls=true"
+      # - "traefik.http.routers.ts6.tls.certresolver=letsencrypt"
+      # - "traefik.http.services.ts6.loadbalancer.server.port=10080"
 
   # ── Mumble — open-source voice chat server ──────────────────────────────────
   mumble:

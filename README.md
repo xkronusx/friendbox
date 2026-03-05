@@ -38,16 +38,24 @@ sudo friendbox
 
 Every launch automatically pulls the latest files from GitHub before opening the menu. If GitHub is unreachable, it falls back to the local copy silently.
 
+### 3. Run Full Install
+
+At the menu, select **option 1 — Full Install**. This walks you through every setup step in sequence: environment config, container selection, Docker install, network creation, directory provisioning, and starting your containers.
+
+> See [First-Time Setup — Step by Step](#️-first-time-setup--step-by-step) below for what to prepare before running it.
+
 ---
 
 ## 🗂 First-Time Setup — Step by Step
 
-Follow these steps **in order**. Steps 1–4 are required. The rest depend on which services you select.
+**Full Install (option 1) handles the entire sequence automatically** — it calls environment configuration and container selection itself as part of its flow. You don't need to run options 2 and 3 separately before running option 1.
+
+The steps below explain what happens during that flow and what to prepare in advance. Steps marked *(skip if not applicable)* are optional.
 
 ---
 
 ### Step 1 — MergerFS storage pool *(skip if using a single drive)*
-**`sudo friendbox` → option 7**
+**`sudo friendbox` → option 7** — run this *before* Full Install if applicable
 
 If you have multiple physical drives to pool into a single path, set this up first — before configuring your environment — so the pool path can be used as your media root.
 
@@ -90,7 +98,7 @@ mkdir -p /mnt/media && chown 1000:1000 /mnt/media
 ---
 
 ### Step 2 — Configure your environment
-**`sudo friendbox` → option 3**
+**Handled automatically by Full Install** — or run manually via `sudo friendbox` → option 3
 
 Sets core variables in `/opt/friendbox/.env`. All other steps depend on this.
 
@@ -99,15 +107,17 @@ Sets core variables in `/opt/friendbox/.env`. All other steps depend on this.
 | **Domain** | Your domain (e.g. `temperus.duckdns.org`). Must be a domain you control. |
 | **ACME email** | Used by Let's Encrypt for certificate notifications. Use a real address. |
 | **Config root** | Where container config data lives (default: `/opt/friendbox/config`) |
+| **Media root** | Where media files live (default: `/mnt/media`). Set to your MergerFS pool path if applicable. |
 | **PUID / PGID** | Linux user/group ID containers run as. Default `1000:1000` is correct for the first non-root user. Run `id` to confirm. |
 | **Timezone** | e.g. `America/Toronto` |
+| **Plex claim token** | Optional. Get one at [plex.tv/claim](https://plex.tv/claim) — valid for 4 minutes. Lets Plex auto-link to your account on first start. Leave blank to claim manually later. |
 
 Press **Enter** on any prompt to keep the current value.
 
 ---
 
 ### Step 3 — Select containers
-**`sudo friendbox` → option 2**
+**Handled automatically by Full Install** — or run manually via `sudo friendbox` → option 2
 
 Toggle services with their number, press `d` when done. Your selection persists between runs.
 
@@ -131,8 +141,8 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `ombi` | Media request manager (Plex/Jellyfin) |
 | `jellyseerr` | Media request manager (Jellyfin) |
 | `netbootxyz` | Network boot server |
-| `teamspeak6` | TeamSpeak 6 voice server |
-| `mumble` | Mumble voice server |
+| `teamspeak6` | TeamSpeak 6 voice server — connect via TS6 client on UDP 9987 |
+| `mumble` | Mumble voice server — connect via Mumble client on port 64738 |
 | `ampmc` | AMP game server management panel |
 
 **Recommended minimum for a media server:**
@@ -205,9 +215,13 @@ Queries the Traefik API at `localhost:8080` and shows:
 
 **Traefik dashboard access:**
 
-The dashboard is always available at `http://YOUR_SERVER_IP:8080/dashboard/` regardless of certificate status — useful when HTTPS is not working yet. The secured HTTPS dashboard at `https://traefik.yourdomain.com` requires a valid cert and the credentials set in option 1.
+Port 8080 is bound to `127.0.0.1` only — it is not reachable from the LAN. To access the dashboard from another machine, use an SSH tunnel:
 
-> ⚠️ Port 8080 is bound to `127.0.0.1` only — it is not reachable from the LAN or internet, only from the server itself. To access the dashboard remotely, use an SSH tunnel: `ssh -L 8080:localhost:8080 user@yourserver` then open `http://localhost:8080/dashboard/` locally.
+```bash
+ssh -L 8080:localhost:8080 user@yourserver
+```
+
+Then open `http://localhost:8080/dashboard/` in your local browser. This is useful when HTTPS isn't working yet and you need to inspect routing. The secured HTTPS dashboard at `https://traefik.yourdomain.com` requires a valid cert and the credentials set in option 1.
 
 ---
 
@@ -221,6 +235,8 @@ Only shows options for services you have selected.
 | **qBittorrentVPN / DelugeVPN** | VPN provider, client type (openvpn/wireguard), username, password, LAN CIDR |
 | **AMP** | Admin username and password |
 | **Mumble** | Superuser password |
+
+> **VPN LAN CIDR note:** The default value includes both your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet (`172.28.0.0/16`). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik's health checks and reverse proxying to reach the VPN container while the tunnel is active. If you use a different home subnet (e.g. `192.168.0.0/24`), update the first entry accordingly but keep `,172.28.0.0/16`.
 
 ---
 
@@ -255,18 +271,26 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 
 | Service | Default URL | First login |
 |---|---|---|
-| Traefik dashboard | `http://localhost:8080/dashboard/` (host-only) | No auth. Port 8080 is bound to `127.0.0.1` — only reachable from the server itself (e.g. via SSH tunnel). |
+| Traefik dashboard | SSH tunnel → `http://localhost:8080/dashboard/` | No auth (localhost only). See Step 5 above. |
 | Traefik (HTTPS) | `https://traefik.yourdomain.com` | Credentials set in option 4 → option 1 |
 | Portainer | `https://portainer.yourdomain.com` | Create admin account on first visit |
 | Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths to `/movies`, `/tv` |
-| Jellyfin | `https://jellyfin.yourdomain.com` | Create admin account, set library paths |
+| Jellyfin | `https://jellyfin.yourdomain.com` | Create admin account, set library paths to `/data/tv`, `/data/movies` |
 | Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/tv`, connect Prowlarr + download client |
 | Radarr | `https://radarr.yourdomain.com` | Add root folder `/movies`, connect Prowlarr + download client |
 | Prowlarr | `https://prowlarr.yourdomain.com` | Add indexers, sync to Sonarr/Radarr |
-| qBittorrent | `https://qbt.yourdomain.com` (`http://IP:8082` direct) | Default: `admin` / `adminadmin` — **change immediately** |
 | Bazarr | `https://bazarr.yourdomain.com` | Connect Sonarr + Radarr, configure subtitle providers |
+| qBittorrent | `https://qbt.yourdomain.com` (`http://IP:8082` direct) | Default: `admin` / `adminadmin` — **change immediately** |
+| qBittorrentVPN | `https://qbtvpn.yourdomain.com` (`http://IP:8181` direct) | Same default credentials — **change immediately** |
+| DelugeVPN | `https://deluge.yourdomain.com` (`http://IP:8112` direct) | Default password: `deluge` — **change immediately** |
+| NZBGet | `https://nzbget.yourdomain.com` (`http://IP:6789` direct) | Default: `nzbget` / `tegbzn6789` — **change immediately** |
 | Overseerr | `https://overseerr.yourdomain.com` | Sign in with Plex account |
+| Ombi | `https://ombi.yourdomain.com` (`http://IP:3579` direct) | Create admin account on first visit |
 | Jellyseerr | `https://jellyseerr.yourdomain.com` (`http://IP:5056` direct) | Sign in with Jellyfin account |
+| AMP | `https://amp.yourdomain.com` (`http://IP:8085` direct) | Credentials set in option 5 |
+| NetbootXYZ | `https://netboot.yourdomain.com` (`http://IP:3000` direct) | No auth by default |
+| TeamSpeak 6 | No web UI — connect with the TS6 client to `yourserver:9987` (UDP) | Server admin token printed in container logs on first start: `docker logs teamspeak6` |
+| Mumble | No web UI — connect with a Mumble client to `yourserver:64738` | Superuser password set in option 5 |
 
 ---
 
@@ -280,11 +304,17 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | Sonarr | `http://sonarr:8989` |
 | Radarr | `http://radarr:7878` |
 | Bazarr | `http://bazarr:6767` |
+| Plex | `http://plex:32400` |
 | Jellyfin | `http://jellyfin:8096` |
 | qBittorrent | `http://qbittorrent:8080` |
 | qBittorrentVPN | `http://qbittorrentvpn:8080` |
 | DelugeVPN | `http://delugevpn:8112` |
 | NZBGet | `http://nzbget:6789` |
+| Overseerr | `http://overseerr:5055` |
+| Ombi | `http://ombi:3579` |
+| Jellyseerr | `http://jellyseerr:5055` |
+
+> Note: Jellyseerr's **internal** port is `5055`. The host binding is `5056` (to avoid clashing with Overseerr when both are running), but container-to-container traffic always uses the internal port.
 
 **Recommended connection order:**
 1. Prowlarr → add your indexers
@@ -449,12 +479,13 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - `acme.json` is always `root:root 600` — required for Traefik v3 to write cert renewals
 - `.dns_config` is `chmod 600` — contains DNS provider API keys
 - The Traefik HTTPS dashboard requires bcrypt Basic Auth credentials (option 4 → option 1)
-- The Traefik API at `:8080` is bound to `127.0.0.1` only — it is only reachable from the server itself, not from the LAN or internet. Use `ssh -L 8080:localhost:8080 user@server` to access it remotely
+- The Traefik API at `:8080` is bound to `127.0.0.1` only — not reachable from the LAN or internet. Access via SSH tunnel: `ssh -L 8080:localhost:8080 user@server`
 - qBittorrent default credentials (`admin` / `adminadmin`) must be changed immediately after first login
 - `exposedByDefault: false` — only explicitly labeled containers get Traefik routes
 - All inter-container traffic uses the `medianet` bridge — nothing reaches the internet except through Traefik on ports 80 and 443
 - qBittorrent binds host port `8082` (not 8080) to avoid conflicting with Traefik's API on port 8080
 - Jellyseerr binds host port `5056` (not 5055) to avoid conflicting with Overseerr when both are selected
+- TeamSpeak 6 WebAuth port `10080` is commented out by default — enable manually only if needed and with appropriate firewall rules
 
 ---
 
@@ -497,6 +528,14 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Confirm credentials are saved: option 5
 - Check required vars are present: `grep -E "VPN_PROV|VPN_CLIENT|VPN_USER|VPN_PASS|LAN_NETWORK" /opt/friendbox/.env`
 - Check logs: option 14 → `qbittorrentvpn` or `delugevpn`
+
+**VPN container Traefik backend shows DOWN**
+- The binhex VPN images use `LAN_NETWORK` to build iptables rules for traffic allowed through the VPN firewall. If `172.28.0.0/16` (the `medianet` Docker bridge) is not in `LAN_NETWORK`, Traefik's health checks are silently dropped.
+- Fix: option 5 → VPN credentials → ensure `LAN_NETWORK` includes `,172.28.0.0/16` alongside your home subnet (e.g. `192.168.1.0/24,172.28.0.0/16`)
+- After saving, redeploy the VPN container: option 12 → option 2
+
+**TeamSpeak 6 WebAuth (port 10080) not accessible**
+- Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → `teamspeak6`
 
 **Script not updating on launch**
 - Always use `sudo friendbox` — auto-update requires root

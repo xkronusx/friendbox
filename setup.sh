@@ -399,12 +399,6 @@ select_containers() {
       fi
     }
     _env_set_inline USE_TRAEFIK "$_use_traefik"
-    local _hip
-    _hip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
-    [[ -z "$_hip" ]] && _hip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [[ -z "$_hip" ]] && _hip="localhost"
-    _env_set_inline JELLYFIN_URL      "http://${_hip}:8096"
-    _env_set_inline PLEX_ADVERTISE_IP "http://${_hip}:32400"
   fi
 }
 
@@ -525,7 +519,7 @@ sync_repo() {
   fi
   echo ""
   if [[ $script_ok -eq 1 && $compose_ok -eq 1 ]]; then
-    success "Sync complete. Run option 13 (Redeploy) to apply any image changes."
+    success "Sync complete. Run option 12 (Redeploy) to apply any image changes."
   elif [[ $script_ok -eq 0 && $compose_ok -eq 0 ]]; then
     warn "Sync failed. Check your internet connection."
     return 1
@@ -588,48 +582,6 @@ https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_C
     info "mergerfs not installed — only required for the MergerFS storage pool (menu option 7)."
     info "It will be installed automatically when you run the pool setup."
   fi
-}
-
-configure_ufw() {
-  # Docker and ufw (Ubuntu's firewall) conflict on Ubuntu 24.04.
-  # Docker writes iptables DNAT + FORWARD rules to publish container ports.
-  # ufw's default FORWARD policy is DROP, which silently blocks those packets —
-  # even for connections to published ports on 127.0.0.1 and the LAN IP.
-  # Symptom: containers run, docker ps shows ports, but every connection is refused.
-  #
-  # Fix: set DEFAULT_FORWARD_POLICY=ACCEPT in /etc/default/ufw so Docker's
-  # FORWARD rules are honoured, then open the ports Friendbox needs.
-
-  if ! command -v ufw &>/dev/null; then
-    return 0   # ufw not installed — nothing to do
-  fi
-
-  local ufw_status
-  ufw_status=$(ufw status 2>/dev/null | head -1)
-  if [[ "$ufw_status" != *"active"* ]]; then
-    return 0   # ufw installed but not active — nothing to do
-  fi
-
-  info "ufw is active — configuring Docker compatibility..."
-
-  # 1. Set DEFAULT_FORWARD_POLICY=ACCEPT so Docker's bridge forwarding works
-  local ufw_default="/etc/default/ufw"
-  if grep -q '^DEFAULT_FORWARD_POLICY=' "$ufw_default" 2>/dev/null; then
-    sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' "$ufw_default"
-  else
-    echo 'DEFAULT_FORWARD_POLICY="ACCEPT"' >> "$ufw_default"
-  fi
-  success "Set DEFAULT_FORWARD_POLICY=ACCEPT in ${ufw_default}."
-
-  # 2. Open the Traefik-facing ports
-  local rule
-  for rule in "80/tcp" "443/tcp" "8080/tcp"; do
-    ufw allow "$rule" >/dev/null 2>&1 && success "ufw: allowed ${rule}"
-  done
-
-  # 3. Reload ufw to apply the FORWARD policy change
-  ufw reload >/dev/null 2>&1
-  success "ufw reloaded."
 }
 
 # =============================================================================
@@ -1330,18 +1282,6 @@ configure_env() {
   _env_set TRAEFIK_AUTH "${existing_auth}"
   [[ -n "${SELECTED[plex]+_}" && "$plex_running" == "false" ]] && _env_set PLEX_CLAIM "${PLEX_CLAIM:-}"
 
-  # Set JELLYFIN_URL and PLEX_ADVERTISE_IP to the host LAN IP so both containers
-  # are always reachable directly on the LAN. These vars control what address
-  # each app advertises to clients — they do NOT affect Traefik's ability to
-  # proxy them. Setting them to an HTTPS domain causes the apps to expect HTTPS
-  # on their own port and reset direct HTTP connections.
-  local _host_ip
-  _host_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
-  [[ -z "$_host_ip" ]] && _host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-  [[ -z "$_host_ip" ]] && _host_ip="localhost"
-  _env_set JELLYFIN_URL        "http://${_host_ip}:8096"
-  _env_set PLEX_ADVERTISE_IP   "http://${_host_ip}:32400"
-
   _own "$ENV_FILE"
   success ".env updated (${ENV_FILE})"
   if [[ "$USE_TRAEFIK" == "true" ]]; then
@@ -1926,7 +1866,7 @@ _traefik_live_diag() {
       ;;
     missing)
       error "Traefik container does not exist — deploy it first:"
-      error "  Main menu → option 13 → option 1 (or ensure Traefik is selected)"
+      error "  Main menu → option 12 → option 1 (or ensure Traefik is selected)"
       return 1
       ;;
     exited|dead)
@@ -2150,7 +2090,7 @@ _traefik_emergency_recover() {
     info "are forwarded to this machine, then run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"
-    info "  Main menu → option 13 → option 1"
+    info "  Main menu → option 12 → option 1"
   fi
 }
 
@@ -2292,7 +2232,7 @@ _traefik_set_auth() {
   sed -i '/^TRAEFIK_AUTH=/d;/^TRAEFIK_USER=/d' "$ENV_FILE" 2>/dev/null || true
   printf 'TRAEFIK_USER=%s\nTRAEFIK_AUTH=%s\n' "$dash_user" "$new_auth" >> "$ENV_FILE"
   success "Traefik dashboard credentials saved."
-  info "Redeploy Traefik (menu option 13 → option 2 → traefik) to apply changes."
+  info "Redeploy Traefik (menu option 12 → option 2 → traefik) to apply changes."
 }
 
 _traefik_set_domain() {
@@ -3469,7 +3409,6 @@ full_install() {
 
   check_os
   check_deps
-  configure_ufw
   sync_repo
   configure_env
   select_containers
@@ -3688,20 +3627,19 @@ main_menu() {
     echo ""
     echo "  ── Operations ───────────────────────────"
     echo "   8) Provision / fix directory ownership"
-    echo "   9) Fix firewall (ufw + Docker)"
-    echo "  10) Sync latest files from GitHub"
-    echo "  11) Show container status"
-    echo "  12) View service URLs"
-    echo "  13) Redeploy containers"
-    echo "  14) Update stack (pull latest images)"
-    echo "  15) View logs"
-    echo "  16) Teardown (stop & remove containers)"
+    echo "   9) Sync latest files from GitHub"
+    echo "  10) Show container status"
+    echo "  11) View service URLs"
+    echo "  12) Redeploy containers"
+    echo "  13) Update stack (pull latest images)"
+    echo "  14) View logs"
+    echo "  15) Teardown (stop & remove containers)"
     echo "   q) Quit"
     echo ""
     read -rp "Select option: " opt
 
     # ── Gate operations-section items when not installed ─────────────────────
-    if ! is_installed && [[ "$opt" =~ ^(11|12|13|14|15|16)$ ]]; then
+    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|15)$ ]]; then
       echo ""
       warn "Friendbox has not been installed yet."
       warn "Run option 1 (Full Install) first, then use the operations menu."
@@ -3718,14 +3656,13 @@ main_menu() {
       6)  configure_dns                          ;;   # has its own loop+return
       7)  setup_mergerfs                         ;;   # has its own loop+return
       8)  provision_directories           || true; pause ;;
-      9)  configure_ufw                   || true; pause ;;
-      10) sync_repo                       || true; pause ;;
-      11) show_status                     || true; pause ;;
-      12) print_urls                      || true; pause ;;
-      13) redeploy_menu                          ;;   # now has its own loop+return
-      14) update_stack                    || true; pause ;;
-      15) view_logs                       || true; pause ;;
-      16) teardown                        || true; pause ;;
+      9)  sync_repo                       || true; pause ;;
+      10) show_status                     || true; pause ;;
+      11) print_urls                      || true; pause ;;
+      12) redeploy_menu                          ;;   # has its own loop+return
+      13) update_stack                    || true; pause ;;
+      14) view_logs                       || true; pause ;;
+      15) teardown                        || true; pause ;;
       q|Q) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid option '$opt'"; sleep 1 ;;
     esac

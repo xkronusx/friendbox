@@ -176,8 +176,13 @@ services:
       - ${MEDIA_ROOT}/movies:/data/movies
     ports:
       - "8096:8096"
-      - "7359:7359/udp"
-      - "1900:1900/udp"
+      # Ports 7359/udp (client discovery) and 1900/udp (DLNA/SSDP) are omitted.
+      # Port 1900 conflicts with avahi-daemon on Ubuntu, which prevents Docker
+      # from binding any of Jellyfin's ports including 8096. These ports are
+      # optional — Jellyfin is fully functional without them. Enable manually
+      # if you need DLNA and avahi-daemon is not running on the host:
+      # - "7359:7359/udp"
+      # - "1900:1900/udp"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"

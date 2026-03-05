@@ -2704,13 +2704,49 @@ REDEPLOY
 }
 
 ensure_network() {
-  # medianet is now declared directly in docker-compose.yml (not external: true),
-  # so Docker Compose creates it automatically on every `compose up`.
-  # This function just verifies the Docker daemon is reachable before we proceed.
+  # medianet is declared inline in docker-compose.yml (not external).
+  # Docker Compose creates it automatically on `compose up`.
+  # However, if an old medianet network exists from a prior install
+  # (created manually or with a different subnet), Compose will error
+  # on subnet mismatch and refuse to start any containers.
+  # This function detects and removes stale networks before compose runs.
+
   if ! docker info &>/dev/null; then
     die "Docker daemon is not running. Start it with: sudo systemctl start docker"
   fi
-  success "Docker daemon reachable."
+
+  if docker network inspect medianet &>/dev/null; then
+    local existing_subnet
+    existing_subnet=$(docker network inspect medianet \
+      --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || true)
+
+    if [[ "$existing_subnet" == "172.29.0.0/24" ]]; then
+      success "Docker network 'medianet' already exists with correct subnet (172.29.0.0/24)."
+      return 0
+    fi
+
+    # Stale network with wrong subnet — remove it so Compose can recreate correctly.
+    warn "Existing 'medianet' network has subnet ${existing_subnet:-unknown} (expected 172.29.0.0/24)."
+    warn "Removing stale network so Docker Compose can recreate it with the correct subnet..."
+
+    # Disconnect any containers still attached before removing
+    local attached
+    attached=$(docker network inspect medianet --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
+    if [[ -n "$attached" ]]; then
+      warn "Stopping attached containers first: ${attached}"
+      # shellcheck disable=SC2086
+      docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down 2>/dev/null || true
+    fi
+
+    if docker network rm medianet 2>/dev/null; then
+      success "Stale medianet network removed. Docker Compose will recreate it on next start."
+    else
+      error "Could not remove medianet network. There may be containers still attached."
+      error "Run: docker compose down   then re-run Full Install."
+      return 1
+    fi
+  fi
+  # Network doesn't exist — Compose will create it on `compose up`. Nothing to do.
 }
 
 ensure_acme() {

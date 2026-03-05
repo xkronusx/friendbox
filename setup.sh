@@ -165,9 +165,9 @@ check_os() {
     echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo ""
     echo -e "  ${BOLD}Detected:${RESET}   ${os_pretty:-Unknown OS}"
-    echo -e "  ${BOLD}Supported:${RESET}  Ubuntu 24.04.4 LTS (Noble Numbat)"
+    echo -e "  ${BOLD}Supported:${RESET}  Ubuntu 24.04 LTS (Noble Numbat)"
     echo ""
-    echo -e "  Friendbox is tested and supported on ${BOLD}Ubuntu 24.04.4 LTS${RESET} only."
+    echo -e "  Friendbox is tested and supported on ${BOLD}Ubuntu 24.04 LTS${RESET} only."
     echo -e "  Running on other systems may work but is not officially supported."
     echo -e "  Package names, service paths, and Docker install steps may differ."
     echo ""
@@ -204,7 +204,7 @@ declare -A CONTAINER_NAMES=(
   [delugevpn]="DelugeVPN"
   [nzbget]="NZBGet"
   [overseerr]="Overseerr"
-  [ombi]="Ombi v3"
+  [ombi]="Ombi v3 — media request manager (deprecated; consider Overseerr or Jellyseerr)"
   [jellyseerr]="Jellyseerr"
   [teamspeak6]="TeamSpeak 6"
   [mumble]="Mumble Server"
@@ -226,7 +226,7 @@ declare -A CONTAINER_DESC=(
   [delugevpn]="Deluge torrent client — routed through VPN (binhex)"
   [nzbget]="Usenet download client"
   [overseerr]="Media request & discovery manager"
-  [ombi]="Media request manager (Ombi v3)"
+  [ombi]="Media request manager (Ombi v3) — DEPRECATED, consider Overseerr or Jellyseerr"
   [jellyseerr]="Jellyfin-native media request manager"
   [teamspeak6]="TeamSpeak 6 voice server"
   [mumble]="Open-source Mumble voice server"
@@ -466,6 +466,12 @@ auto_update() {
   fi
   if ! bash -n /usr/local/bin/friendbox.new 2>/dev/null; then
     echo -e "${YELLOW}[WARN]${RESET}  Downloaded script failed syntax check — skipping update."
+    rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
+    return 0
+  fi
+  if ! python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1]))" \
+      "${COMPOSE_FILE}.new" 2>/dev/null; then
+    echo -e "${YELLOW}[WARN]${RESET}  Downloaded docker-compose.yml failed YAML parse — skipping update."
     rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
     return 0
   fi
@@ -3642,6 +3648,13 @@ teardown() {
   read -rp "Are you sure? [y/N] " yn
   [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return; }
   compose_selected down --remove-orphans
+  # Remove the medianet network so a subsequent install doesn't hit a subnet
+  # pool overlap error when Compose tries to recreate it.
+  if docker network inspect medianet &>/dev/null 2>&1; then
+    docker network rm medianet 2>/dev/null \
+      && success "Removed Docker network 'medianet'." \
+      || warn "Could not remove 'medianet' network — remove manually if reinstalling: docker network rm medianet"
+  fi
   mark_uninstalled
   success "Containers removed. Run option 1 to reinstall."
 }
@@ -3649,8 +3662,21 @@ teardown() {
 view_logs() {
   echo ""
   read -rp "Container name (leave blank for all active): " svc
-  if [[ -z "$svc" ]]; then compose_selected logs --tail=100 -f
-  else compose_selected logs --tail=100 -f "$svc"; fi
+  echo ""
+  echo "  1) Follow live logs (Ctrl+C to stop)"
+  echo "  2) Dump last 200 lines and return to menu"
+  echo ""
+  read -rp "  Choice [1]: " log_choice
+  log_choice="${log_choice:-1}"
+  echo ""
+  if [[ "$log_choice" == "2" ]]; then
+    if [[ -z "$svc" ]]; then compose_selected logs --tail=200 2>/dev/null
+    else compose_selected logs --tail=200 "$svc" 2>/dev/null; fi
+  else
+    info "Following logs — press Ctrl+C to stop and return to the menu."
+    if [[ -z "$svc" ]]; then compose_selected logs --tail=100 -f
+    else compose_selected logs --tail=100 -f "$svc"; fi
+  fi
 }
 
 # =============================================================================
@@ -3685,6 +3711,7 @@ main_menu() {
     if is_installed; then
       local installed_at
       installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2- || true)
+      echo -e "  ${GREEN}✔ INSTALLED${RESET}  ${DIM}${installed_at:+since ${installed_at}}${RESET}"
     else
       echo -e "  ${YELLOW}○ NOT YET INSTALLED${RESET}  ${DIM}Run option 1 to get started.${RESET}"
     fi

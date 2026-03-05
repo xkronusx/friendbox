@@ -71,8 +71,7 @@ services:
       - "traefik.http.routers.root.entrypoints=websecure"
       - "traefik.http.routers.root.tls=true"
       - "traefik.http.routers.root.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
-      - "traefik.http.routers.root.middlewares=secHeaders@file"
-      - "traefik.http.routers.root.middlewares=redirect-root"
+      - "traefik.http.routers.root.middlewares=secHeaders@file,redirect-root"
       - "traefik.http.routers.root.service=api@internal"
       - "traefik.http.middlewares.redirect-root.redirectregex.regex=^https://${DOMAIN}(.*)"
       - "traefik.http.middlewares.redirect-root.redirectregex.replacement=https://portainer.${DOMAIN}$${1}"
@@ -494,6 +493,12 @@ services:
         max-file: "3"
     networks:
       - medianet
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     cap_add:
       - NET_ADMIN
     privileged: true
@@ -545,6 +550,12 @@ services:
         max-file: "3"
     networks:
       - medianet
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8112"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     cap_add:
       - NET_ADMIN
     privileged: true

@@ -254,14 +254,14 @@ Each selected container gets its own subdomain (e.g. `portainer.yourdomain.com`,
 ---
 
 ### Step 8 — Verify everything is running
-**`sudo friendbox` → option 10 and option 11**
+**`sudo friendbox` → option 11 and option 12**
 
 ```
-sudo friendbox  →  option 10   (Show container status)
-sudo friendbox  →  option 11   (View service URLs)
+sudo friendbox  →  option 11   (Show container status)
+sudo friendbox  →  option 12   (View service URLs)
 ```
 
-Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses.
+Option 12 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses.
 
 **First-time login reference:**
 
@@ -340,15 +340,16 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | Option | Function | Notes |
 |---|---|---|
 | 8 | Provision / fix directory ownership | Creates config and media dirs, fixes permissions. |
-| 9 | Sync latest files from GitHub | Re-downloads compose file and setup script. |
-| 10 | Show container status | Runs `docker compose ps` for selected containers. |
-| 11 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
-| 12 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
-| 13 | Update stack | Pulls latest images and restarts the stack. |
-| 14 | View logs | Tail logs for all containers or a specific one. |
-| 15 | Teardown | Stops and removes containers. Config and data preserved. |
+| 9 | Fix firewall (ufw + Docker) | Sets `DEFAULT_FORWARD_POLICY=ACCEPT` and opens ports 80/443/8080. Run this if containers are unreachable. |
+| 10 | Sync latest files from GitHub | Re-downloads compose file and setup script. |
+| 11 | Show container status | Runs `docker compose ps` for selected containers. |
+| 12 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
+| 13 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
+| 14 | Update stack | Pulls latest images and restarts the stack. |
+| 15 | View logs | Tail logs for all containers or a specific one. |
+| 16 | Teardown | Stops and removes containers. Config and data preserved. |
 
-> **Options 10–15 are blocked until Full Install has been completed.** The menu header shows `● INSTALLED` or `○ NOT YET INSTALLED`.
+> **Options 11–16 are blocked until Full Install has been completed.** The menu header shows `● INSTALLED` or `○ NOT YET INSTALLED`.
 
 ---
 
@@ -418,13 +419,13 @@ Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `set
 ### Pull latest container images
 
 ```bash
-sudo friendbox  →  option 13
+sudo friendbox  →  option 14
 ```
 
 ### Redeploy a single container
 
 ```bash
-sudo friendbox  →  option 12  →  option 2  →  enter container name
+sudo friendbox  →  option 13  →  option 2  →  enter container name
 ```
 
 ### Redeploy via helper script
@@ -515,6 +516,11 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Check fstab entry: `grep mergerfs /etc/fstab`
 - Manually remount: option 7 → option 6
 - Check individual drive mount status: option 7 → option 5
+
+**Containers running but ports unreachable (127.0.0.1:9000, LAN IP:port refused)**
+- This is almost always Ubuntu's `ufw` firewall conflicting with Docker. ufw's default `FORWARD` policy is `DROP`, which blocks Docker's iptables DNAT rules even for connections on localhost.
+- Fix: `sudo friendbox` → option 9 (Fix firewall). This sets `DEFAULT_FORWARD_POLICY=ACCEPT` in `/etc/default/ufw` and reloads ufw.
+- Verify after fix: `curl -s http://localhost:9000` (Portainer) or `curl -s http://localhost:8096` (Jellyfin)
 
 **Permission errors in container logs**
 - Run option 8 to fix all directory ownership

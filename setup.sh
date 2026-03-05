@@ -1211,14 +1211,19 @@ configure_env() {
   read -rp "PGID [${PGID:-1000}]: " input; PGID="${input:-${PGID:-1000}}"
   read -rp "Timezone [${TZ:-America/Toronto}]: " input
   TZ="${input:-${TZ:-America/Toronto}}"
-  read -rp "Plex claim token (plex.tv/claim, optional) [${PLEX_CLAIM:-}]: " input
-  PLEX_CLAIM="${input:-${PLEX_CLAIM:-}}"
-
   # Derive USE_TRAEFIK from saved container selection — no prompts here.
   # Traefik dashboard credentials are configured separately via menu option 4.
   load_selected
   local USE_TRAEFIK="false"
   [[ -n "${SELECTED[traefik]+_}" ]] && USE_TRAEFIK="true"
+
+  # Only prompt for and persist PLEX_CLAIM when Plex is selected.
+  # The token is only useful on first container start and expires in 4 minutes,
+  # so there's no value showing the prompt when Plex isn't being deployed.
+  if [[ -n "${SELECTED[plex]+_}" ]]; then
+    read -rp "Plex claim token (plex.tv/claim, optional) [${PLEX_CLAIM:-}]: " input
+    PLEX_CLAIM="${input:-${PLEX_CLAIM:-}}"
+  fi
 
   # Preserve existing TRAEFIK_AUTH by reading it raw from the file —
   # NOT from the bash-eval'd environment. Bcrypt hashes contain $$ sequences
@@ -1252,7 +1257,7 @@ configure_env() {
   _env_set MEDIA_ROOT   "${MEDIA_ROOT}"
   _env_set USE_TRAEFIK  "${USE_TRAEFIK}"
   _env_set TRAEFIK_AUTH "${existing_auth}"
-  _env_set PLEX_CLAIM   "${PLEX_CLAIM:-}"
+  [[ -n "${SELECTED[plex]+_}" ]] && _env_set PLEX_CLAIM "${PLEX_CLAIM:-}"
 
   _own "$ENV_FILE"
   success ".env updated (${ENV_FILE})"

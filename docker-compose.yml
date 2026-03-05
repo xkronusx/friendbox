@@ -130,7 +130,7 @@ services:
       - TZ=${TZ}
       - VERSION=docker
       - PLEX_CLAIM=${PLEX_CLAIM:-}
-      - ADVERTISE_IP=https://plex.${DOMAIN}:443
+      - ADVERTISE_IP=${PLEX_ADVERTISE_IP:-}
     volumes:
       - ${CONFIG_ROOT}/plex:/config
       - ${CONFIG_ROOT}/plex-transcode:/transcode
@@ -172,7 +172,7 @@ services:
       - PUID=${PUID}
       - PGID=${PGID}
       - TZ=${TZ}
-      - JELLYFIN_PublishedServerUrl=https://jellyfin.${DOMAIN}
+      - JELLYFIN_PublishedServerUrl=${JELLYFIN_URL:-}
     volumes:
       - ${CONFIG_ROOT}/jellyfin:/config
       - ${CONFIG_ROOT}/jellyfin-cache:/cache

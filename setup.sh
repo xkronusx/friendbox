@@ -381,6 +381,32 @@ select_containers() {
   fi
   echo ""
   success "Selection saved."
+
+  # Update USE_TRAEFIK and derived URL vars in .env to match the new selection.
+  # This ensures Jellyfin and Plex don't reject direct connections when
+  # Traefik is not selected.
+  if [[ -f "$ENV_FILE" ]]; then
+    source "$ENV_FILE" 2>/dev/null || true
+    local _use_traefik="false"
+    [[ -n "${SELECTED[traefik]+_}" ]] && _use_traefik="true"
+    # Inline _env_set since we're outside configure_env here
+    _env_set_inline() {
+      local key="$1" val="$2"
+      if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+      else
+        echo "${key}=${val}" >> "$ENV_FILE"
+      fi
+    }
+    _env_set_inline USE_TRAEFIK "$_use_traefik"
+    if [[ "$_use_traefik" == "true" ]]; then
+      _env_set_inline JELLYFIN_URL      "https://jellyfin.${DOMAIN:-}"
+      _env_set_inline PLEX_ADVERTISE_IP "https://plex.${DOMAIN:-}:443"
+    else
+      _env_set_inline JELLYFIN_URL      ""
+      _env_set_inline PLEX_ADVERTISE_IP ""
+    fi
+  fi
 }
 
 # ── Profile args for docker compose ──────────────────────────────────────────
@@ -1304,6 +1330,18 @@ configure_env() {
   _env_set USE_TRAEFIK  "${USE_TRAEFIK}"
   _env_set TRAEFIK_AUTH "${existing_auth}"
   [[ -n "${SELECTED[plex]+_}" && "$plex_running" == "false" ]] && _env_set PLEX_CLAIM "${PLEX_CLAIM:-}"
+
+  # Set service-specific URL vars — only meaningful when Traefik is active.
+  # When Traefik is NOT selected, these must be empty so the containers don't
+  # reject direct connections (Jellyfin resets connections if PublishedServerUrl
+  # is set to an HTTPS address but the request arrives on the direct port).
+  if [[ "$USE_TRAEFIK" == "true" ]]; then
+    _env_set JELLYFIN_URL        "https://jellyfin.${DOMAIN}"
+    _env_set PLEX_ADVERTISE_IP   "https://plex.${DOMAIN}:443"
+  else
+    _env_set JELLYFIN_URL        ""
+    _env_set PLEX_ADVERTISE_IP   ""
+  fi
 
   _own "$ENV_FILE"
   success ".env updated (${ENV_FILE})"

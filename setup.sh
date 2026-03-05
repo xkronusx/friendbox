@@ -2578,11 +2578,11 @@ _creds_configure_vpn() {
   else
     info "VPN password unchanged."
   fi
-  # Include both your LAN subnet AND the Docker bridge subnet (172.28.0.0/16).
+  # Include both your LAN subnet AND the Docker bridge subnet (172.29.0.0/24).
   # The bridge subnet lets Traefik reach the VPN container for health checks
   # and reverse proxying despite the VPN tunnel being active.
-  read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24,172.28.0.0/16}]: " input
-  LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24,172.28.0.0/16}}"
+  read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24,172.29.0.0/24}]: " input
+  LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24,172.29.0.0/24}}"
 
   local var
   for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
@@ -2704,26 +2704,13 @@ REDEPLOY
 }
 
 ensure_network() {
-  if ! docker network inspect medianet &>/dev/null; then
-    # Fixed subnet avoids Docker randomly reassigning address space on restart,
-    # which can break LAN_NETWORK firewall rules in VPN containers.
-    docker network create --driver bridge \
-      --subnet=172.28.0.0/16 --gateway=172.28.0.1 medianet
-    success "Docker network 'medianet' created (172.28.0.0/16)."
-  else
-    local existing_subnet
-    existing_subnet=$(docker network inspect medianet \
-      --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || true)
-    if [[ "$existing_subnet" == "172.28.0.0/16" ]]; then
-      info "Docker network 'medianet' already exists (172.28.0.0/16)."
-    else
-      info "Docker network 'medianet' already exists (subnet: ${existing_subnet:-unknown})."
-      warn "Subnet differs from the expected 172.28.0.0/16. VPN containers may block"
-      warn "Traefik traffic if 172.28.0.0/16 is not in LAN_NETWORK."
-      warn "To recreate with the correct subnet: stop all containers, run"
-      warn "  docker network rm medianet   then re-run this step."
-    fi
+  # medianet is now declared directly in docker-compose.yml (not external: true),
+  # so Docker Compose creates it automatically on every `compose up`.
+  # This function just verifies the Docker daemon is reachable before we proceed.
+  if ! docker info &>/dev/null; then
+    die "Docker daemon is not running. Start it with: sudo systemctl start docker"
   fi
+  success "Docker daemon reachable."
 }
 
 ensure_acme() {

@@ -1217,10 +1217,14 @@ configure_env() {
   local USE_TRAEFIK="false"
   [[ -n "${SELECTED[traefik]+_}" ]] && USE_TRAEFIK="true"
 
-  # Only prompt for and persist PLEX_CLAIM when Plex is selected.
-  # The token is only useful on first container start and expires in 4 minutes,
-  # so there's no value showing the prompt when Plex isn't being deployed.
-  if [[ -n "${SELECTED[plex]+_}" ]]; then
+  # Only prompt for and persist PLEX_CLAIM when Plex is selected AND not yet
+  # claimed. Once the container has run and been claimed, the token is consumed
+  # and the env var is no longer needed. Also skip if Plex isn't selected at all.
+  local plex_running=false
+  if docker inspect plex --format '{{.State.Status}}' 2>/dev/null | grep -q "running"; then
+    plex_running=true
+  fi
+  if [[ -n "${SELECTED[plex]+_}" && "$plex_running" == "false" ]]; then
     read -rp "Plex claim token (plex.tv/claim, optional) [${PLEX_CLAIM:-}]: " input
     PLEX_CLAIM="${input:-${PLEX_CLAIM:-}}"
   fi
@@ -1257,7 +1261,7 @@ configure_env() {
   _env_set MEDIA_ROOT   "${MEDIA_ROOT}"
   _env_set USE_TRAEFIK  "${USE_TRAEFIK}"
   _env_set TRAEFIK_AUTH "${existing_auth}"
-  [[ -n "${SELECTED[plex]+_}" ]] && _env_set PLEX_CLAIM "${PLEX_CLAIM:-}"
+  [[ -n "${SELECTED[plex]+_}" && "$plex_running" == "false" ]] && _env_set PLEX_CLAIM "${PLEX_CLAIM:-}"
 
   _own "$ENV_FILE"
   success ".env updated (${ENV_FILE})"

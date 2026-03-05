@@ -2571,11 +2571,15 @@ _creds_configure_vpn() {
   else
     info "VPN password unchanged."
   fi
-  # Include both your LAN subnet AND the Docker bridge subnet (172.29.0.0/24).
+  # Include both your LAN subnet AND the Docker bridge subnet.
   # The bridge subnet lets Traefik reach the VPN container for health checks
   # and reverse proxying despite the VPN tunnel being active.
-  read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24,172.29.0.0/24}]: " input
-  LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24,172.29.0.0/24}}"
+  # Detect the actual medianet subnet Docker assigned — it varies per install.
+  local docker_subnet
+  docker_subnet=$(docker network inspect medianet --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || true)
+  local lan_default="192.168.1.0/24${docker_subnet:+,${docker_subnet}}"
+  read -rp "LAN network CIDR [${LAN_NETWORK:-${lan_default}}]: " input
+  LAN_NETWORK="${input:-${LAN_NETWORK:-${lan_default}}}"
 
   local var
   for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
@@ -2697,49 +2701,43 @@ REDEPLOY
 }
 
 ensure_network() {
-  # medianet is declared inline in docker-compose.yml (not external).
-  # Docker Compose creates it automatically on `compose up`.
-  # However, if an old medianet network exists from a prior install
-  # (created manually or with a different subnet), Compose will error
-  # on subnet mismatch and refuse to start any containers.
-  # This function detects and removes stale networks before compose runs.
-
   if ! docker info &>/dev/null; then
     die "Docker daemon is not running. Start it with: sudo systemctl start docker"
   fi
 
-  if docker network inspect medianet &>/dev/null; then
-    local existing_subnet
-    existing_subnet=$(docker network inspect medianet \
-      --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || true)
+  # Find ALL Docker networks whose name contains "medianet" — catches both
+  # "medianet" (current) and "friendbox_medianet" (created by older Compose
+  # versions that prefixed the name with the project directory).
+  local stale_nets
+  stale_nets=$(docker network ls --format '{{.Name}}' | grep -i "medianet" || true)
 
-    if [[ "$existing_subnet" == "172.29.0.0/24" ]]; then
-      success "Docker network 'medianet' already exists with correct subnet (172.29.0.0/24)."
+  if [[ -z "$stale_nets" ]]; then
+    success "No existing medianet network — will be created on first start."
+    return 0
+  fi
+
+  local net
+  for net in $stale_nets; do
+    if [[ "$net" == "medianet" ]]; then
+      success "Docker network 'medianet' already exists."
       return 0
     fi
 
-    # Stale network with wrong subnet — remove it so Compose can recreate correctly.
-    warn "Existing 'medianet' network has subnet ${existing_subnet:-unknown} (expected 172.29.0.0/24)."
-    warn "Removing stale network so Docker Compose can recreate it with the correct subnet..."
-
-    # Disconnect any containers still attached before removing
+    # Stale variant (e.g. friendbox_medianet) — remove it
+    warn "Found stale network '${net}' — removing so Compose can recreate as 'medianet'..."
     local attached
-    attached=$(docker network inspect medianet --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
+    attached=$(docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
     if [[ -n "$attached" ]]; then
-      warn "Stopping attached containers first: ${attached}"
-      # shellcheck disable=SC2086
+      info "Stopping containers attached to ${net}: ${attached}"
       docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down 2>/dev/null || true
     fi
-
-    if docker network rm medianet 2>/dev/null; then
-      success "Stale medianet network removed. Docker Compose will recreate it on next start."
+    if docker network rm "$net" 2>/dev/null; then
+      success "Removed stale network '${net}'."
     else
-      error "Could not remove medianet network. There may be containers still attached."
-      error "Run: docker compose down   then re-run Full Install."
+      error "Could not remove network '${net}'. Try manually: docker network rm ${net}"
       return 1
     fi
-  fi
-  # Network doesn't exist — Compose will create it on `compose up`. Nothing to do.
+  done
 }
 
 ensure_acme() {

@@ -7,10 +7,6 @@ networks:
   medianet:
     name: medianet
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.29.0.0/24
-          gateway: 172.29.0.1
 
 services:
 
@@ -507,7 +503,7 @@ services:
       - VPN_USER=${VPN_USER:-changeme}
       - VPN_PASS=${VPN_PASS:-changeme}
       - VPN_OPTIONS=
-      - LAN_NETWORK=${LAN_NETWORK:-192.168.1.0/24,172.29.0.0/24}
+      - LAN_NETWORK=${LAN_NETWORK:-192.168.1.0/24}
       - NAME_SERVERS=1.1.1.1,1.0.0.1
       - WEBUI_PORT=8080
       - STRICT_PORT_FORWARD=yes
@@ -558,7 +554,7 @@ services:
       - VPN_USER=${VPN_USER:-changeme}
       - VPN_PASS=${VPN_PASS:-changeme}
       - VPN_OPTIONS=
-      - LAN_NETWORK=${LAN_NETWORK:-192.168.1.0/24,172.29.0.0/24}
+      - LAN_NETWORK=${LAN_NETWORK:-192.168.1.0/24}
       - NAME_SERVERS=1.1.1.1,1.0.0.1
       - DELUGE_DAEMON_LOG_LEVEL=info
       - DELUGE_WEB_LOG_LEVEL=info

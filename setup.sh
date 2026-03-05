@@ -1381,23 +1381,14 @@ _traefik_write_config() {
   # so they inherit the wildcard without triggering per-host ACME requests.
   local tls_block
   if [[ "$provider" == "duckdns" ]]; then
-    # DuckDNS: declare wildcard domains at the entrypoint so Traefik requests
-    # *.domain.duckdns.org via DNS challenge. Each router still has an explicit
-    # tls.certresolver label — the entrypoint domains block only controls
-    # which cert gets acquired, not which resolver the router uses.
     tls_block="    http:
-      middlewares:
-        - secHeaders@file
       tls:
         domains:
           - main: \"${DOMAIN}\"
             sans:
               - \"*.${DOMAIN}\""
   else
-    # Non-DuckDNS: inject middleware block into websecure entrypoint
-    tls_block="    http:
-      middlewares:
-        - secHeaders@file"
+    tls_block=""
   fi
 
   cat > "$traefik_cfg" <<EOF
@@ -1426,7 +1417,8 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
-${tls_block}
+${tls_block:+${tls_block}
+}
   traefik:
     address: ":8080"
 
@@ -2761,6 +2753,30 @@ provision_directories() {
     if [[ ! -s "$_yml" ]]; then
       _traefik_write_config
       success "  ${_yml}  (generated)"
+    fi
+    # Always ensure headers.yml exists — traefik.yml references secHeaders@file
+    # on every router. If this file is absent, Traefik marks every route as broken.
+    # _traefik_write_config writes it, but if traefik.yml already existed above
+    # we skipped that call, so write headers.yml unconditionally here.
+    local _headers="${cfg}/traefik/dynamic/headers.yml"
+    if [[ ! -f "$_headers" ]]; then
+      mkdir -p "${cfg}/traefik/dynamic"
+      cat > "$_headers" <<'HDEOF'
+http:
+  middlewares:
+    secHeaders:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        customFrameOptionsValue: "SAMEORIGIN"
+        contentTypeNosniff: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
+HDEOF
+      success "  ${_headers}  (created)"
     fi
     # Create acme.json as an empty file with correct ownership if missing
     if [[ ! -f "$_acme" ]]; then

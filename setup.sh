@@ -1367,7 +1367,8 @@ _traefik_write_config() {
       caServer: ${ca_server}
       dnsChallenge:
         provider: duckdns
-        delayBeforeCheck: 60
+        propagation:
+          delayBeforeChecks: 60s
         resolvers:
           - \"ns1.duckdns.org:53\"
           - \"ns2.duckdns.org:53\""
@@ -1436,6 +1437,12 @@ api:
   insecure: true
 
 ping: {}
+
+# Suppress RFC 3986 encoded-characters warning introduced in Traefik v3.
+# rejectStatusCode 404 is the safe default — keeps the original behaviour
+# without the log noise.
+experimental:
+  allowEncodedSlashes: false
 
 log:
   level: INFO

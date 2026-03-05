@@ -52,7 +52,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"
-      # Dashboard router — https://traefik.${DOMAIN}
+      # Dashboard via HTTPS — https://traefik.${DOMAIN} (requires valid cert)
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.tls=true"
@@ -60,6 +60,12 @@ services:
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.middlewares=auth"
       - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_AUTH}"
+      # Dashboard via direct LAN port — http://server:8080/dashboard/
+      # Always reachable even when ACME cert renewal is failing or offline.
+      # api.insecure: true in traefik.yml enables this entrypoint.
+      - "traefik.http.routers.dashboard-local.rule=PathPrefix(`/api`) || PathPrefix(`/dashboard`)"
+      - "traefik.http.routers.dashboard-local.entrypoints=traefik"
+      - "traefik.http.routers.dashboard-local.service=api@internal"
       # Bare domain redirect — https://${DOMAIN} → https://portainer.${DOMAIN}
       - "traefik.http.routers.root.rule=Host(`${DOMAIN}`)"
       - "traefik.http.routers.root.entrypoints=websecure"

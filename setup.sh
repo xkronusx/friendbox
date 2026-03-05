@@ -399,13 +399,12 @@ select_containers() {
       fi
     }
     _env_set_inline USE_TRAEFIK "$_use_traefik"
-    if [[ "$_use_traefik" == "true" ]]; then
-      _env_set_inline JELLYFIN_URL      "https://jellyfin.${DOMAIN:-}"
-      _env_set_inline PLEX_ADVERTISE_IP "https://plex.${DOMAIN:-}:443"
-    else
-      _env_set_inline JELLYFIN_URL      ""
-      _env_set_inline PLEX_ADVERTISE_IP ""
-    fi
+    local _hip
+    _hip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+    [[ -z "$_hip" ]] && _hip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [[ -z "$_hip" ]] && _hip="localhost"
+    _env_set_inline JELLYFIN_URL      "http://${_hip}:8096"
+    _env_set_inline PLEX_ADVERTISE_IP "http://${_hip}:32400"
   fi
 }
 
@@ -1331,17 +1330,17 @@ configure_env() {
   _env_set TRAEFIK_AUTH "${existing_auth}"
   [[ -n "${SELECTED[plex]+_}" && "$plex_running" == "false" ]] && _env_set PLEX_CLAIM "${PLEX_CLAIM:-}"
 
-  # Set service-specific URL vars — only meaningful when Traefik is active.
-  # When Traefik is NOT selected, these must be empty so the containers don't
-  # reject direct connections (Jellyfin resets connections if PublishedServerUrl
-  # is set to an HTTPS address but the request arrives on the direct port).
-  if [[ "$USE_TRAEFIK" == "true" ]]; then
-    _env_set JELLYFIN_URL        "https://jellyfin.${DOMAIN}"
-    _env_set PLEX_ADVERTISE_IP   "https://plex.${DOMAIN}:443"
-  else
-    _env_set JELLYFIN_URL        ""
-    _env_set PLEX_ADVERTISE_IP   ""
-  fi
+  # Set JELLYFIN_URL and PLEX_ADVERTISE_IP to the host LAN IP so both containers
+  # are always reachable directly on the LAN. These vars control what address
+  # each app advertises to clients — they do NOT affect Traefik's ability to
+  # proxy them. Setting them to an HTTPS domain causes the apps to expect HTTPS
+  # on their own port and reset direct HTTP connections.
+  local _host_ip
+  _host_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+  [[ -z "$_host_ip" ]] && _host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [[ -z "$_host_ip" ]] && _host_ip="localhost"
+  _env_set JELLYFIN_URL        "http://${_host_ip}:8096"
+  _env_set PLEX_ADVERTISE_IP   "http://${_host_ip}:32400"
 
   _own "$ENV_FILE"
   success ".env updated (${ENV_FILE})"

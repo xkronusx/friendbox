@@ -130,8 +130,8 @@ ensure_media_root() {
     success "Created media root directory: ${MEDIA_ROOT}"
   fi
 
-  # Own /mnt and MEDIA_ROOT — containers and the media user need traversal rights
-  chown "${uid}:${gid}" /mnt
+  # Own only MEDIA_ROOT — chowning /mnt itself is too broad and can
+  # break other filesystem mounts that rely on root ownership of /mnt.
   chown "${uid}:${gid}" "$MEDIA_ROOT"
 }
 
@@ -436,6 +436,21 @@ auto_update() {
     return 0
   fi
 
+  # Validate downloads before replacing live files
+  local compose_size script_size
+  compose_size=$(wc -c < "${COMPOSE_FILE}.new" 2>/dev/null || echo 0)
+  script_size=$(wc -c < "/usr/local/bin/friendbox.new" 2>/dev/null || echo 0)
+  if [[ "$compose_size" -lt 1000 || "$script_size" -lt 1000 ]]; then
+    echo -e "${YELLOW}[WARN]${RESET}  Downloaded files too small — possible truncated download. Skipping update."
+    rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
+    return 0
+  fi
+  if ! bash -n /usr/local/bin/friendbox.new 2>/dev/null; then
+    echo -e "${YELLOW}[WARN]${RESET}  Downloaded script failed syntax check — skipping update."
+    rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
+    return 0
+  fi
+
   mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
   _own "${COMPOSE_FILE}"
 
@@ -469,10 +484,16 @@ sync_repo() {
 
   printf "  %-34s " "docker-compose.yml"
   if fetch_remote "docker-compose.yml" "${COMPOSE_FILE}.new" 2>/dev/null; then
-    mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
-    _own "${COMPOSE_FILE}"
-    echo -e "${GREEN}[OK]${RESET}"
-    compose_ok=1
+    local _csize; _csize=$(wc -c < "${COMPOSE_FILE}.new" 2>/dev/null || echo 0)
+    if [[ "$_csize" -lt 1000 ]]; then
+      rm -f "${COMPOSE_FILE}.new"
+      echo -e "${RED}[FAILED]${RESET} (download too small — likely truncated)"
+    else
+      mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
+      _own "${COMPOSE_FILE}"
+      echo -e "${GREEN}[OK]${RESET}"
+      compose_ok=1
+    fi
   else
     rm -f "${COMPOSE_FILE}.new"
     echo -e "${RED}[FAILED]${RESET}"
@@ -1199,8 +1220,12 @@ configure_env() {
   local USE_TRAEFIK="false"
   [[ -n "${SELECTED[traefik]+_}" ]] && USE_TRAEFIK="true"
 
-  # Preserve existing TRAEFIK_AUTH if already set; don't overwrite it here.
-  local existing_auth="${TRAEFIK_AUTH:-disabled}"
+  # Preserve existing TRAEFIK_AUTH by reading it raw from the file —
+  # NOT from the bash-eval'd environment. Bcrypt hashes contain $$ sequences
+  # that get unescaped when .env is sourced, corrupting the hash if written back.
+  local existing_auth
+  existing_auth=$(grep '^TRAEFIK_AUTH=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+  existing_auth="${existing_auth:-disabled}"
 
   _ensure_install_dir
 
@@ -2381,8 +2406,11 @@ _creds_configure_vpn() {
   else
     info "VPN password unchanged."
   fi
-  read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24}]: " input
-  LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24}}"
+  # Include both your LAN subnet AND the Docker bridge subnet (172.28.0.0/16).
+  # The bridge subnet lets Traefik reach the VPN container for health checks
+  # and reverse proxying despite the VPN tunnel being active.
+  read -rp "LAN network CIDR [${LAN_NETWORK:-192.168.1.0/24,172.28.0.0/16}]: " input
+  LAN_NETWORK="${input:-${LAN_NETWORK:-192.168.1.0/24,172.28.0.0/16}}"
 
   local var
   for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
@@ -2511,7 +2539,18 @@ ensure_network() {
       --subnet=172.28.0.0/16 --gateway=172.28.0.1 medianet
     success "Docker network 'medianet' created (172.28.0.0/16)."
   else
-    info "Docker network 'medianet' already exists."
+    local existing_subnet
+    existing_subnet=$(docker network inspect medianet \
+      --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || true)
+    if [[ "$existing_subnet" == "172.28.0.0/16" ]]; then
+      info "Docker network 'medianet' already exists (172.28.0.0/16)."
+    else
+      info "Docker network 'medianet' already exists (subnet: ${existing_subnet:-unknown})."
+      warn "Subnet differs from the expected 172.28.0.0/16. VPN containers may block"
+      warn "Traefik traffic if 172.28.0.0/16 is not in LAN_NETWORK."
+      warn "To recreate with the correct subnet: stop all containers, run"
+      warn "  docker network rm medianet   then re-run this step."
+    fi
   fi
 }
 
@@ -2594,8 +2633,8 @@ provision_directories() {
     chmod 600 "$_acme"
   fi
 
-  # /mnt and media root
-  chown "${uid}:${gid}" /mnt
+  # Media root — do NOT chown /mnt itself; it is a system directory
+  # that may contain other mounts which rely on root ownership.
   mkdir -p "$media"
   chown "${uid}:${gid}" "$media"
 
@@ -3068,7 +3107,21 @@ CRONEOF
   local cron_file="/etc/cron.d/friendbox-dns"
   echo "*/5 * * * * root ${cron_script} >> /var/log/friendbox-dns.log 2>&1" > "$cron_file"
   chmod 644 "$cron_file"
+
+  # Install logrotate config so the cron log doesn't grow unbounded
+  cat > /etc/logrotate.d/friendbox-dns << 'LREOF'
+/var/log/friendbox-dns.log {
+  weekly
+  rotate 4
+  compress
+  missingok
+  notifempty
+  create 0644 root root
+}
+LREOF
+
   success "Cron job installed: ${cron_file}"
+  success "Log rotation installed: /etc/logrotate.d/friendbox-dns"
   info "DNS checked/updated every 5 minutes. Logs: /var/log/friendbox-dns.log"
 }
 
@@ -3432,9 +3485,18 @@ else
   # Interactive launch — check for --skip-update flag (set by auto_update after
   # re-exec so we don't loop) then run the menu.
   SKIP_UPDATE=false
+  DNS_UPDATE=false
   for arg in "$@"; do
     [[ "$arg" == "--skip-update" ]] && SKIP_UPDATE=true
+    [[ "$arg" == "--dns-update"  ]] && DNS_UPDATE=true
   done
+
+  # Non-interactive DNS update — called by the cron script for providers
+  # that need the full _dns_update_* logic (Cloudflare, GoDaddy, Namecheap).
+  if [[ "$DNS_UPDATE" == "true" ]]; then
+    _dns_update_now
+    exit $?
+  fi
 
   if [[ "$SKIP_UPDATE" == "false" ]]; then
     auto_update "$@"

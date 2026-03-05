@@ -2008,6 +2008,72 @@ except Exception as e:
   echo ""
 }
 
+_traefik_emergency_recover() {
+  require_root || return 1
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}${YELLOW}Traefik Emergency Recovery${RESET}"
+  echo ""
+  echo -e "  Use this when Traefik is stuck, crashed, or the dashboard is unreachable."
+  echo -e "  It will:"
+  echo -e "  ${DIM}  1. Stop the Traefik container${RESET}"
+  echo -e "  ${DIM}  2. Clear acme.json (removes all stored certificates)${RESET}"
+  echo -e "  ${DIM}  3. Regenerate traefik.yml from current settings${RESET}"
+  echo -e "  ${DIM}  4. Restart Traefik${RESET}"
+  echo ""
+  warn "All stored TLS certificates will be cleared."
+  warn "Traefik will request new ones on restart — this may take a few minutes."
+  echo ""
+  read -rp "  Proceed? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
+
+  echo ""
+
+  # Stop Traefik
+  local traefik_state
+  traefik_state=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
+  if [[ "$traefik_state" == "missing" ]]; then
+    warn "Traefik container does not exist — skipping stop."
+  else
+    info "Stopping Traefik..."
+    docker stop traefik 2>/dev/null || true
+    success "Traefik stopped."
+  fi
+
+  # Clear acme.json
+  local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  if [[ -f "$acme" ]]; then
+    truncate -s 0 "$acme"
+    chown root:root "$acme"
+    chmod 600 "$acme"
+    success "acme.json cleared (${acme})."
+  else
+    # Create it fresh if missing
+    mkdir -p "$(dirname "$acme")"
+    touch "$acme"
+    chown root:root "$acme"
+    chmod 600 "$acme"
+    success "acme.json created fresh (${acme})."
+  fi
+
+  # Regenerate traefik.yml
+  _traefik_write_config
+
+  # Start Traefik
+  if [[ "$traefik_state" != "missing" ]]; then
+    info "Starting Traefik..."
+    docker start traefik
+    success "Traefik started."
+    echo ""
+    info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    info "If HTTPS cert renewal still fails, check that ports 80 and 443"
+    info "are forwarded to this machine, then run: option 4 → option 5 (pre-flight checks)"
+  else
+    info "Traefik container was not found — deploy the full stack first:"
+    info "  Main menu → option 12 → option 1"
+  fi
+}
+
 configure_traefik() {
   while true; do
     clear
@@ -2024,17 +2090,19 @@ configure_traefik() {
     echo "  4) Toggle staging / production CA"
     echo "  5) Run pre-flight checks"
     echo "  6) Live routing diagnostics"
-    echo "  7) Back to main menu"
+    echo "  7) Emergency recovery (clear certs + restart Traefik)"
+    echo "  8) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
-      1) _traefik_set_auth        || true; pause ;;
-      2) _traefik_set_domain      || true; pause ;;
-      3) _traefik_set_provider    || true; pause ;;
-      4) _traefik_toggle_staging  || true; pause ;;
-      5) _traefik_validate        || true; pause ;;
-      6) _traefik_live_diag       || true; pause ;;
-      7) return ;;
+      1) _traefik_set_auth           || true; pause ;;
+      2) _traefik_set_domain         || true; pause ;;
+      3) _traefik_set_provider       || true; pause ;;
+      4) _traefik_toggle_staging     || true; pause ;;
+      5) _traefik_validate           || true; pause ;;
+      6) _traefik_live_diag          || true; pause ;;
+      7) _traefik_emergency_recover  || true; pause ;;
+      8) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
@@ -2057,9 +2125,6 @@ _traefik_toggle_staging() {
     if [[ "$yn" =~ ^[Yy]$ ]]; then
       sed -i 's/^ACME_STAGING=.*/ACME_STAGING=false/' "$ENV_FILE"
       success "Switched to PRODUCTION CA."
-      warn "Clear acme.json now so Traefik requests a trusted cert from scratch:"
-      warn "  sudo truncate -s 0 ${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
-      warn "  docker restart traefik"
     else
       info "Staying on staging CA."
       return 0
@@ -2079,19 +2144,35 @@ _traefik_toggle_staging() {
         echo "ACME_STAGING=true" >> "$ENV_FILE"
       fi
       success "Switched to STAGING CA."
-      warn "Clear acme.json so Traefik re-runs ACME against staging:"
-      warn "  sudo truncate -s 0 ${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
-      warn "  docker restart traefik"
     else
       info "Staying on production CA."
       return 0
     fi
   fi
 
-  # Regenerate traefik.yml immediately with the new CA
+  # Regenerate traefik.yml with the new CA server URL
   _traefik_write_config
-  info "traefik.yml regenerated. Restart Traefik to apply:"
-  info "  docker restart traefik"
+  success "traefik.yml regenerated."
+
+  # Clear acme.json so Traefik requests a fresh cert from the new CA.
+  # Keeping a cert issued by the old CA causes Traefik to loop trying to
+  # renew it against a CA that won't accept it.
+  local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  if [[ -f "$acme" ]]; then
+    truncate -s 0 "$acme"
+    success "acme.json cleared."
+  fi
+
+  # Restart Traefik if it is currently running
+  local traefik_state
+  traefik_state=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
+  if [[ "$traefik_state" == "running" || "$traefik_state" == "exited" ]]; then
+    info "Restarting Traefik..."
+    docker restart traefik
+    success "Traefik restarted."
+  else
+    info "Traefik is not running — start it with: docker start traefik"
+  fi
 }
 
 _traefik_set_auth() {

@@ -2749,6 +2749,28 @@ ensure_acme() {
 }
 
 # ── Directory provisioning ────────────────────────────────────────────────────
+_jellyfin_fix_markers() {
+  # Jellyfin writes path-marker files on first start (.jellyfin-config, .jellyfin-data,
+  # etc.) to identify how each directory is being used. If the config directory was
+  # previously mounted as a different Jellyfin path, the wrong marker causes an
+  # unhandled exception crash-loop on every subsequent start.
+  # Run this before every compose up to catch the problem before it occurs.
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local jf_dir="${CONFIG_ROOT:-/opt/friendbox/config}/jellyfin"
+  [[ -d "$jf_dir" ]] || return 0
+
+  local conflict=false
+  for marker in "${jf_dir}/.jellyfin-data" "${jf_dir}/.jellyfin-metadata" "${jf_dir}/.jellyfin-plugins"; do
+    if [[ -f "$marker" ]]; then
+      rm -f "$marker"
+      warn "Removed conflicting Jellyfin marker: $(basename "$marker")"
+      conflict=true
+    fi
+  done
+  [[ "$conflict" == "true" ]] && success "Jellyfin markers cleared — container will start cleanly."
+  return 0
+}
+
 provision_directories() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   load_selected
@@ -2898,6 +2920,33 @@ HDEOF
     mkdir -p "${cfg}/jellyfin-cache"
     chown -R "${uid}:${gid}" "${cfg}/jellyfin-cache"
     success "  ${cfg}/jellyfin-cache  [${uid}:${gid}]"
+
+    # Jellyfin writes marker files (.jellyfin-config, .jellyfin-data, etc.) to
+    # whichever directories it uses on first start. If the same host directory
+    # was previously used as a different path (e.g. mounted as /data then later
+    # as /config), Jellyfin's sanity check throws an unhandled exception and the
+    # container crash-loops with "Expected to find only .jellyfin-config but found
+    # marker for .jellyfin-data". Detect and remove conflicting markers now, before
+    # the container starts, so the user gets a clear message instead of a crash loop.
+    local jf_dir="${cfg}/jellyfin"
+    if [[ -d "$jf_dir" ]]; then
+      local conflict=false
+      # A config-mount should contain .jellyfin-config, not .jellyfin-data or others
+      for marker in "${jf_dir}/.jellyfin-data" "${jf_dir}/.jellyfin-metadata" "${jf_dir}/.jellyfin-plugins"; do
+        if [[ -f "$marker" ]]; then
+          warn "Conflicting Jellyfin marker found: ${marker}"
+          rm -f "$marker"
+          success "Removed conflicting marker: $(basename "$marker")"
+          conflict=true
+        fi
+      done
+      if [[ "$conflict" == "true" ]]; then
+        info "Conflicting markers removed. Jellyfin will start cleanly."
+        info "If Jellyfin was previously working, your config is preserved."
+        info "If it still crashes, wipe the config dir:"
+        info "  sudo rm -rf ${jf_dir} && sudo friendbox (option 8)"
+      fi
+    fi
   fi
 
   if [[ -n "${SELECTED[netbootxyz]+_}" ]]; then
@@ -3415,6 +3464,7 @@ full_install() {
   ensure_network
   ensure_acme
   provision_directories
+  _jellyfin_fix_markers
   info "Starting selected containers..."
   compose_selected up -d
   echo ""
@@ -3522,6 +3572,7 @@ redeploy_menu() {
     case "$choice" in
       1)
         info "Pulling latest images and redeploying..."
+        _jellyfin_fix_markers
         compose_selected pull
         compose_selected up -d --force-recreate
         success "All active containers redeployed."
@@ -3531,18 +3582,21 @@ redeploy_menu() {
         echo ""
         read -rp "Container name (e.g. sonarr): " svc
         [[ -z "$svc" ]] && { warn "No name entered."; sleep 1; continue; }
+        [[ "$svc" == "jellyfin" ]] && _jellyfin_fix_markers
         compose_selected pull "$svc"
         compose_selected up -d --force-recreate "$svc"
         success "${svc} redeployed."
         pause
         ;;
       3)
+        _jellyfin_fix_markers
         compose_selected restart
         success "All containers restarted."
         pause
         ;;
       4)
         select_containers
+        _jellyfin_fix_markers
         compose_selected up -d --remove-orphans
         success "Stack updated."
         pause

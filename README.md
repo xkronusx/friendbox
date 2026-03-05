@@ -215,13 +215,9 @@ Queries the Traefik API at `localhost:8080` and shows:
 
 **Traefik dashboard access:**
 
-Port 8080 is bound to `127.0.0.1` only — it is not reachable from the LAN. To access the dashboard from another machine, use an SSH tunnel:
+Port 8080 is bound to all interfaces — the dashboard is reachable from the host machine at `http://localhost:8080/dashboard/` or from any machine on your LAN at `http://YOUR_SERVER_IP:8080/dashboard/`. This is useful when HTTPS isn't working yet and you need to inspect routing. The secured HTTPS dashboard at `https://traefik.yourdomain.com` requires a valid cert and the credentials set in option 1.
 
-```bash
-ssh -L 8080:localhost:8080 user@yourserver
-```
-
-Then open `http://localhost:8080/dashboard/` in your local browser. This is useful when HTTPS isn't working yet and you need to inspect routing. The secured HTTPS dashboard at `https://traefik.yourdomain.com` requires a valid cert and the credentials set in option 1.
+> ⚠️ Port 8080 has no authentication. Do not forward it through your router to the internet.
 
 ---
 
@@ -271,7 +267,7 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 
 | Service | Default URL | First login |
 |---|---|---|
-| Traefik dashboard | SSH tunnel → `http://localhost:8080/dashboard/` | No auth (localhost only). See Step 5 above. |
+| Traefik dashboard | `http://YOUR_SERVER_IP:8080/dashboard/` or `http://localhost:8080/dashboard/` | No auth — LAN accessible. Do not expose port 8080 to the internet. |
 | Traefik (HTTPS) | `https://traefik.yourdomain.com` | Credentials set in option 4 → option 1 |
 | Portainer | `https://portainer.yourdomain.com` | Create admin account on first visit |
 | Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths to `/movies`, `/tv` |
@@ -479,7 +475,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - `acme.json` is always `root:root 600` — required for Traefik v3 to write cert renewals
 - `.dns_config` is `chmod 600` — contains DNS provider API keys
 - The Traefik HTTPS dashboard requires bcrypt Basic Auth credentials (option 4 → option 1)
-- The Traefik API at `:8080` is bound to `127.0.0.1` only — not reachable from the LAN or internet. Access via SSH tunnel: `ssh -L 8080:localhost:8080 user@server`
+- The Traefik API at `:8080` has no authentication — it is accessible from any machine on your LAN. Do not forward port 8080 through your router to the internet
 - qBittorrent default credentials (`admin` / `adminadmin`) must be changed immediately after first login
 - `exposedByDefault: false` — only explicitly labeled containers get Traefik routes
 - All inter-container traffic uses the `medianet` bridge — nothing reaches the internet except through Traefik on ports 80 and 443

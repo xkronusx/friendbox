@@ -1,5 +1,3 @@
-version: "3.9"
-
 # All containers join the medianet bridge so they resolve each other by name.
 # Traefik is fully optional — when not selected, containers expose direct host ports.
 # When Traefik is selected and running, labels route all traffic through Traefik HTTPS.

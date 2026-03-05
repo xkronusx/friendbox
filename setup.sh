@@ -1837,10 +1837,58 @@ _traefik_live_diag() {
   echo -e "${BOLD}${CYAN}Traefik Live Routing Diagnostics${RESET}"
   echo "══════════════════════════════════════════════════════════════"
 
-  # ── Is Traefik API reachable? ────────────────────────────────────────────────
+  # ── Check if the traefik container is actually running first ─────────────────
+  local traefik_state
+  traefik_state=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
+  case "$traefik_state" in
+    running)
+      success "Traefik container is running"
+      ;;
+    missing)
+      error "Traefik container does not exist — deploy it first:"
+      error "  Main menu → option 12 → option 1 (or ensure Traefik is selected)"
+      return 1
+      ;;
+    exited|dead)
+      error "Traefik container has exited. Last logs:"
+      docker logs traefik --tail=20 2>/dev/null | sed 's/^/  /'
+      echo ""
+      error "To restart: docker start traefik"
+      error "If it keeps crashing, the config may be invalid — regenerate via option 4 → option 3."
+      return 1
+      ;;
+    restarting)
+      warn "Traefik container is restarting — it may be crash-looping."
+      warn "Check logs: docker logs traefik --tail=30"
+      return 1
+      ;;
+    *)
+      warn "Traefik container state: ${traefik_state}"
+      ;;
+  esac
+
+  # ── Is the API port actually reachable? ──────────────────────────────────────
   if ! curl -fs --max-time 3 "${api}/overview" >/dev/null 2>&1; then
-    error "Traefik API not reachable at localhost:8080 — is Traefik running?"
-    error "Start it with: docker compose up -d traefik"
+    echo ""
+    error "Traefik is running but the API is not responding on localhost:8080."
+    echo ""
+    echo -e "  ${BOLD}Possible causes:${RESET}"
+    echo -e "  ${DIM}1. traefik.yml is missing 'api: insecure: true' — regenerate it:${RESET}"
+    echo -e "  ${DIM}   option 4 → option 3 (re-select your ACME provider to regenerate)${RESET}"
+    echo -e "  ${DIM}2. The 'traefik' entrypoint on :8080 is missing from traefik.yml${RESET}"
+    echo -e "  ${DIM}3. traefik.yml on disk is outdated — regenerate and restart Traefik${RESET}"
+    echo ""
+    echo -e "  ${BOLD}Current traefik.yml api section:${RESET}"
+    local cfg="${INSTALL_DIR}/config/traefik/traefik.yml"
+    if [[ -f "$cfg" ]]; then
+      grep -A3 "^api:" "$cfg" 2>/dev/null | sed 's/^/  /' || echo "  (could not read)"
+    else
+      echo -e "  ${RED}traefik.yml not found at ${cfg}${RESET}"
+      echo -e "  ${DIM}Run option 4 → option 3 to generate it.${RESET}"
+    fi
+    echo ""
+    echo -e "  ${BOLD}Last 20 Traefik log lines:${RESET}"
+    docker logs traefik --tail=20 2>/dev/null | sed 's/^/  /' || echo "  (no logs)"
     return 1
   fi
   success "Traefik API reachable at localhost:8080"
@@ -3132,6 +3180,14 @@ _dns_remove_cron() {
 }
 
 configure_dns() {
+  # Fetch the public IP once before entering the menu loop.
+  # _dns_get_public_ip makes up to 3 sequential curl calls (max 15s total) —
+  # calling it on every render iteration causes the menu to hang for several
+  # seconds each time the loop restarts. Fetch once, reuse for the session.
+  local _dns_cached_ip
+  echo -e "  ${DIM}Detecting public IP...${RESET}"
+  _dns_cached_ip=$(_dns_get_public_ip 2>/dev/null) || _dns_cached_ip="unknown"
+
   while true; do
     _dns_load
     clear
@@ -3141,8 +3197,7 @@ configure_dns() {
     echo "╚══════════════════════════════════════════════════════════╝"
     echo -e "${RESET}"
     _dns_show_status
-    local pub_ip; pub_ip=$(_dns_get_public_ip 2>/dev/null) || pub_ip="unknown"
-    echo -e "  ${DIM}Current public IP: ${pub_ip}${RESET}"
+    echo -e "  ${DIM}Current public IP: ${_dns_cached_ip}${RESET}"
     echo ""
     echo "  ── Configure Provider ───────────────────────────────────"
     echo "  1) Cloudflare"

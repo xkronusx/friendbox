@@ -493,12 +493,6 @@ services:
         max-file: "3"
     networks:
       - medianet
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8080"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
     cap_add:
       - NET_ADMIN
     privileged: true
@@ -550,12 +544,6 @@ services:
         max-file: "3"
     networks:
       - medianet
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8112"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
     cap_add:
       - NET_ADMIN
     privileged: true

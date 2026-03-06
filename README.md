@@ -104,7 +104,7 @@ Sets core variables in `/opt/friendbox/.env`. All other steps depend on this.
 
 | Prompt | Description |
 |---|---|
-| **Domain** | Your domain (e.g. `temperus.duckdns.org`). Must be a domain you control. |
+| **Domain** | Your domain (e.g. `myhome.duckdns.org`). Must be a domain you control. |
 | **ACME email** | Used by Let's Encrypt for certificate notifications. Use a real address. |
 | **Config root** | Where container config data lives (default: `/opt/friendbox/config`) |
 | **Media root** | Where media files live (default: `/mnt/media`). Set to your MergerFS pool path if applicable. |
@@ -138,7 +138,7 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `delugevpn` | Deluge with built-in VPN kill switch |
 | `nzbget` | Usenet download client |
 | `overseerr` | Media request manager (Plex) |
-| `ombi` | Media request manager (Plex/Jellyfin) |
+| `ombi` | Media request manager — **deprecated**, consider Overseerr or Jellyseerr |
 | `jellyseerr` | Media request manager (Jellyfin) |
 | `netbootxyz` | Network boot server |
 | `teamspeak6` | TeamSpeak 6 voice server — connect via TS6 client on UDP 9987 |
@@ -182,6 +182,7 @@ If Friendbox is already installed, option 1 warns before proceeding.
 | 4 | Toggle staging / production CA |
 | 5 | Run pre-flight checks |
 | 6 | Live routing diagnostics |
+| 7 | Emergency recovery (clear certs + restart Traefik) |
 
 **ACME challenge providers:**
 
@@ -193,7 +194,7 @@ If Friendbox is already installed, option 1 warns before proceeding.
 | `godaddy` | DNS-01 | Requires GoDaddy API key + secret |
 | `namecheap` | DNS-01 | Requires Namecheap Dynamic DNS credentials |
 
-> **DuckDNS note:** The DuckDNS API can only set TXT records on the root subdomain — not on sub-subdomains. Per-host certificates (e.g. `portainer.temperus.duckdns.org`) cannot be validated individually. Friendbox automatically requests a single wildcard cert (`*.temperus.duckdns.org`) that covers all subdomains. No manual configuration needed.
+> **DuckDNS note:** The DuckDNS API can only set TXT records on the root subdomain — not on sub-subdomains. Per-host certificates (e.g. `portainer.myhome.duckdns.org`) cannot be validated individually. Friendbox automatically requests a single wildcard cert (`*.yourdomain.duckdns.org`) that covers all subdomains at once. No manual configuration needed — the domain is read from your `.env` settings.
 
 **Staging CA (option 4):**
 
@@ -232,7 +233,7 @@ Only shows options for services you have selected.
 | **AMP** | Admin username and password |
 | **Mumble** | Superuser password |
 
-> **VPN LAN CIDR note:** The default value includes both your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet (`172.28.0.0/16`). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik's health checks and reverse proxying to reach the VPN container while the tunnel is active. If you use a different home subnet (e.g. `192.168.0.0/24`), update the first entry accordingly but keep `,172.28.0.0/16`.
+> **VPN LAN CIDR note:** The default value includes your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet assigned to `medianet` (detected automatically from the live network). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik to reverse-proxy the VPN container while the tunnel is active. If your home network uses a different subnet (e.g. `192.168.0.0/24`), update the first entry accordingly.
 
 ---
 
@@ -254,14 +255,14 @@ Each selected container gets its own subdomain (e.g. `portainer.yourdomain.com`,
 ---
 
 ### Step 8 — Verify everything is running
-**`sudo friendbox` → option 11 and option 12**
+**`sudo friendbox` → option 10 and option 11**
 
 ```
-sudo friendbox  →  option 11   (Show container status)
-sudo friendbox  →  option 12   (View service URLs)
+sudo friendbox  →  option 10   (Show container status)
+sudo friendbox  →  option 11   (View service URLs)
 ```
 
-Option 12 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses.
+Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses.
 
 **First-time login reference:**
 
@@ -330,7 +331,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 1 | Full Install | Runs all setup steps in sequence. Warns if already installed. |
 | 2 | Select containers | Toggle which services to deploy. |
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
-| 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics. |
+| 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery. |
 | 5 | Service credentials | VPN, AMP, Mumble credentials. Only shows selected services. |
 | 6 | DNS A record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. |
 | 7 | MergerFS storage manager | Pool setup, disk management, drive details, ownership fix. |
@@ -340,16 +341,15 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | Option | Function | Notes |
 |---|---|---|
 | 8 | Provision / fix directory ownership | Creates config and media dirs, fixes permissions. |
-| 9 | Fix firewall (ufw + Docker) | Sets `DEFAULT_FORWARD_POLICY=ACCEPT` and opens ports 80/443/8080. Run this if containers are unreachable. |
-| 10 | Sync latest files from GitHub | Re-downloads compose file and setup script. |
-| 11 | Show container status | Runs `docker compose ps` for selected containers. |
-| 12 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
-| 13 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
-| 14 | Update stack | Pulls latest images and restarts the stack. |
-| 15 | View logs | Tail logs for all containers or a specific one. |
-| 16 | Teardown | Stops and removes containers. Config and data preserved. |
+| 9 | Sync latest files from GitHub | Re-downloads compose file and setup script. |
+| 10 | Show container status | Runs `docker compose ps` for selected containers. |
+| 11 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
+| 12 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
+| 13 | Update stack | Pulls latest images and restarts the stack. |
+| 14 | View logs | Follow live logs or dump last 200 lines for all containers or a specific one. |
+| 15 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
 
-> **Options 11–16 are blocked until Full Install has been completed.** The menu header shows `● INSTALLED` or `○ NOT YET INSTALLED`.
+> **Options 10–15 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
 
 ---
 
@@ -365,7 +365,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 
 ### DuckDNS wildcard certificate
 
-When DuckDNS is selected as the ACME provider, Friendbox configures the `websecure` entrypoint to request a wildcard cert covering all subdomains at once:
+When DuckDNS is selected as the ACME provider, Friendbox configures the `websecure` entrypoint to request a single wildcard cert covering all subdomains at once. The domain is read from your `.env` at config-generation time — nothing is hardcoded:
 
 ```yaml
 websecure:
@@ -373,12 +373,12 @@ websecure:
   http:
     tls:
       domains:
-        - main: "temperus.duckdns.org"
+        - main: "yourdomain.duckdns.org"
           sans:
-            - "*.temperus.duckdns.org"
+            - "*.yourdomain.duckdns.org"
 ```
 
-The DuckDNS API sets `_acme-challenge.temperus.duckdns.org` — Let's Encrypt validates it once for the wildcard rather than attempting per-subdomain validation (which DuckDNS cannot support).
+The DuckDNS API sets `_acme-challenge.yourdomain.duckdns.org` — Let's Encrypt validates it once for the wildcard rather than attempting per-subdomain validation (which DuckDNS cannot support). Individual routers inherit this cert automatically; no `certresolver` label is set on them when DuckDNS is the provider.
 
 ### acme.json permissions
 
@@ -392,17 +392,17 @@ If ports 80/443 on your router point to a different machine, you can still test 
 
 | Host | Domain | IP |
 |---|---|---|
-| `*` | `temperus.duckdns.org` | Friendbox LAN IP |
-| `temperus` | `duckdns.org` | Friendbox LAN IP |
+| `*` | `yourdomain.duckdns.org` | Friendbox LAN IP |
+| `yourdomain` | `duckdns.org` | Friendbox LAN IP |
 
-This makes `*.temperus.duckdns.org` resolve to your Friendbox machine from inside the LAN only. Internet traffic is unaffected. DNS-01 cert acquisition still works because it uses the DuckDNS API directly and requires no inbound connections.
+This makes `*.yourdomain.duckdns.org` resolve to your Friendbox machine from inside the LAN only. Internet traffic is unaffected. DNS-01 cert acquisition still works because it uses the DuckDNS API directly and requires no inbound connections.
 
 ### Running alongside another reverse proxy (OPNsense HAProxy SNI routing)
 
 If another reverse proxy is already handling ports 80/443 on your LAN for a different domain, use OPNsense HAProxy with SNI passthrough:
 
 - HAProxy reads the TLS SNI hostname before decryption and routes accordingly
-- `*.temperus.duckdns.org` → Friendbox machine port 443
+- `*.yourdomain.duckdns.org` → Friendbox machine port 443
 - `*.otherdomain.com` → other machine port 443
 - Each machine handles its own certificates independently with no conflicts
 
@@ -414,18 +414,18 @@ Enable HAProxy via: **System → Firmware → Plugins → `os-haproxy`**
 
 ### Auto-update on launch
 
-Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `setup.sh` from GitHub. If an update is found the script re-executes itself automatically. No manual sync needed.
+Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `setup.sh` from GitHub. Both files are validated (syntax check for the script, YAML parse for the compose file) before replacing the live copies. If an update is found the script re-executes itself automatically. No manual sync needed.
 
 ### Pull latest container images
 
 ```bash
-sudo friendbox  →  option 14
+sudo friendbox  →  option 13
 ```
 
 ### Redeploy a single container
 
 ```bash
-sudo friendbox  →  option 13  →  option 2  →  enter container name
+sudo friendbox  →  option 12  →  option 2  →  enter container name
 ```
 
 ### Redeploy via helper script
@@ -504,7 +504,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 
 **Subdomain accessible via IP:port but not via HTTPS**
 - Confirm container is on `medianet`: `docker inspect <container> --format '{{json .NetworkSettings.Networks}}'`
-- Check Traefik sees the backend: `curl -s http://localhost:8080/api/http/services/<name>@docker | python3 -m json.tool`
+- Check Traefik sees the backend: `curl -s http://localhost:8080/api/http/services/<n>@docker | python3 -m json.tool`
 - Confirm DNS resolves correctly: `nslookup portainer.yourdomain.com`
 
 **MergerFS: writes appearing on RO drive**
@@ -518,8 +518,8 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Check individual drive mount status: option 7 → option 5
 
 **Containers running but ports unreachable (127.0.0.1:9000, LAN IP:port refused)**
-- This is almost always Ubuntu's `ufw` firewall conflicting with Docker. ufw's default `FORWARD` policy is `DROP`, which blocks Docker's iptables DNAT rules even for connections on localhost.
-- Fix: `sudo friendbox` → option 9 (Fix firewall). This sets `DEFAULT_FORWARD_POLICY=ACCEPT` in `/etc/default/ufw` and reloads ufw.
+- This is most commonly Ubuntu's `ufw` firewall conflicting with Docker. ufw's default `FORWARD` policy is `DROP`, which blocks Docker's iptables DNAT rules even for connections on localhost.
+- Fix: set `DEFAULT_FORWARD_POLICY=ACCEPT` in `/etc/default/ufw` and run `sudo ufw reload`
 - Verify after fix: `curl -s http://localhost:9000` (Portainer) or `curl -s http://localhost:8096` (Jellyfin)
 
 **Permission errors in container logs**
@@ -532,8 +532,8 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Check logs: option 14 → `qbittorrentvpn` or `delugevpn`
 
 **VPN container Traefik backend shows DOWN**
-- The binhex VPN images use `LAN_NETWORK` to build iptables rules for traffic allowed through the VPN firewall. If `172.28.0.0/16` (the `medianet` Docker bridge) is not in `LAN_NETWORK`, Traefik's health checks are silently dropped.
-- Fix: option 5 → VPN credentials → ensure `LAN_NETWORK` includes `,172.28.0.0/16` alongside your home subnet (e.g. `192.168.1.0/24,172.28.0.0/16`)
+- The binhex VPN images use `LAN_NETWORK` to build iptables rules for traffic allowed through the VPN firewall. If the `medianet` Docker bridge subnet is not included in `LAN_NETWORK`, Traefik's reverse proxy traffic to the container is silently dropped.
+- Fix: option 5 → VPN credentials → ensure `LAN_NETWORK` includes the Docker bridge subnet alongside your home subnet. The correct subnet is shown as the default when you run the VPN credentials prompt — it is detected automatically from the live `medianet` network.
 - After saving, redeploy the VPN container: option 12 → option 2
 
 **TeamSpeak 6 WebAuth (port 10080) not accessible**

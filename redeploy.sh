@@ -23,11 +23,10 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 [[ -f "$ENV_FILE" ]]     || { error ".env not found. Run sudo friendbox first."; exit 1; }
 
 get_profile_args() {
-  local args=(--profile traefik --profile portainer)
+  local args=()
   if [[ -f "$SELECTED_FILE" ]]; then
     while IFS= read -r line; do
-      [[ -n "$line" && "$line" != "traefik" && "$line" != "portainer" ]] \
-        && args+=(--profile "$line")
+      [[ -n "$line" ]] && args+=(--profile "$line")
     done < "$SELECTED_FILE"
   fi
   printf '%s\n' "${args[@]}"

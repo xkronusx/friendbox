@@ -2764,6 +2764,271 @@ REDEPLOY
   _own "$dest"
 }
 
+# =============================================================================
+#  Backup & Restore
+# =============================================================================
+
+BACKUP_DIR="${INSTALL_DIR}/backups"
+
+backup_config() {
+  require_root || return 1
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+
+  local cfg="${CONFIG_ROOT:-/opt/friendbox/config}"
+  if [[ ! -d "$cfg" ]]; then
+    warn "Config directory not found: ${cfg}"
+    warn "Run option 8 (Provision directories) first."
+    return 1
+  fi
+
+  mkdir -p "$BACKUP_DIR"
+  _own "$BACKUP_DIR"
+
+  local timestamp archive_name archive_path
+  timestamp=$(date '+%Y%m%d_%H%M%S')
+  archive_name="friendbox_backup_${timestamp}.tar.gz"
+  archive_path="${BACKUP_DIR}/${archive_name}"
+
+  echo ""
+  echo -e "${BOLD}Creating backup...${RESET}"
+  echo -e "  ${DIM}Config : ${cfg}${RESET}"
+  echo -e "  ${DIM}Archive: ${archive_path}${RESET}"
+  echo ""
+
+  # Check disk space
+  local cfg_kb free_kb
+  cfg_kb=$(du -sk "$cfg" 2>/dev/null | awk '{print $1}') || cfg_kb=0
+  free_kb=$(df -k "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $4}') || free_kb=0
+  if [[ "$cfg_kb" -gt 0 && "$free_kb" -gt 0 && "$cfg_kb" -gt "$free_kb" ]]; then
+    warn "Not enough disk space — config is ~${cfg_kb}KB, free is ${free_kb}KB."
+    return 1
+  fi
+
+  # Collect state files alongside the config dir
+  local state_files=() sf
+  for sf in "$ENV_FILE" "$SELECTED_FILE" "$DNS_STATE_FILE" \
+            "$MERGERFS_MODES_FILE" "$MERGERFS_POOL_FILE" \
+            "$INSTALL_FLAG" "$STATE_FILE"; do
+    [[ -f "$sf" ]] && state_files+=("${sf#/}")
+  done
+
+  # Exclude acme.json — env-specific, regenerated on restore
+  if tar -czf "$archive_path" \
+      --exclude="$(basename "$cfg")/traefik/acme.json" \
+      -C / "${cfg#/}" "${state_files[@]}" 2>/dev/null; then
+    local size
+    size=$(du -sh "$archive_path" 2>/dev/null | awk '{print $1}')
+    chown root:root "$archive_path"
+    chmod 600 "$archive_path"
+    success "Backup created: ${archive_name} (${size:-?})"
+    info "Location: ${archive_path}"
+    # Keep only the 10 most recent
+    local old
+    old=$(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null | tail -n +11)
+    if [[ -n "$old" ]]; then
+      local pruned=0
+      while IFS= read -r o; do rm -f "$o"; pruned=$((pruned+1)); done <<< "$old"
+      info "Pruned ${pruned} old backup(s) — keeping 10 most recent."
+    fi
+  else
+    rm -f "$archive_path"
+    error "Backup failed — check disk space and permissions."
+    return 1
+  fi
+}
+
+restore_config() {
+  require_root || return 1
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+
+  echo ""
+  echo -e "${BOLD}Restore — Config Snapshot${RESET}"
+  echo ""
+
+  local backups=() f
+  while IFS= read -r f; do backups+=("$f"); done \
+    < <(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null)
+
+  if [[ ${#backups[@]} -eq 0 ]]; then
+    warn "No backups found in ${BACKUP_DIR}."
+    info "Create one first with option 1."
+    return 1
+  fi
+
+  echo "  Available backups (newest first):"
+  echo ""
+  local i=1
+  for f in "${backups[@]}"; do
+    local size ts
+    size=$(du -sh "$f" 2>/dev/null | awk '{print $1}')
+    ts=$(basename "$f" | sed 's/friendbox_backup_//;s/\.tar\.gz//' | sed 's/_/ /')
+    printf "  %2d) %s  ${DIM}(%s)${RESET}\n" "$i" "$ts" "${size:-?}"
+    i=$((i+1))
+  done
+  echo ""
+  read -rp "  Select backup to restore [1]: " sel
+  sel="${sel:-1}"
+  if ! [[ "$sel" =~ ^[0-9]+$ ]] || [[ "$sel" -lt 1 || "$sel" -gt "${#backups[@]}" ]]; then
+    warn "Invalid selection."; return 1
+  fi
+
+  local chosen="${backups[$((sel-1))]}"
+  echo ""
+  echo -e "  Restoring: ${CYAN}$(basename "$chosen")${RESET}"
+  echo ""
+  warn "This will OVERWRITE current config files with the selected backup."
+  warn "Running containers will not be stopped — redeploy after restore to apply changes."
+  echo ""
+  read -rp "  Proceed? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
+
+  echo ""
+  info "Extracting archive..."
+  if tar -xzf "$chosen" -C / 2>/dev/null; then
+    local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+    [[ ! -f "$acme" ]] && touch "$acme"
+    chown root:root "$acme"; chmod 600 "$acme"
+    success "Restore complete."
+    info "Run option 8 to fix ownership, then option 12 to redeploy containers."
+  else
+    error "Extraction failed — archive may be corrupt."
+    return 1
+  fi
+}
+
+_backup_list_delete() {
+  echo ""
+  local backups=() f
+  while IFS= read -r f; do backups+=("$f"); done \
+    < <(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null)
+
+  if [[ ${#backups[@]} -eq 0 ]]; then
+    warn "No backups found in ${BACKUP_DIR}."; return
+  fi
+
+  echo -e "${BOLD}Stored Backups${RESET}"
+  echo "──────────────────────────────────────────────────────"
+  printf "  %-4s %-22s %-8s\n" "No." "Timestamp" "Size"
+  echo "──────────────────────────────────────────────────────"
+  local i=1
+  for f in "${backups[@]}"; do
+    local size ts
+    size=$(du -sh "$f" 2>/dev/null | awk '{print $1}')
+    ts=$(basename "$f" | sed 's/friendbox_backup_//;s/\.tar\.gz//' | sed 's/_/ /')
+    printf "  %-4s %-22s %-8s\n" "${i})" "$ts" "${size:-?}"
+    i=$((i+1))
+  done
+  echo "──────────────────────────────────────────────────────"
+  echo ""
+  echo "  Enter a number to delete, or press Enter to go back."
+  echo ""
+  read -rp "  Choice: " sel
+  [[ -z "$sel" ]] && return
+  if ! [[ "$sel" =~ ^[0-9]+$ ]] || [[ "$sel" -lt 1 || "$sel" -gt "${#backups[@]}" ]]; then
+    warn "Invalid selection."; return
+  fi
+  local target="${backups[$((sel-1))]}"
+  read -rp "  Delete $(basename "$target")? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] \
+    && rm -f "$target" && success "Deleted $(basename "$target")." \
+    || info "Aborted."
+}
+
+setup_backup() {
+  require_root || return 1
+  while true; do
+    clear
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║               💾  Backup & Restore                      ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${RESET}"
+    local count newest
+    count=$(ls -1 "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null | wc -l) || count=0
+    newest=$(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null | head -1)
+    if [[ "$count" -gt 0 && -n "$newest" ]]; then
+      local newest_ts
+      newest_ts=$(basename "$newest" | sed 's/friendbox_backup_//;s/\.tar\.gz//' | sed 's/_/ /')
+      echo -e "  ${BOLD}Backups stored :${RESET} ${count}  ${DIM}(max 10 kept)${RESET}"
+      echo -e "  ${BOLD}Most recent    :${RESET} ${newest_ts}"
+    else
+      echo -e "  ${BOLD}Backups stored :${RESET} ${YELLOW}none${RESET}"
+    fi
+    echo -e "  ${BOLD}Backup location:${RESET} ${BACKUP_DIR}"
+    echo ""
+    echo "  1) Create backup now"
+    echo "  2) Restore from backup"
+    echo "  3) List / delete backups"
+    echo "  4) Back to main menu"
+    echo ""
+    read -rp "  Choice: " choice
+    case "$choice" in
+      1) backup_config        || true; pause ;;
+      2) restore_config       || true; pause ;;
+      3) _backup_list_delete  || true; pause ;;
+      4) return ;;
+      *) warn "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
+check_port_conflicts() {
+  # Warn if ports needed by selected containers are already bound by a non-Docker process.
+  load_selected
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+
+  declare -A _PM=(
+    [traefik]="80/tcp:HTTP 443/tcp:HTTPS 8080/tcp:Traefik-dashboard"
+    [portainer]="9000/tcp:Portainer"
+    [plex]="32400/tcp:Plex"
+    [jellyfin]="8096/tcp:Jellyfin"
+    [sonarr]="8989/tcp:Sonarr"
+    [radarr]="7878/tcp:Radarr"
+    [prowlarr]="9696/tcp:Prowlarr"
+    [bazarr]="6767/tcp:Bazarr"
+    [qbittorrent]="8082/tcp:qBittorrent"
+    [qbittorrentvpn]="8181/tcp:qBittorrentVPN"
+    [delugevpn]="8112/tcp:DelugeVPN"
+    [nzbget]="6789/tcp:NZBGet"
+    [overseerr]="5055/tcp:Overseerr"
+    [ombi]="3579/tcp:Ombi"
+    [jellyseerr]="5056/tcp:Jellyseerr"
+    [ampmc]="8085/tcp:AMP"
+    [netbootxyz]="3000/tcp:NetbootXYZ"
+    [mumble]="64738/tcp:Mumble"
+    [teamspeak6]="10011/tcp:TS6-query 30033/tcp:TS6-filetransfer"
+  )
+
+  local conflicts=0 key entry port proto label
+  for key in "${CONTAINER_ORDER[@]}"; do
+    [[ -z "${SELECTED[$key]+_}" ]] && continue
+    [[ -z "${_PM[$key]+_}" ]] && continue
+    for entry in ${_PM[$key]}; do
+      port="${entry%%/*}"
+      proto="${entry##*/}"; proto="${proto%%:*}"
+      label="${entry##*:}"
+      local ss_flag="-tlnp"; [[ "$proto" == "udp" ]] && ss_flag="-ulnp"
+      if ss $ss_flag 2>/dev/null | grep -q ":${port} "; then
+        local holder
+        holder=$(ss $ss_flag 2>/dev/null | awk "/:${port} /{print \$NF}" | head -1)
+        echo "$holder" | grep -qi "docker\|proxy" && continue
+        warn "Port ${port}/${proto} (${label}) is already in use by: ${holder:-unknown}"
+        conflicts=$((conflicts + 1))
+      fi
+    done
+  done
+
+  if [[ $conflicts -gt 0 ]]; then
+    echo ""
+    warn "${conflicts} port conflict(s) found — affected containers may fail to start silently."
+    echo ""
+    read -rp "  Continue anyway? [y/N] " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || return 1
+  else
+    success "No port conflicts detected."
+  fi
+}
+
 ensure_network() {
   if ! docker info &>/dev/null; then
     die "Docker daemon is not running. Start it with: sudo systemctl start docker"
@@ -3369,6 +3634,40 @@ _dns_update_namecheap() {
   success "Namecheap: ${updated} records set, ${failed} failed."
 }
 
+_dns_verify_propagation() {
+  # After a DNS update, confirm the record is visible from a public resolver.
+  # Tries 3 times with 10s gaps before giving up gracefully.
+  _dns_load
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local domain="${DNS_DOMAIN:-${DOMAIN:-}}"
+  [[ -z "$domain" ]] && return 0
+
+  local expected_ip
+  expected_ip=$(_dns_get_public_ip 2>/dev/null) \
+    || { info "Could not detect public IP — skipping propagation check."; return 0; }
+
+  command -v dig &>/dev/null \
+    || { info "dig not found — skipping propagation check (install dnsutils to enable)."; return 0; }
+
+  echo ""
+  info "Verifying DNS propagation for ${domain} via 1.1.1.1..."
+  local attempt resolved
+  for attempt in 1 2 3; do
+    resolved=$(dig +short "${domain}" A @1.1.1.1 2>/dev/null | head -1)
+    if [[ "$resolved" == "$expected_ip" ]]; then
+      success "DNS propagated ✔  ${domain} → ${resolved}"
+      return 0
+    fi
+    if [[ $attempt -lt 3 ]]; then
+      info "  Not yet visible (got '${resolved:-no record}') — waiting 10s... (${attempt}/3)"
+      sleep 10
+    fi
+  done
+  warn "DNS not yet visible at 1.1.1.1 after 3 checks."
+  warn "  Expected: ${expected_ip}  Got: ${resolved:-no record}"
+  warn "  Propagation can take a few minutes — Traefik will retry cert issuance automatically."
+}
+
 _dns_update_now() {
   _dns_load
   [[ -z "$DNS_PROVIDER" ]] && { error "No DNS provider configured."; return 1; }
@@ -3379,6 +3678,7 @@ _dns_update_now() {
     namecheap)  _dns_update_namecheap  ;;
     *)          error "Unknown provider: ${DNS_PROVIDER}" ;;
   esac
+  _dns_verify_propagation
 }
 
 _dns_show_subdomains() {
@@ -3539,10 +3839,41 @@ full_install() {
   ensure_acme
   provision_directories
   _jellyfin_fix_markers
+
+  # ── Pre-flight check: warn if Traefik not fully configured ───────────────────
+  load_selected
+  if [[ -n "${SELECTED[traefik]+_}" ]]; then
+    [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+    local _pf_warn=false
+    if [[ -z "${DOMAIN:-}" || "${DOMAIN:-}" == "example.com" ]]; then
+      warn "Domain is not configured — Traefik will not obtain HTTPS certificates."
+      _pf_warn=true
+    fi
+    if [[ -z "${ACME_EMAIL:-}" || "${ACME_EMAIL:-}" == "admin@example.com" ]]; then
+      warn "ACME email is not configured — required for Let's Encrypt."
+      _pf_warn=true
+    fi
+    if [[ -z "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
+      warn "No ACME DNS provider configured — HTTPS certificates will not be issued."
+      warn "Configure after install via: option 4 → option 3"
+      _pf_warn=true
+    fi
+    if [[ "$_pf_warn" == "true" ]]; then
+      echo ""
+      echo -e "  ${DIM}These warnings won't stop the install. Fix them via option 4 after deploy.${RESET}"
+      echo ""
+      read -rp "  Continue anyway? [Y/n] " _pf_yn
+      [[ "${_pf_yn:-y}" =~ ^[Nn]$ ]] && { info "Aborted — configure Traefik via option 4, then run option 1 again."; return 0; }
+    fi
+  fi
+
+  # ── Port conflict check ───────────────────────────────────────────────────────
+  check_port_conflicts || return 1
+
   info "Starting selected containers..."
   compose_selected up -d
   echo ""
-  success "✅ Friendbox is up!"
+  success "✅ Friendbox is up!" 
   mark_installed
   echo ""
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
@@ -3551,7 +3882,33 @@ full_install() {
   echo -e "  ${DIM}  • VPN / AMP / Mumble creds    → menu option  5${RESET}"
   echo -e "  ${DIM}  • DNS A record setup           → menu option  6${RESET}"
   echo -e "  ${DIM}  • MergerFS storage pool        → menu option  7${RESET}"
+  echo -e "  ${DIM}  • Backup your config           → menu option 16${RESET}"
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
+
+  # ── TeamSpeak 6: surface the admin token if TS6 was deployed ─────────────────
+  load_selected
+  if [[ -n "${SELECTED[teamspeak6]+_}" ]]; then
+    echo ""
+    info "Checking for TeamSpeak 6 admin privilege token..."
+    local _ts_tok="" _ts_try
+    for _ts_try in 1 2 3 4 5; do
+      _ts_tok=$(docker logs teamspeak6 2>/dev/null \
+        | grep -iE "token=|privilege" | grep -oE '[A-Za-z0-9+/]{40,}|token=[^ ]+' | head -1)
+      [[ -n "$_ts_tok" ]] && break
+      sleep 3
+    done
+    if [[ -n "$_ts_tok" ]]; then
+      echo ""
+      echo -e "  ${BOLD}${YELLOW}TeamSpeak 6 Admin Token${RESET}"
+      echo -e "  ${CYAN}${_ts_tok}${RESET}"
+      echo -e "  ${DIM}Use this in the TS6 client to claim server admin. It is only shown once.${RESET}"
+    else
+      echo ""
+      info "TS6 admin token not yet in logs."
+      info "Retrieve it manually: docker logs teamspeak6 | grep -i token"
+    fi
+  fi
+
   echo ""
   print_urls
 }
@@ -3684,10 +4041,47 @@ redeploy_menu() {
 update_stack() {
   require_root
   sync_repo
+
+  # Snapshot digests before pull to detect what actually changed
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local _prof=(); local _l
+  while IFS= read -r _l; do [[ -n "$_l" ]] && _prof+=("$_l"); done \
+    < <(get_profile_args)
+
+  declare -A _before=()
+  local _img
+  while IFS= read -r _img; do
+    [[ -z "$_img" ]] && continue
+    local _d; _d=$(docker inspect --format='{{index .RepoDigests 0}}' "$_img" 2>/dev/null || true)
+    _before[$_img]="${_d:-none}"
+  done < <(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+    "${_prof[@]}" config --images 2>/dev/null)
+
   _jellyfin_fix_markers
   compose_selected pull
   compose_selected up -d
-  success "Stack updated."
+
+  # Report changes
+  local _updated=0 _same=0
+  echo ""
+  echo -e "${BOLD}Image update summary:${RESET}"
+  while IFS= read -r _img; do
+    [[ -z "$_img" ]] && continue
+    local _nd; _nd=$(docker inspect --format='{{index .RepoDigests 0}}' "$_img" 2>/dev/null || true)
+    local _lbl="${_img##*/}"
+    if [[ "${_before[$_img]:-none}" != "${_nd:-none}" ]]; then
+      echo -e "  ${GREEN}↑ updated${RESET}   ${_lbl}"
+      _updated=$((_updated+1))
+    else
+      echo -e "  ${DIM}  current   ${_lbl}${RESET}"
+      _same=$((_same+1))
+    fi
+  done < <(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+    "${_prof[@]}" config --images 2>/dev/null)
+  echo ""
+  [[ $_updated -gt 0 ]] \
+    && success "${_updated} image(s) updated, ${_same} already current." \
+    || success "All ${_same} image(s) already up to date."
 }
 
 teardown() {
@@ -3706,6 +4100,72 @@ teardown() {
   mark_uninstalled
   success "Containers removed. Run option 1 to reinstall."
 }
+
+full_reset() {
+  require_root || return 1
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}${RED}⚠  Full Reset${RESET}"
+  echo ""
+  echo -e "  This will permanently delete:"
+  echo -e "  ${RED}  • All Friendbox containers${RESET}"
+  echo -e "  ${RED}  • All Docker images pulled by Friendbox${RESET}"
+  echo -e "  ${RED}  • The medianet Docker network${RESET}"
+  echo -e "  ${RED}  • All config data in ${CONFIG_ROOT:-/opt/friendbox/config}${RESET}"
+  echo -e "  ${RED}  • All state files (.env, .selected_containers, etc.)${RESET}"
+  echo -e "  ${RED}  • The /usr/local/bin/friendbox command${RESET}"
+  echo ""
+  echo -e "  ${BOLD}Media files in ${MEDIA_ROOT:-/mnt/media} are NOT deleted.${RESET}"
+  echo -e "  ${BOLD}Backups in ${BACKUP_DIR:-/opt/friendbox/backups} are NOT deleted.${RESET}"
+  echo ""
+  warn "This cannot be undone. Create a backup first (option 16) if needed."
+  echo ""
+  read -rp "  Type RESET to confirm: " confirm
+  [[ "$confirm" == "RESET" ]] || { info "Aborted."; return 0; }
+  echo ""
+
+  info "Stopping and removing containers..."
+  compose_selected down --remove-orphans 2>/dev/null || true
+
+  info "Removing Docker images..."
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    local img
+    while IFS= read -r img; do
+      [[ -z "$img" ]] && continue
+      docker rmi "$img" 2>/dev/null && info "  Removed: ${img}" || true
+    done < <(grep 'image:' "$COMPOSE_FILE" 2>/dev/null | awk '{print $2}' | sort -u)
+  fi
+
+  if docker network inspect medianet &>/dev/null 2>&1; then
+    docker network rm medianet 2>/dev/null \
+      && success "Removed Docker network 'medianet'." || true
+  fi
+
+  local cfg="${CONFIG_ROOT:-/opt/friendbox/config}"
+  if [[ -d "$cfg" ]]; then
+    rm -rf "$cfg"
+    success "Removed config directory: ${cfg}"
+  fi
+
+  local sf
+  for sf in "$ENV_FILE" "$STATE_FILE" "$SELECTED_FILE" "$MERGERFS_MODES_FILE" \
+            "$MERGERFS_POOL_FILE" "$DNS_STATE_FILE" "$INSTALL_FLAG" \
+            "${INSTALL_DIR}/docker-compose.yml" "${INSTALL_DIR}/scripts/redeploy.sh"; do
+    [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
+  done
+
+  # Remove the binary last — we're still executing from it in memory
+  rm -f /usr/local/bin/friendbox
+  success "Removed /usr/local/bin/friendbox"
+
+  echo ""
+  success "✅ Full reset complete. Friendbox has been removed."
+  info "Media files in ${MEDIA_ROOT:-/mnt/media} are untouched."
+  info "To reinstall: curl -fsSL https://raw.githubusercontent.com/xkronusx/friendbox/main/setup.sh | sudo bash"
+  echo ""
+  exit 0
+}
+
 
 view_logs() {
   echo ""
@@ -3786,12 +4246,14 @@ main_menu() {
     echo "  13) Update stack (pull latest images)"
     echo "  14) View logs"
     echo "  15) Teardown (stop & remove containers)"
+    echo "  16) Backup & Restore"
+    echo "  17) Full Reset (wipe everything)"
     echo "   q) Quit"
     echo ""
     read -rp "Select option: " opt
 
     # ── Gate operations-section items when not installed ─────────────────────
-    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|15)$ ]]; then
+    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|15|16)$ ]]; then
       echo ""
       warn "Friendbox has not been installed yet."
       warn "Run option 1 (Full Install) first, then use the operations menu."
@@ -3815,6 +4277,8 @@ main_menu() {
       13) update_stack                    || true; pause ;;
       14) view_logs                       || true; pause ;;
       15) teardown                        || true; pause ;;
+      16) setup_backup                           ;;   # has its own loop+return
+      17) full_reset                      || true; pause ;;
       q|Q) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid option '$opt'"; sleep 1 ;;
     esac

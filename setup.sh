@@ -1140,7 +1140,7 @@ _mergerfs_clear_mountpoint() {
       1)
         echo ""
         info "Stopping all running Docker containers..."
-        docker stop $(docker ps -q) 2>/dev/null || true
+        docker stop $(docker ps -q 2>/dev/null) 2>/dev/null || true
         sleep 2
         ;;
       2)
@@ -2121,15 +2121,14 @@ _traefik_emergency_recover() {
   # Regenerate traefik.yml
   _traefik_write_config
 
-  # Start Traefik
+  # Start Traefik — use compose so certresolver label changes are picked up
   if [[ "$traefik_state" != "missing" ]]; then
     info "Starting Traefik..."
-    docker start traefik
+    compose_selected up -d --force-recreate traefik
     success "Traefik started."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
-    info "If HTTPS cert renewal still fails, check that ports 80 and 443"
-    info "are forwarded to this machine, then run: option 4 → option 5 (pre-flight checks)"
+    info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"
     info "  Main menu → option 12 → option 1"
@@ -2897,14 +2896,11 @@ provision_directories() {
       _traefik_write_config
       success "  ${_yml}  (generated)"
     fi
-    # Always ensure headers.yml exists — traefik.yml references secHeaders@file
-    # on every router. If this file is absent, Traefik marks every route as broken.
-    # _traefik_write_config writes it, but if traefik.yml already existed above
-    # we skipped that call, so write headers.yml unconditionally here.
+    # Always write headers.yml — traefik.yml references secHeaders@file on every
+    # router. Writing unconditionally ensures it is never stale or missing.
     local _headers="${cfg}/traefik/dynamic/headers.yml"
-    if [[ ! -f "$_headers" ]]; then
-      mkdir -p "${cfg}/traefik/dynamic"
-      cat > "$_headers" <<'HDEOF'
+    mkdir -p "${cfg}/traefik/dynamic"
+    cat > "$_headers" <<'HDEOF'
 http:
   middlewares:
     secHeaders:
@@ -2919,8 +2915,7 @@ http:
         customResponseHeaders:
           X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
 HDEOF
-      success "  ${_headers}  (created)"
-    fi
+    success "  ${_headers}  (written)"
     # Create acme.json as an empty file with correct ownership if missing
     if [[ ! -f "$_acme" ]]; then
       touch "$_acme"
@@ -3689,6 +3684,7 @@ redeploy_menu() {
 update_stack() {
   require_root
   sync_repo
+  _jellyfin_fix_markers
   compose_selected pull
   compose_selected up -d
   success "Stack updated."

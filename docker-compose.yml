@@ -56,7 +56,7 @@ services:
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.tls=true"
-      - "traefik.http.routers.dashboard.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.dashboard.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.middlewares=auth"
       - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_AUTH}"
@@ -70,7 +70,7 @@ services:
       - "traefik.http.routers.root.rule=Host(`${DOMAIN}`)"
       - "traefik.http.routers.root.entrypoints=websecure"
       - "traefik.http.routers.root.tls=true"
-      - "traefik.http.routers.root.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.root.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.root.middlewares=secHeaders@file,redirect-root"
       - "traefik.http.routers.root.service=api@internal"
       - "traefik.http.middlewares.redirect-root.redirectregex.regex=^https://${DOMAIN}(.*)"
@@ -104,7 +104,7 @@ services:
       - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
       - "traefik.http.routers.portainer.entrypoints=websecure"
       - "traefik.http.routers.portainer.tls=true"
-      - "traefik.http.routers.portainer.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.portainer.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.portainer.middlewares=secHeaders@file"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
@@ -147,7 +147,7 @@ services:
       - "traefik.http.routers.plex.rule=Host(`plex.${DOMAIN}`)"
       - "traefik.http.routers.plex.entrypoints=websecure"
       - "traefik.http.routers.plex.tls=true"
-      - "traefik.http.routers.plex.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.plex.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.plex.middlewares=secHeaders@file"
       - "traefik.http.services.plex.loadbalancer.server.port=32400"
 
@@ -191,7 +191,7 @@ services:
       - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.${DOMAIN}`)"
       - "traefik.http.routers.jellyfin.entrypoints=websecure"
       - "traefik.http.routers.jellyfin.tls=true"
-      - "traefik.http.routers.jellyfin.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.jellyfin.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.jellyfin.middlewares=secHeaders@file"
       - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
 
@@ -227,7 +227,7 @@ services:
       - "traefik.http.routers.sonarr.rule=Host(`sonarr.${DOMAIN}`)"
       - "traefik.http.routers.sonarr.entrypoints=websecure"
       - "traefik.http.routers.sonarr.tls=true"
-      - "traefik.http.routers.sonarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.sonarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.sonarr.middlewares=secHeaders@file"
       - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
 
@@ -263,7 +263,7 @@ services:
       - "traefik.http.routers.radarr.rule=Host(`radarr.${DOMAIN}`)"
       - "traefik.http.routers.radarr.entrypoints=websecure"
       - "traefik.http.routers.radarr.tls=true"
-      - "traefik.http.routers.radarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.radarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.radarr.middlewares=secHeaders@file"
       - "traefik.http.services.radarr.loadbalancer.server.port=7878"
 
@@ -297,7 +297,7 @@ services:
       - "traefik.http.routers.prowlarr.rule=Host(`prowlarr.${DOMAIN}`)"
       - "traefik.http.routers.prowlarr.entrypoints=websecure"
       - "traefik.http.routers.prowlarr.tls=true"
-      - "traefik.http.routers.prowlarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.prowlarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.prowlarr.middlewares=secHeaders@file"
       - "traefik.http.services.prowlarr.loadbalancer.server.port=9696"
 
@@ -333,7 +333,7 @@ services:
       - "traefik.http.routers.bazarr.rule=Host(`bazarr.${DOMAIN}`)"
       - "traefik.http.routers.bazarr.entrypoints=websecure"
       - "traefik.http.routers.bazarr.tls=true"
-      - "traefik.http.routers.bazarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.bazarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.bazarr.middlewares=secHeaders@file"
       - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
 
@@ -367,7 +367,7 @@ services:
       - "traefik.http.routers.ombi.rule=Host(`ombi.${DOMAIN}`)"
       - "traefik.http.routers.ombi.entrypoints=websecure"
       - "traefik.http.routers.ombi.tls=true"
-      - "traefik.http.routers.ombi.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.ombi.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.ombi.middlewares=secHeaders@file"
       - "traefik.http.services.ombi.loadbalancer.server.port=3579"
 
@@ -401,7 +401,7 @@ services:
       - "traefik.http.routers.overseerr.rule=Host(`overseerr.${DOMAIN}`)"
       - "traefik.http.routers.overseerr.entrypoints=websecure"
       - "traefik.http.routers.overseerr.tls=true"
-      - "traefik.http.routers.overseerr.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.overseerr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.overseerr.middlewares=secHeaders@file"
       - "traefik.http.services.overseerr.loadbalancer.server.port=5055"
 
@@ -436,7 +436,7 @@ services:
       - "traefik.http.routers.nzbget.rule=Host(`nzbget.${DOMAIN}`)"
       - "traefik.http.routers.nzbget.entrypoints=websecure"
       - "traefik.http.routers.nzbget.tls=true"
-      - "traefik.http.routers.nzbget.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.nzbget.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.nzbget.middlewares=secHeaders@file"
       - "traefik.http.services.nzbget.loadbalancer.server.port=6789"
 
@@ -475,7 +475,7 @@ services:
       - "traefik.http.routers.qbt.rule=Host(`qbt.${DOMAIN}`)"
       - "traefik.http.routers.qbt.entrypoints=websecure"
       - "traefik.http.routers.qbt.tls=true"
-      - "traefik.http.routers.qbt.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.qbt.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.qbt.middlewares=secHeaders@file"
       - "traefik.http.services.qbt.loadbalancer.server.port=8080"
 
@@ -526,7 +526,7 @@ services:
       - "traefik.http.routers.qbtvpn.rule=Host(`qbtvpn.${DOMAIN}`)"
       - "traefik.http.routers.qbtvpn.entrypoints=websecure"
       - "traefik.http.routers.qbtvpn.tls=true"
-      - "traefik.http.routers.qbtvpn.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.qbtvpn.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.qbtvpn.middlewares=secHeaders@file"
       - "traefik.http.services.qbtvpn.loadbalancer.server.port=8080"
 
@@ -579,7 +579,7 @@ services:
       - "traefik.http.routers.delugevpn.rule=Host(`deluge.${DOMAIN}`)"
       - "traefik.http.routers.delugevpn.entrypoints=websecure"
       - "traefik.http.routers.delugevpn.tls=true"
-      - "traefik.http.routers.delugevpn.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.delugevpn.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.delugevpn.middlewares=secHeaders@file"
       - "traefik.http.services.delugevpn.loadbalancer.server.port=8112"
 
@@ -616,7 +616,7 @@ services:
       - "traefik.http.routers.netbootxyz.rule=Host(`netboot.${DOMAIN}`)"
       - "traefik.http.routers.netbootxyz.entrypoints=websecure"
       - "traefik.http.routers.netbootxyz.tls=true"
-      - "traefik.http.routers.netbootxyz.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.netbootxyz.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.netbootxyz.middlewares=secHeaders@file"
       - "traefik.http.services.netbootxyz.loadbalancer.server.port=3000"
 
@@ -655,7 +655,7 @@ services:
       # - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
       # - "traefik.http.routers.ts6.entrypoints=websecure"
       # - "traefik.http.routers.ts6.tls=true"
-      # - "traefik.http.routers.ts6.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      # - "traefik.http.routers.ts6.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       # - "traefik.http.services.ts6.loadbalancer.server.port=10080"
 
   # ── Mumble — open-source voice chat server ──────────────────────────────────
@@ -713,7 +713,7 @@ services:
       - "traefik.http.routers.jellyseerr.rule=Host(`jellyseerr.${DOMAIN}`)"
       - "traefik.http.routers.jellyseerr.entrypoints=websecure"
       - "traefik.http.routers.jellyseerr.tls=true"
-      - "traefik.http.routers.jellyseerr.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.jellyseerr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.jellyseerr.middlewares=secHeaders@file"
       - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
 
@@ -748,6 +748,6 @@ services:
       - "traefik.http.routers.ampmc.rule=Host(`amp.${DOMAIN}`)"
       - "traefik.http.routers.ampmc.entrypoints=websecure"
       - "traefik.http.routers.ampmc.tls=true"
-      - "traefik.http.routers.ampmc.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.ampmc.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
       - "traefik.http.routers.ampmc.middlewares=secHeaders@file"
       - "traefik.http.services.ampmc.loadbalancer.server.port=8080"

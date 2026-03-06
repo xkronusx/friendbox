@@ -1303,17 +1303,10 @@ configure_env() {
 # Must be called after any Traefik setting changes and before containers start.
 # Removes any directory that may exist at the file path before writing.
 _traefik_write_config() {
-  # Helper: write a key=value into .env, creating or updating the line
-  _traefik_env_set() {
-    local key="$1" val="$2"
-    [[ -f "$ENV_FILE" ]] || return 0
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-      sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-    else
-      echo "${key}=${val}" >> "$ENV_FILE"
-    fi
-  }
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  # Remove stale TRAEFIK_CERT_RESOLVER from .env — no longer used, compose file
+  # is patched directly by this function depending on the provider.
+  sed -i '/^TRAEFIK_CERT_RESOLVER=/d' "$ENV_FILE" 2>/dev/null || true
 
   local traefik_dir="${INSTALL_DIR}/config/traefik"
   local traefik_cfg="${traefik_dir}/traefik.yml"
@@ -1413,10 +1406,10 @@ _traefik_write_config() {
   esac
 
   # For DuckDNS: declare the wildcard domain on the entrypoint so Traefik requests
-  # *.domain.duckdns.org once. Individual routers use tls: true (not certresolver=)
-  # so they inherit the wildcard without triggering per-host ACME requests.
-  # DuckDNS only supports one TXT record per domain — simultaneous per-subdomain
-  # DNS challenges overwrite each other and all fail.
+  # *.domain.duckdns.org once. Individual routers must have tls=true but NO
+  # certresolver label — an empty certresolver value still triggers per-router
+  # ACME attempts. We patch the compose file directly to strip or restore the
+  # certresolver label lines depending on the provider.
   local tls_block
   if [[ "$provider" == "duckdns" ]]; then
     tls_block="    http:
@@ -1425,12 +1418,34 @@ _traefik_write_config() {
           - main: \"${DOMAIN}\"
             sans:
               - \"*.${DOMAIN}\""
-    # Empty resolver on routers — they inherit the wildcard from the entrypoint
-    _traefik_env_set TRAEFIK_CERT_RESOLVER ""
+    # Strip certresolver labels from compose file — routers inherit wildcard from entrypoint
+    sed -i '/traefik\.http\.routers\.[^.]*\.tls\.certresolver=/d' "$COMPOSE_FILE"
+    info "DuckDNS: removed certresolver labels from routers (wildcard cert via entrypoint)."
   else
     tls_block=""
-    # Non-DuckDNS: each router requests its own cert via the named resolver
-    _traefik_env_set TRAEFIK_CERT_RESOLVER "letsencrypt"
+    # Restore certresolver labels if they were previously stripped for DuckDNS
+    # Check each router and add back the label if missing
+    python3 - "$COMPOSE_FILE" << 'PYEOF'
+import re, sys
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+# Find all router names that have tls=true but no certresolver label
+routers = re.findall(r'traefik\.http\.routers\.([^.]+)\.tls=true', content)
+for router in routers:
+    certresolver_label = f'traefik.http.routers.{router}.tls.certresolver=${{TRAEFIK_CERT_RESOLVER}}'
+    tls_label = f'traefik.http.routers.{router}.tls=true'
+    if certresolver_label not in content:
+        content = content.replace(
+            f'- "{tls_label}"',
+            f'- "{tls_label}"\n      - "{certresolver_label}"'
+        )
+with open(path, 'w') as f:
+    f.write(content)
+print("certresolver labels restored.")
+PYEOF
   fi
 
   cat > "$traefik_cfg" <<EOF

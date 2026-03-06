@@ -1361,6 +1361,11 @@ _traefik_write_config() {
       # lego looks for _acme-challenge.traefik.domain.duckdns.org which DuckDNS
       # cannot create. The only working approach is a single wildcard cert
       # (*.domain.duckdns.org) requested at the entrypoint level.
+      # Extract base domain (everything from first dot onward, e.g. temperus.duckdns.org)
+      local base_domain="${DOMAIN#*.}"
+      # If DOMAIN has no subdomain prefix, use it directly
+      [[ "$DOMAIN" == *"."* ]] && base_domain="$DOMAIN" || base_domain="$DOMAIN"
+      # For duckdns DOMAIN is typically temperus.duckdns.org — wildcard is *.temperus.duckdns.org
       resolvers_block="  letsencrypt:
     acme:
       email: ${email}
@@ -1371,8 +1376,8 @@ _traefik_write_config() {
         propagation:
           delayBeforeChecks: 60s
         resolvers:
-          - \"ns1.duckdns.org:53\"
-          - \"ns2.duckdns.org:53\""
+          - \"1.1.1.1:53\"
+          - \"8.8.8.8:53\""
       ;;
     godaddy)
       resolvers_block="  letsencrypt:
@@ -1438,6 +1443,12 @@ api:
   insecure: true
 
 ping: {}
+
+# Suppress RFC 3986 encoded-characters warning introduced in Traefik v3.
+# rejectStatusCode 404 is the safe default — keeps the original behaviour
+# without the log noise.
+experimental:
+  allowEncodedSlashes: false
 
 log:
   level: INFO

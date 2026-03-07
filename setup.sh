@@ -401,55 +401,34 @@ select_containers() {
     _env_set_inline USE_TRAEFIK "$_use_traefik"
 
     # Set ROOT_REDIRECT_HOST — the bare-domain (https://DOMAIN) redirect target.
-    # Preserve any value already set by the user (via option 4→8) as long as the
-    # target container is still selected.  Only auto-detect when:
-    #   a) ROOT_REDIRECT_HOST is not yet set in .env, or
-    #   b) the container it points to was just removed from the selection.
-    declare -A _ALL_SD=([traefik]=traefik [portainer]=portainer [plex]=plex [jellyfin]=jellyfin
-      [sonarr]=sonarr [radarr]=radarr [prowlarr]=prowlarr [bazarr]=bazarr
-      [qbittorrent]=qbt [qbittorrentvpn]=qbtvpn [delugevpn]=deluge [nzbget]=nzbget
-      [overseerr]=overseerr [ombi]=ombi [jellyseerr]=jellyseerr
-      [ampmc]=amp [netbootxyz]=netboot)
-
-    local _current_redir="${ROOT_REDIRECT_HOST:-}"
-    local _redir_valid=false
-    # Check if the current value still corresponds to a selected container
-    if [[ -n "$_current_redir" ]]; then
-      local _ck
-      for _ck in "${!_ALL_SD[@]}"; do
-        if [[ "${_ALL_SD[$_ck]}" == "$_current_redir" && -n "${SELECTED[$_ck]+_}" ]]; then
-          _redir_valid=true
-          break
-        fi
-      done
-    fi
-
-    if [[ "$_redir_valid" == "true" ]]; then
-      # User-set value still valid — leave it untouched
-      _env_set_inline ROOT_REDIRECT_HOST "$_current_redir"
-    else
-      # Auto-detect: portainer > jellyfin > plex > overseerr > sonarr > first selected
-      local _redir="portainer"
-      local _redir_set=false
-      for _cand in portainer jellyfin plex overseerr sonarr; do
-        if [[ -n "${SELECTED[$_cand]+_}" ]]; then
-          declare -A _SD=([portainer]=portainer [jellyfin]=jellyfin [plex]=plex [overseerr]=overseerr [sonarr]=sonarr)
-          _redir="${_SD[$_cand]}"
-          _redir_set=true
-          break
-        fi
-      done
-      if [[ "$_redir_set" == "false" ]]; then
-        local _k
-        for _k in "${CONTAINER_ORDER[@]}"; do
-          if [[ -n "${SELECTED[$_k]+_}" && -n "${_ALL_SD[$_k]+_}" ]]; then
-            _redir="${_ALL_SD[$_k]}"
-            break
-          fi
-        done
+    # Priority: portainer > jellyfin > plex > overseerr > sonarr > first selected container.
+    local _redir="portainer"
+    local _redir_set=false
+    for _cand in portainer jellyfin plex overseerr sonarr; do
+      if [[ -n "${SELECTED[$_cand]+_}" ]]; then
+        # Map container key to its subdomain
+        declare -A _SD=([portainer]=portainer [jellyfin]=jellyfin [plex]=plex [overseerr]=overseerr [sonarr]=sonarr)
+        _redir="${_SD[$_cand]}"
+        _redir_set=true
+        break
       fi
-      _env_set_inline ROOT_REDIRECT_HOST "$_redir"
+    done
+    # If none of the preferred containers are selected, use the first selected one
+    if [[ "$_redir_set" == "false" ]]; then
+      declare -A _ALL_SD=([traefik]=traefik [portainer]=portainer [plex]=plex [jellyfin]=jellyfin
+        [sonarr]=sonarr [radarr]=radarr [prowlarr]=prowlarr [bazarr]=bazarr
+        [qbittorrent]=qbt [qbittorrentvpn]=qbtvpn [delugevpn]=deluge [nzbget]=nzbget
+        [overseerr]=overseerr [ombi]=ombi [jellyseerr]=jellyseerr
+        [ampmc]=amp [netbootxyz]=netboot)
+      local _k
+      for _k in "${CONTAINER_ORDER[@]}"; do
+        if [[ -n "${SELECTED[$_k]+_}" && -n "${_ALL_SD[$_k]+_}" ]]; then
+          _redir="${_ALL_SD[$_k]}"
+          break
+        fi
+      done
     fi
+    _env_set_inline ROOT_REDIRECT_HOST "$_redir"
   fi
 }
 
@@ -652,21 +631,6 @@ https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_C
         > /etc/apt/sources.list.d/docker.list
       apt-get update -qq
       apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    fi
-
-    # Install docker-compose-plugin if docker binary exists but plugin is missing.
-    # (The Docker CE full install above already includes it; this covers the case
-    # where docker was installed by another method without the compose plugin.)
-    if command -v docker &>/dev/null && ! docker compose version &>/dev/null 2>&1; then
-      info "Installing docker-compose-plugin..."
-      # Ensure the Docker apt repo is configured before trying to install
-      if [[ -f /etc/apt/sources.list.d/docker.list ]]; then
-        apt-get update -qq
-        apt-get install -y docker-compose-plugin
-      else
-        warn "Docker apt repo not found — cannot install docker-compose-plugin automatically."
-        warn "Install it manually: https://docs.docker.com/compose/install/"
-      fi
     fi
 
     # Install remaining missing packages
@@ -1806,6 +1770,9 @@ _traefik_validate() {
       [[ -n "${NAMECHEAP_API_KEY:-}" ]] \
         && _chk "Namecheap API key" 1 \
         || _chk "Namecheap API key" 0 "set via option 3"
+      [[ -n "${NAMECHEAP_API_IP:-}" ]] \
+        && _chk "Namecheap API source IP" 1 "${NAMECHEAP_API_IP}" \
+        || _chk "Namecheap API source IP" 0 "required by Namecheap API — set via option 3"
       ;;
     http)
       _chk "HTTP challenge (no creds needed)" 1
@@ -2287,11 +2254,11 @@ _traefik_set_redirect() {
     return 1
   fi
 
-  # $'\e[...]' (ANSI C quoting) stores the actual ESC byte in the variable,
-  # so printf/echo print it correctly without needing -e interpretation.
-  local _green=$'\e[0;32m' _reset=$'\e[0m' _dim=$'\e[2m'
   local i
   for i in "${!keys[@]}"; do
+    # $'\e[...]' (ANSI C quoting) stores the actual ESC byte in the variable,
+    # so printf/echo print it correctly without needing -e interpretation.
+    local _green=$'\e[0;32m' _reset=$'\e[0m' _dim=$'\e[2m'
     local marker="  "
     [[ "${subdomains[$i]}" == "$current" ]] && marker="${_green}▶${_reset} "
     local _num _name _url
@@ -2678,8 +2645,29 @@ _traefik_provider_namecheap() {
     warn "API key is required."; return 1
   fi
 
-  sed -i '/^NAMECHEAP_API_USER=/d;/^NAMECHEAP_API_KEY=/d' "$ENV_FILE" 2>/dev/null || true
+  echo -n "Namecheap API source IP (press Enter to auto-detect, must be whitelisted in NC API settings) [${NAMECHEAP_API_IP:-}]: "
+  read -r input
+  local nc_ip
+  if [[ -n "$input" ]]; then
+    nc_ip="$input"
+  elif [[ -n "${NAMECHEAP_API_IP:-}" ]]; then
+    nc_ip="$NAMECHEAP_API_IP"
+    info "Source IP unchanged: ${nc_ip}"
+  else
+    info "Detecting public IP..."
+    nc_ip=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null) || nc_ip=""
+    if [[ -n "$nc_ip" ]]; then
+      info "Detected: ${nc_ip}"
+      warn "Ensure this IP is whitelisted in Namecheap API settings before deploying."
+    else
+      warn "Could not detect public IP. Enter it manually or whitelist your IP at Namecheap."
+      nc_ip=""
+    fi
+  fi
+
+  sed -i '/^NAMECHEAP_API_USER=/d;/^NAMECHEAP_API_KEY=/d;/^NAMECHEAP_API_IP=/d' "$ENV_FILE" 2>/dev/null || true
   printf 'NAMECHEAP_API_USER=%s\nNAMECHEAP_API_KEY=%s\n' "$nc_user" "$nc_key" >> "$ENV_FILE"
+  [[ -n "$nc_ip" ]] && printf 'NAMECHEAP_API_IP=%s\n' "$nc_ip" >> "$ENV_FILE"
   success "Namecheap credentials saved."
 }
 
@@ -3224,8 +3212,8 @@ check_port_conflicts() {
     [jellyseerr]="5056/tcp:Jellyseerr"
     [ampmc]="8085/tcp:AMP"
     [netbootxyz]="3000/tcp:NetbootXYZ"
-    [mumble]="64738/tcp:Mumble 64738/udp:Mumble-voice"
-    [teamspeak6]="9987/udp:TS6-voice 10011/tcp:TS6-query 30033/tcp:TS6-filetransfer"
+    [mumble]="64738/tcp:Mumble"
+    [teamspeak6]="10011/tcp:TS6-query 30033/tcp:TS6-filetransfer"
   )
 
   local conflicts=0 key entry port proto label
@@ -3392,10 +3380,12 @@ provision_directories() {
       _traefik_write_config
       success "  ${_yml}  (generated)"
     fi
-    # Always write headers.yml — traefik.yml references secHeaders@file on every
-    # router. Writing unconditionally ensures it is never stale or missing.
+    # Only write headers.yml when it does not already exist — preserves any
+    # user customisations to CSP, frame options, or custom headers.
+    # To reset to defaults: rm ${CONFIG_ROOT}/traefik/dynamic/headers.yml
     local _headers="${cfg}/traefik/dynamic/headers.yml"
     mkdir -p "${cfg}/traefik/dynamic"
+    if [[ ! -f "$_headers" ]]; then
     cat > "$_headers" <<'HDEOF'
 http:
   middlewares:
@@ -3412,6 +3402,9 @@ http:
           X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
 HDEOF
     success "  ${_headers}  (written)"
+    else
+      info "  ${_headers}  (exists — preserved)"
+    fi
     # Create acme.json as an empty file with correct ownership if missing
     if [[ ! -f "$_acme" ]]; then
       touch "$_acme"
@@ -3552,20 +3545,23 @@ _dns_load() {
 
 _dns_save() {
   _ensure_install_dir
-  cat > "$DNS_STATE_FILE" <<EOF
-DNS_PROVIDER=${DNS_PROVIDER}
-DNS_DOMAIN=${DNS_DOMAIN}
-DNS_CF_EMAIL=${DNS_CF_EMAIL}
-DNS_CF_API_KEY=${DNS_CF_API_KEY}
-DNS_CF_ZONE_ID=${DNS_CF_ZONE_ID}
-DNS_DUCKDNS_TOKEN=${DNS_DUCKDNS_TOKEN}
-DNS_DUCKDNS_SUBDOMAIN=${DNS_DUCKDNS_SUBDOMAIN}
-DNS_GODADDY_KEY=${DNS_GODADDY_KEY}
-DNS_GODADDY_SECRET=${DNS_GODADDY_SECRET}
-DNS_NAMECHEAP_USER=${DNS_NAMECHEAP_USER}
-DNS_NAMECHEAP_API_KEY=${DNS_NAMECHEAP_API_KEY}
-DNS_NAMECHEAP_SOURCE_IP=${DNS_NAMECHEAP_SOURCE_IP}
-EOF
+  # Use printf "%s" for each value so special characters ($, \, spaces) in
+  # credentials are written literally and not expanded or truncated.
+  # A double-quoted heredoc would expand $VAR sequences inside API keys.
+  {
+    printf 'DNS_PROVIDER=%s\n'        "$DNS_PROVIDER"
+    printf 'DNS_DOMAIN=%s\n'          "$DNS_DOMAIN"
+    printf 'DNS_CF_EMAIL=%s\n'        "$DNS_CF_EMAIL"
+    printf 'DNS_CF_API_KEY=%s\n'      "$DNS_CF_API_KEY"
+    printf 'DNS_CF_ZONE_ID=%s\n'      "$DNS_CF_ZONE_ID"
+    printf 'DNS_DUCKDNS_TOKEN=%s\n'   "$DNS_DUCKDNS_TOKEN"
+    printf 'DNS_DUCKDNS_SUBDOMAIN=%s\n' "$DNS_DUCKDNS_SUBDOMAIN"
+    printf 'DNS_GODADDY_KEY=%s\n'     "$DNS_GODADDY_KEY"
+    printf 'DNS_GODADDY_SECRET=%s\n'  "$DNS_GODADDY_SECRET"
+    printf 'DNS_NAMECHEAP_USER=%s\n'  "$DNS_NAMECHEAP_USER"
+    printf 'DNS_NAMECHEAP_API_KEY=%s\n' "$DNS_NAMECHEAP_API_KEY"
+    printf 'DNS_NAMECHEAP_SOURCE_IP=%s\n' "$DNS_NAMECHEAP_SOURCE_IP"
+  } > "$DNS_STATE_FILE"
   _own "$DNS_STATE_FILE"
   chmod 600 "$DNS_STATE_FILE"
 }

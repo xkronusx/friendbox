@@ -49,6 +49,7 @@ services:
       - GODADDY_API_SECRET=${GODADDY_API_SECRET:-}
       - NAMECHEAP_API_USER=${NAMECHEAP_API_USER:-}
       - NAMECHEAP_API_KEY=${NAMECHEAP_API_KEY:-}
+      - NAMECHEAP_API_IP=${NAMECHEAP_API_IP:-}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"

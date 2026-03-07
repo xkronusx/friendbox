@@ -250,7 +250,7 @@ Each selected container gets its own subdomain (e.g. `portainer.yourdomain.com`,
 | 7 | Install auto-update cron job (runs every 5 minutes) |
 | 8 | Remove auto-update cron job |
 
-> After a manual DNS update (sub-option 5), Friendbox queries `1.1.1.1` to verify the record resolves to your current IP. It retries for up to 30 seconds. A warning is shown if propagation hasn't completed — Traefik retries cert issuance automatically so no restart is needed.
+> DNS propagation can take minutes to hours. Traefik retries certificate issuance automatically — no restart needed.
 
 ---
 
@@ -264,7 +264,7 @@ sudo friendbox  →  option 11   (View service URLs)
 
 Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses. If TeamSpeak 6 is selected, the admin privilege token is surfaced here automatically if it has been printed to the container logs.
 
-> **Pre-flight warnings:** Full Install (option 1) runs a pre-flight check before starting containers. If your domain, ACME email, or port bindings look incomplete, it will list the issues and ask whether to continue. These are warnings — you can proceed and fix them afterward.
+> **Pre-flight warnings:** Full Install (option 1) runs a pre-flight check before starting containers. If your domain, ACME email, or ACME provider look incomplete, it will list the issues and ask whether to continue. These are warnings — you can proceed and fix them afterward via option 4. Port conflicts are also checked automatically before any `compose up`.
 
 **First-time login reference:**
 
@@ -343,18 +343,17 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | Option | Function | Notes |
 |---|---|---|
 | 8 | Provision / fix directory ownership | Creates config and media dirs, fixes permissions. |
-| 9 | Sync latest files from GitHub | Re-downloads compose file and setup script. |
+| 9 | Sync latest files from GitHub | Re-downloads compose file and setup script. Validates both before applying. |
 | 10 | Show container status | Runs `docker compose ps` for selected containers. |
 | 11 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). Also surfaces the TeamSpeak 6 admin token if available. |
 | 12 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
-| 13 | Update stack | Pulls latest images, reports which changed, restarts the stack. |
+| 13 | Update stack | Sync files from GitHub, pull latest images, restart. Reports which images actually changed versus already current. |
 | 14 | View logs | Follow live logs or dump last 200 lines for all containers or a specific one. |
-| 15 | Check port conflicts | Scans host ports used by selected containers and reports any conflicts before they cause silent failures. |
-| 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Media files are not included. |
-| 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
-| 18 | Full Reset | Uninstalls everything — removes containers, images, configs, and the `friendbox` binary. Media files and backups preserved. Requires typing `RESET` to confirm. |
+| 15 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
+| 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
+| 17 | Full Reset | Uninstalls everything — containers, images, configs, and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. |
 
-> **Options 10–17 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
+> **Options 10–16 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
 
 ---
 
@@ -427,25 +426,23 @@ Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `set
 sudo friendbox  →  option 13
 ```
 
-Option 13 compares image digests before and after pulling and reports which containers were actually updated versus already current.
-
 ### Backup and restore config
 
 ```bash
 sudo friendbox  →  option 16
 ```
 
-Creates a timestamped `.tar.gz` archive of all container config directories, `.env`, `.selected_containers`, and `.dns_config`. Containers are briefly stopped during backup to ensure a consistent snapshot. Backups are stored in `/opt/friendbox/backups/` and are excluded from Full Reset.
+Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.gz` of all container config directories plus key state files (`.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
 
-To restore, select option 16 → option 2 and choose an archive. The restore stops containers, extracts over the current config, and restarts.
+To restore: option 16 → option 2 → select an archive. The restore extracts over the current config and re-applies correct acme.json permissions. Running containers are not stopped — redeploy after restore to apply changes.
 
 ### Full uninstall
 
 ```bash
-sudo friendbox  →  option 18
+sudo friendbox  →  option 17
 ```
 
-Removes containers, images, all config, and the `friendbox` binary. Requires typing `RESET` to confirm. Media files and existing backups are not touched.
+Removes all containers, pulled images, the `medianet` network, all config data, state files, and the `friendbox` binary. Requires typing `RESET` to confirm. Media files in your media root and any existing backups in `/opt/friendbox/backups/` are **not** touched.
 
 ### Redeploy a single container
 
@@ -471,6 +468,8 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 
 /opt/friendbox/
 ├── .env                              # Environment variables (domain, paths, UID/GID)
+├── backups/                          # Config backups created by option 16 (root:root 600)
+│   └── friendbox_backup_YYYYMMDD_HHMMSS.tar.gz
 ├── .state                            # Internal state
 ├── .installed                        # Written by Full Install, cleared by Teardown
 ├── .selected_containers              # Active container selection
@@ -478,8 +477,6 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 ├── .mergerfs_pool                    # MergerFS pool mount path
 ├── .dns_config                       # DNS provider credentials (chmod 600)
 ├── docker-compose.yml                # Full service stack
-├── backups/                          # Config backups created by option 16 (chmod 600)
-│   └── friendbox-backup-YYYYMMDD-HHMMSS.tar.gz
 ├── config/
 │   ├── traefik/
 │   │   ├── traefik.yml               # Generated by Friendbox — do not edit manually
@@ -549,6 +546,11 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Fix: set `DEFAULT_FORWARD_POLICY=ACCEPT` in `/etc/default/ufw` and run `sudo ufw reload`
 - Verify after fix: `curl -s http://localhost:9000` (Portainer) or `curl -s http://localhost:8096` (Jellyfin)
 
+**Container fails to start, port already in use**
+- Full Install automatically runs a port conflict check before `compose up`. If a conflict was detected and you chose to continue, the conflicting process needs to be stopped.
+- Find what's using a port: `sudo ss -tlnp | grep :<port>`
+- If the holder is a prior Docker process: `docker ps -a` then `docker rm -f <name>`
+
 **Permission errors in container logs**
 - Run option 8 to fix all directory ownership
 - Confirm PUID/PGID match your media files: `ls -lan /mnt/media`
@@ -563,12 +565,13 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Fix: option 5 → VPN credentials → ensure `LAN_NETWORK` includes the Docker bridge subnet alongside your home subnet. The correct subnet is shown as the default when you run the VPN credentials prompt — it is detected automatically from the live `medianet` network.
 - After saving, redeploy the VPN container: option 12 → option 2
 
-**TeamSpeak 6 admin token not showing in option 11**
-- The token is only printed to container logs on first start. Option 11 reads it from `docker logs teamspeak6` automatically — if nothing appears, the container may not have started yet or the token was already used.
-- Check manually: `docker logs teamspeak6 | grep -i token`
-
 **TeamSpeak 6 WebAuth (port 10080) not accessible**
 - Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → `teamspeak6`
+
+**TeamSpeak 6 admin token not showing after install**
+- Option 1 automatically checks container logs and displays the token in the post-install summary. If it didn't appear, the container may not have started yet when the check ran.
+- Retrieve it manually: `docker logs teamspeak6 | grep -i token`
+- The token is only printed once on first start. Once used it is consumed and will not appear again.
 
 **Script not updating on launch**
 - Always use `sudo friendbox` — auto-update requires root

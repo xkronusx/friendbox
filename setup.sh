@@ -469,11 +469,13 @@ auto_update() {
     rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
     return 0
   fi
-  if ! python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1]))" \
-      "${COMPOSE_FILE}.new" 2>/dev/null; then
-    echo -e "${YELLOW}[WARN]${RESET}  Downloaded docker-compose.yml failed YAML parse — skipping update."
-    rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
-    return 0
+  if python3 -c "import yaml" 2>/dev/null; then
+    if ! python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1]))" \
+        "${COMPOSE_FILE}.new" 2>/dev/null; then
+      echo -e "${YELLOW}[WARN]${RESET}  Downloaded docker-compose.yml failed YAML parse — skipping update."
+      rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
+      return 0
+    fi
   fi
 
   mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
@@ -518,8 +520,9 @@ sync_repo() {
     if [[ "$_csize" -lt 1000 ]]; then
       rm -f "${COMPOSE_FILE}.new"
       echo -e "${RED}[FAILED]${RESET} (download too small — likely truncated)"
-    elif ! python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1]))" \
-        "${COMPOSE_FILE}.new" 2>/dev/null; then
+    elif python3 -c "import yaml" 2>/dev/null && \
+         ! python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1]))" \
+             "${COMPOSE_FILE}.new" 2>/dev/null; then
       rm -f "${COMPOSE_FILE}.new"
       echo -e "${RED}[FAILED]${RESET} (YAML parse failed — file may be corrupt)"
     else
@@ -2009,8 +2012,11 @@ for s in sorted(services, key=lambda x: x.get('name','')):
   # ── Container network check ──────────────────────────────────────────────────
   echo ""
   echo -e "${BOLD}Container → medianet IP addresses:${RESET}"
+  load_selected
   local cname
-  for cname in traefik portainer plex jellyfin sonarr radarr prowlarr; do
+  # Check all selected containers, not just a hardcoded subset
+  for cname in "${CONTAINER_ORDER[@]}"; do
+    [[ -z "${SELECTED[$cname]+_}" ]] && continue
     if docker inspect "$cname" &>/dev/null 2>&1; then
       local ip
       ip=$(docker inspect "$cname" \
@@ -2812,9 +2818,12 @@ backup_config() {
     [[ -f "$sf" ]] && state_files+=("${sf#/}")
   done
 
-  # Exclude acme.json — env-specific, regenerated on restore
+  # Exclude acme.json — it is env-specific and will be regenerated on restore.
+  # The tar is built relative to /, so the exclude path must match the full
+  # relative path within the archive (without leading slash).
+  local acme_rel="${cfg#/}/traefik/acme.json"
   if tar -czf "$archive_path" \
-      --exclude="$(basename "$cfg")/traefik/acme.json" \
+      --exclude="$acme_rel" \
       -C / "${cfg#/}" "${state_files[@]}" 2>/dev/null; then
     local size
     size=$(du -sh "$archive_path" 2>/dev/null | awk '{print $1}')
@@ -2885,11 +2894,21 @@ restore_config() {
   echo ""
   info "Extracting archive..."
   if tar -xzf "$chosen" -C / 2>/dev/null; then
+    # Re-source .env so restored values are active for the steps below
+    [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+    # acme.json must always be root:root 600 — recreate it fresh if absent
     local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+    mkdir -p "$(dirname "$acme")"
     [[ ! -f "$acme" ]] && touch "$acme"
     chown root:root "$acme"; chmod 600 "$acme"
+    # Fix ownership of all restored files
+    _fix_install_dir_ownership
+    # Regenerate traefik.yml from restored .env so it matches current provider settings
+    if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
+      _traefik_write_config && info "traefik.yml regenerated from restored settings."
+    fi
     success "Restore complete."
-    info "Run option 8 to fix ownership, then option 12 to redeploy containers."
+    info "Containers are still running with old config — redeploy to apply: option 12"
   else
     error "Extraction failed — archive may be corrupt."
     return 1
@@ -2974,6 +2993,10 @@ setup_backup() {
 
 check_port_conflicts() {
   # Warn if ports needed by selected containers are already bound by a non-Docker process.
+  # Pass --interactive to prompt the user whether to continue after showing conflicts.
+  # Without the flag, just report and return 0 (informational mode for menu option 15).
+  local _interactive=false
+  [[ "${1:-}" == "--interactive" ]] && _interactive=true
   load_selected
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
 
@@ -3022,8 +3045,10 @@ check_port_conflicts() {
     echo ""
     warn "${conflicts} port conflict(s) found — affected containers may fail to start silently."
     echo ""
-    read -rp "  Continue anyway? [y/N] " yn
-    [[ "$yn" =~ ^[Yy]$ ]] || return 1
+    if [[ "$_interactive" == "true" ]]; then
+      read -rp "  Continue anyway? [y/N] " yn
+      [[ "$yn" =~ ^[Yy]$ ]] || return 1
+    fi
   else
     success "No port conflicts detected."
   fi
@@ -3810,6 +3835,7 @@ full_install() {
   if is_installed; then
     local installed_at
     installed_at=$(grep '^installed=' "$INSTALL_FLAG" 2>/dev/null | cut -d= -f2- || true)
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${RESET}"
     echo -e "${YELLOW}║  ⚠  Friendbox is already installed                          ║${RESET}"
     echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo ""
@@ -3868,7 +3894,7 @@ full_install() {
   fi
 
   # ── Port conflict check ───────────────────────────────────────────────────────
-  check_port_conflicts || return 1
+  check_port_conflicts --interactive || return 1
 
   info "Starting selected containers..."
   compose_selected up -d
@@ -4245,15 +4271,16 @@ main_menu() {
     echo "  12) Redeploy containers"
     echo "  13) Update stack (pull latest images)"
     echo "  14) View logs"
-    echo "  15) Teardown (stop & remove containers)"
+    echo "  15) Check port conflicts"
     echo "  16) Backup & Restore"
-    echo "  17) Full Reset (wipe everything)"
+    echo "  17) Teardown (stop & remove containers)"
+    echo "  18) Full Reset (wipe everything)"
     echo "   q) Quit"
     echo ""
     read -rp "Select option: " opt
 
     # ── Gate operations-section items when not installed ─────────────────────
-    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|15|16)$ ]]; then
+    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|17)$ ]]; then
       echo ""
       warn "Friendbox has not been installed yet."
       warn "Run option 1 (Full Install) first, then use the operations menu."
@@ -4276,9 +4303,10 @@ main_menu() {
       12) redeploy_menu                          ;;   # has its own loop+return
       13) update_stack                    || true; pause ;;
       14) view_logs                       || true; pause ;;
-      15) teardown                        || true; pause ;;
+      15) check_port_conflicts            || true; pause ;;
       16) setup_backup                           ;;   # has its own loop+return
-      17) full_reset                      || true; pause ;;
+      17) teardown                        || true; pause ;;
+      18) full_reset                      || true; pause ;;
       q|Q) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid option '$opt'"; sleep 1 ;;
     esac

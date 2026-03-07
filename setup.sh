@@ -2255,8 +2255,13 @@ _traefik_set_redirect() {
   for i in "${!keys[@]}"; do
     local marker="  "
     [[ "${subdomains[$i]}" == "$current" ]] && marker="${GREEN}▶${RESET} "
-    printf "  %s%2d) %-14s  ${DIM}https://%s.%s${RESET}\n" \
-      "$marker" "$((i+1))" "${CONTAINER_NAMES[${keys[$i]}]}" "${subdomains[$i]}" "$d"
+    # Use echo -e so the $GREEN/$RESET escape sequences in $marker are interpreted.
+    # printf "%s" does not expand \033 sequences stored in variables.
+    local _num _name _url
+    printf -v _num  "%2d"   "$((i+1))"
+    printf -v _name "%-14s" "${CONTAINER_NAMES[${keys[$i]}]}"
+    printf -v _url  "https://%s.%s" "${subdomains[$i]}" "$d"
+    echo -e "  ${marker}${_num}) ${_name}  ${DIM}${_url}${RESET}"
   done
   echo ""
   echo -e "   c) Enter a custom subdomain"

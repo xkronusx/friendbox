@@ -2253,15 +2253,17 @@ _traefik_set_redirect() {
 
   local i
   for i in "${!keys[@]}"; do
+    # $'\e[...]' (ANSI C quoting) stores the actual ESC byte in the variable,
+    # so printf/echo print it correctly without needing -e interpretation.
+    local _green=$'\e[0;32m' _reset=$'\e[0m' _dim=$'\e[2m'
     local marker="  "
-    [[ "${subdomains[$i]}" == "$current" ]] && marker="${GREEN}▶${RESET} "
-    # Use echo -e so the $GREEN/$RESET escape sequences in $marker are interpreted.
-    # printf "%s" does not expand \033 sequences stored in variables.
+    [[ "${subdomains[$i]}" == "$current" ]] && marker="${_green}▶${_reset} "
     local _num _name _url
     printf -v _num  "%2d"   "$((i+1))"
     printf -v _name "%-14s" "${CONTAINER_NAMES[${keys[$i]}]}"
     printf -v _url  "https://%s.%s" "${subdomains[$i]}" "$d"
-    echo -e "  ${marker}${_num}) ${_name}  ${DIM}${_url}${RESET}"
+    printf "  %s%s) %s  %shttps://%s.%s%s\n" \
+      "$marker" "$_num" "$_name" "$_dim" "${subdomains[$i]}" "$d" "$_reset"
   done
   echo ""
   echo -e "   c) Enter a custom subdomain"

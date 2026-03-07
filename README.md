@@ -183,6 +183,7 @@ If Friendbox is already installed, option 1 warns before proceeding.
 | 5 | Run pre-flight checks |
 | 6 | Live routing diagnostics |
 | 7 | Emergency recovery (clear certs + restart Traefik) |
+| 8 | Set root domain redirect target |
 
 **ACME challenge providers:**
 
@@ -333,7 +334,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 1 | Full Install | Runs all setup steps in sequence. Warns if already installed. |
 | 2 | Select containers | Toggle which services to deploy. |
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
-| 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery. |
+| 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery, root redirect target. |
 | 5 | Service credentials | VPN, AMP, Mumble credentials. Only shows selected services. |
 | 6 | DNS A record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. |
 | 7 | MergerFS storage manager | Pool setup, disk management, drive details, ownership fix. |

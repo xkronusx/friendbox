@@ -1630,6 +1630,8 @@ _traefik_show_status() {
   else
     echo -e "  ${BOLD}ACME CA       :${RESET} ${GREEN}production${RESET}"
   fi
+  local _redir_host="${ROOT_REDIRECT_HOST:-portainer}"
+  echo -e "  ${BOLD}Root redirect :${RESET} https://${_redir_host}.${DOMAIN:-yourdomain.com}  ${DIM}(option 8 to change)${RESET}"
 
   # Per-provider credential summary
   case "${TRAEFIK_ACME_PROVIDER:-}" in
@@ -2211,6 +2213,95 @@ _traefik_emergency_recover() {
   fi
 }
 
+_traefik_set_redirect() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  load_selected
+
+  # Build an ordered list of selected containers that have a web UI subdomain
+  # (voice-only services like teamspeak6 and mumble are excluded).
+  declare -A _SUB=(
+    [traefik]=traefik   [portainer]=portainer [plex]=plex
+    [jellyfin]=jellyfin [sonarr]=sonarr       [radarr]=radarr
+    [prowlarr]=prowlarr [bazarr]=bazarr       [qbittorrent]=qbt
+    [qbittorrentvpn]=qbtvpn [delugevpn]=deluge [nzbget]=nzbget
+    [overseerr]=overseerr   [ombi]=ombi       [jellyseerr]=jellyseerr
+    [ampmc]=amp             [netbootxyz]=netboot
+  )
+
+  local keys=() subdomains=()
+  local k
+  for k in "${CONTAINER_ORDER[@]}"; do
+    [[ -n "${SELECTED[$k]+_}" && -n "${_SUB[$k]+_}" ]] || continue
+    keys+=("$k")
+    subdomains+=("${_SUB[$k]}")
+  done
+
+  local current="${ROOT_REDIRECT_HOST:-portainer}"
+  local d="${DOMAIN:-yourdomain.com}"
+
+  echo ""
+  echo -e "${BOLD}Root Domain Redirect${RESET}"
+  echo -e "${DIM}  Visiting https://${d} redirects to https://<subdomain>.${d}${RESET}"
+  echo -e "${DIM}  Current target: ${CYAN}${current}.${d}${RESET}"
+  echo ""
+
+  if [[ ${#keys[@]} -eq 0 ]]; then
+    warn "No containers with a web UI are selected."
+    warn "Select containers first (option 2), then return here."
+    return 1
+  fi
+
+  local i
+  for i in "${!keys[@]}"; do
+    local marker="  "
+    [[ "${subdomains[$i]}" == "$current" ]] && marker="${GREEN}▶${RESET} "
+    printf "  %s%2d) %-14s  ${DIM}https://%s.%s${RESET}\n" \
+      "$marker" "$((i+1))" "${CONTAINER_NAMES[${keys[$i]}]}" "${subdomains[$i]}" "$d"
+  done
+  echo ""
+  echo -e "   c) Enter a custom subdomain"
+  echo -e "   q) Cancel"
+  echo ""
+
+  while true; do
+    read -rp "  Choice: " sel
+    case "$sel" in
+      q|Q) info "Cancelled — redirect unchanged."; return 0 ;;
+      c|C)
+        echo ""
+        read -rp "  Custom subdomain (just the label, e.g. 'home'): " custom
+        custom="${custom// /}"   # strip any spaces
+        if [[ -z "$custom" ]]; then
+          warn "Empty input — redirect unchanged."
+          return 1
+        fi
+        ROOT_REDIRECT_HOST="$custom"
+        ;;
+      *)
+        if [[ "$sel" =~ ^[0-9]+$ ]] && \
+           (( sel >= 1 && sel <= ${#keys[@]} )); then
+          ROOT_REDIRECT_HOST="${subdomains[$((sel-1))]}"
+        else
+          warn "Invalid choice."
+          continue
+        fi
+        ;;
+    esac
+    break
+  done
+
+  # Persist to .env
+  if grep -q '^ROOT_REDIRECT_HOST=' "$ENV_FILE" 2>/dev/null; then
+    sed -i "s|^ROOT_REDIRECT_HOST=.*|ROOT_REDIRECT_HOST=${ROOT_REDIRECT_HOST}|" "$ENV_FILE"
+  else
+    echo "ROOT_REDIRECT_HOST=${ROOT_REDIRECT_HOST}" >> "$ENV_FILE"
+  fi
+
+  echo ""
+  success "Root redirect set to: ${CYAN}https://${ROOT_REDIRECT_HOST}.${d}${RESET}"
+  info "Redeploy Traefik (option 12) to apply the change."
+}
+
 configure_traefik() {
   while true; do
     clear
@@ -2228,7 +2319,8 @@ configure_traefik() {
     echo "  5) Run pre-flight checks"
     echo "  6) Live routing diagnostics"
     echo "  7) Emergency recovery (clear certs + restart Traefik)"
-    echo "  8) Back to main menu"
+    echo "  8) Set root domain redirect target"
+    echo "  9) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
@@ -2239,7 +2331,8 @@ configure_traefik() {
       5) _traefik_validate           || true; pause ;;
       6) _traefik_live_diag          || true; pause ;;
       7) _traefik_emergency_recover  || true; pause ;;
-      8) return ;;
+      8) _traefik_set_redirect       || true; pause ;;
+      9) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

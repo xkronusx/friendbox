@@ -544,6 +544,18 @@ sync_repo() {
   else
     warn "Partial sync - check your internet connection."
   fi
+
+  # Re-apply Traefik config patches if the compose file was replaced.
+  # A fresh docker-compose.yml from GitHub has all certresolver labels intact —
+  # for DuckDNS installs those labels must be stripped again, and for all providers
+  # TRAEFIK_CERT_RESOLVER must be set to "letsencrypt".  Calling _traefik_write_config
+  # here ensures the compose file and .env stay in sync after every sync.
+  if [[ $compose_ok -eq 1 && -f "$ENV_FILE" ]]; then
+    source "$ENV_FILE" 2>/dev/null || true
+    if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
+      _traefik_write_config && info "Traefik config re-applied to updated docker-compose.yml."
+    fi
+  fi
 }
 
 # ── Dependency checks ─────────────────────────────────────────────────────────
@@ -1262,7 +1274,13 @@ configure_env() {
     plex_running=true
   fi
   if [[ -n "${SELECTED[plex]+_}" && "$plex_running" == "false" ]]; then
-    read -rp "Plex claim token (plex.tv/claim, optional) [${PLEX_CLAIM:-}]: " input
+    echo ""
+    echo -e "  ${BOLD}Plex Claim Token${RESET}"
+    echo -e "  ${DIM}Get a fresh token from: https://www.plex.tv/claim  (expires in ~4 minutes)${RESET}"
+    echo -e "  ${DIM}Enter it right before completing setup so it doesn't expire.${RESET}"
+    echo -e "  ${DIM}Leave blank to skip — you can claim via the Plex web UI after first start.${RESET}"
+    echo ""
+    read -rp "  Plex claim token [${PLEX_CLAIM:-none}]: " input
     PLEX_CLAIM="${input:-${PLEX_CLAIM:-}}"
   fi
 
@@ -1316,9 +1334,15 @@ configure_env() {
 # Removes any directory that may exist at the file path before writing.
 _traefik_write_config() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
-  # Remove stale TRAEFIK_CERT_RESOLVER from .env — no longer used, compose file
-  # is patched directly by this function depending on the provider.
+  # TRAEFIK_CERT_RESOLVER must be set in .env so docker-compose.yml labels expand
+  # correctly.  For DuckDNS we strip those labels from the compose file entirely
+  # (wildcard cert via entrypoint, not per-router); for all other providers the
+  # labels stay and the var must equal the resolver name ("letsencrypt").
+  local _provider="${TRAEFIK_ACME_PROVIDER:-http}"
   sed -i '/^TRAEFIK_CERT_RESOLVER=/d' "$ENV_FILE" 2>/dev/null || true
+  if [[ "$_provider" != "duckdns" ]]; then
+    echo "TRAEFIK_CERT_RESOLVER=letsencrypt" >> "$ENV_FILE"
+  fi
 
   local traefik_dir="${INSTALL_DIR}/config/traefik"
   local traefik_cfg="${traefik_dir}/traefik.yml"
@@ -3859,8 +3883,8 @@ full_install() {
   check_os
   check_deps
   sync_repo
+  select_containers    # must run before configure_env so Plex/Traefik selections are known
   configure_env
-  select_containers
   ensure_network
   ensure_acme
   provision_directories
@@ -4054,6 +4078,9 @@ redeploy_menu() {
       4)
         select_containers
         _jellyfin_fix_markers
+        # Re-provision acme.json and regenerate traefik.yml in case Traefik was
+        # just added to (or removed from) the selection.
+        ensure_acme
         compose_selected up -d --remove-orphans
         success "Stack updated."
         pause

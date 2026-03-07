@@ -160,8 +160,8 @@ Runs the complete first-time setup in sequence:
 1. OS compatibility check
 2. Installs Docker CE, curl, apache2-utils
 3. Pulls latest `docker-compose.yml` and config files from GitHub
-4. Prompts to confirm environment settings
-5. Opens container selection
+4. Opens container selection (selection is needed before environment prompts)
+5. Prompts to confirm environment settings (Plex claim token is skipped if Plex not selected)
 6. Creates the `medianet` Docker bridge network
 7. Creates `acme.json` with correct permissions (`root:root 600`)
 8. Provisions config and media directories (creates `traefik.yml`, `acme.json`, all config and media dirs)
@@ -349,11 +349,12 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 12 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
 | 13 | Update stack | Sync files from GitHub, pull latest images, restart. Reports which images actually changed versus already current. |
 | 14 | View logs | Follow live logs or dump last 200 lines for all containers or a specific one. |
-| 15 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
-| 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
-| 17 | Full Reset | Uninstalls everything — containers, images, configs, and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. |
+| 15 | Check port conflicts | Checks whether any ports needed by selected containers are already in use. Available before Full Install. |
+| 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. Available before Full Install. |
+| 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
+| 18 | Full Reset | Uninstalls everything — containers, images, configs, and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. |
 
-> **Options 10–16 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
+> **Options 10–14 and 17 are blocked until Full Install has been completed.** Options 15 (Check port conflicts) and 16 (Backup & Restore) are available before install. The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
 
 ---
 

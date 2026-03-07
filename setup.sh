@@ -2801,7 +2801,7 @@ health_check() {
     warn "The following containers are not running:"
     echo "$bad" | while read -r c; do echo "  • $c"; done
     echo ""
-    read -rp "Attempt to restart them? [y/N] " yn
+    read -rp "Attempt to restart them? [y/N] " yn || true
     if [[ "$yn" =~ ^[Yy]$ ]]; then
       echo "$bad" | while read -r c; do
         info "Restarting ${c}..."

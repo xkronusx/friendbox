@@ -21,6 +21,7 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 
 [[ -f "$COMPOSE_FILE" ]] || { error "Compose file not found. Run sudo friendbox first."; exit 1; }
 [[ -f "$ENV_FILE" ]]     || { error ".env not found. Run sudo friendbox first."; exit 1; }
+[[ $EUID -ne 0 ]]        && { error "Run as root: sudo $0 $*"; exit 1; }
 
 get_profile_args() {
   local args=()
@@ -68,7 +69,7 @@ health_check() {
     warn "The following containers are not running:"
     echo "$bad" | while read -r c; do echo "  • $c"; done
     echo ""
-    read -rp "Attempt to restart them? [y/N] " yn
+    read -rp "Attempt to restart them? [y/N] " yn || true
     if [[ "$yn" =~ ^[Yy]$ ]]; then
       echo "$bad" | while read -r c; do
         info "Restarting ${c}..."

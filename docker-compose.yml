@@ -66,7 +66,9 @@ services:
       - "traefik.http.routers.dashboard-local.rule=PathPrefix(`/api`) || PathPrefix(`/dashboard`)"
       - "traefik.http.routers.dashboard-local.entrypoints=traefik"
       - "traefik.http.routers.dashboard-local.service=api@internal"
-      # Bare domain redirect — https://${DOMAIN} → https://portainer.${DOMAIN}
+      # Bare domain redirect — https://${DOMAIN} → https://${ROOT_REDIRECT_HOST:-portainer}.${DOMAIN}
+      # ROOT_REDIRECT_HOST is set automatically by friendbox based on selected containers.
+      # Override it manually in .env if you want a different landing page.
       - "traefik.http.routers.root.rule=Host(`${DOMAIN}`)"
       - "traefik.http.routers.root.entrypoints=websecure"
       - "traefik.http.routers.root.tls=true"
@@ -74,7 +76,7 @@ services:
       - "traefik.http.routers.root.middlewares=secHeaders@file,redirect-root"
       - "traefik.http.routers.root.service=api@internal"
       - "traefik.http.middlewares.redirect-root.redirectregex.regex=^https://${DOMAIN}(.*)"
-      - "traefik.http.middlewares.redirect-root.redirectregex.replacement=https://portainer.${DOMAIN}$${1}"
+      - "traefik.http.middlewares.redirect-root.redirectregex.replacement=https://${ROOT_REDIRECT_HOST:-portainer}.${DOMAIN}$${1}"
       - "traefik.http.middlewares.redirect-root.redirectregex.permanent=true"
 
   # ── Portainer — Docker management UI ───────────────────────────────────────

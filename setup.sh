@@ -399,6 +399,36 @@ select_containers() {
       fi
     }
     _env_set_inline USE_TRAEFIK "$_use_traefik"
+
+    # Set ROOT_REDIRECT_HOST — the bare-domain (https://DOMAIN) redirect target.
+    # Priority: portainer > jellyfin > plex > overseerr > sonarr > first selected container.
+    local _redir="portainer"
+    local _redir_set=false
+    for _cand in portainer jellyfin plex overseerr sonarr; do
+      if [[ -n "${SELECTED[$_cand]+_}" ]]; then
+        # Map container key to its subdomain
+        declare -A _SD=([portainer]=portainer [jellyfin]=jellyfin [plex]=plex [overseerr]=overseerr [sonarr]=sonarr)
+        _redir="${_SD[$_cand]}"
+        _redir_set=true
+        break
+      fi
+    done
+    # If none of the preferred containers are selected, use the first selected one
+    if [[ "$_redir_set" == "false" ]]; then
+      declare -A _ALL_SD=([traefik]=traefik [portainer]=portainer [plex]=plex [jellyfin]=jellyfin
+        [sonarr]=sonarr [radarr]=radarr [prowlarr]=prowlarr [bazarr]=bazarr
+        [qbittorrent]=qbt [qbittorrentvpn]=qbtvpn [delugevpn]=deluge [nzbget]=nzbget
+        [overseerr]=overseerr [ombi]=ombi [jellyseerr]=jellyseerr
+        [ampmc]=amp [netbootxyz]=netboot)
+      local _k
+      for _k in "${CONTAINER_ORDER[@]}"; do
+        if [[ -n "${SELECTED[$_k]+_}" && -n "${_ALL_SD[$_k]+_}" ]]; then
+          _redir="${_ALL_SD[$_k]}"
+          break
+        fi
+      done
+    fi
+    _env_set_inline ROOT_REDIRECT_HOST "$_redir"
   fi
 }
 
@@ -480,6 +510,17 @@ auto_update() {
 
   mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
   _own "${COMPOSE_FILE}"
+
+  # Re-apply Traefik patches to the freshly downloaded docker-compose.yml
+  # BEFORE re-exec.  A fresh compose file from GitHub restores all certresolver
+  # labels; for DuckDNS they must be stripped, and for all other providers
+  # TRAEFIK_CERT_RESOLVER must be written to .env so labels expand correctly.
+  if [[ -f "$ENV_FILE" ]]; then
+    source "$ENV_FILE" 2>/dev/null || true
+    if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
+      _traefik_write_config 2>/dev/null || true
+    fi
+  fi
 
   printf 'docker-compose.yml\n/usr/local/bin/friendbox\n' > "${INSTALL_DIR}/.update_notice"
   _own "${INSTALL_DIR}/.update_notice"
@@ -1527,7 +1568,11 @@ EOF
   # ── Write dynamic config — security headers middleware ───────────────────────
   local dynamic_dir="${traefik_dir}/dynamic"
   mkdir -p "$dynamic_dir"
-  cat > "${dynamic_dir}/headers.yml" <<'HDEOF'
+  # Only write headers.yml when it does not already exist — preserves any
+  # user customisations to CSP, frame options, or custom headers.
+  # To reset to defaults: rm ${CONFIG_ROOT}/traefik/dynamic/headers.yml
+  if [[ ! -f "${dynamic_dir}/headers.yml" ]]; then
+    cat > "${dynamic_dir}/headers.yml" <<'HDEOF'
 http:
   middlewares:
     secHeaders:
@@ -1542,6 +1587,7 @@ http:
         customResponseHeaders:
           X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
 HDEOF
+  fi
   _own "$dynamic_dir"
 
   success "traefik.yml written (provider: ${provider})."
@@ -4207,6 +4253,14 @@ full_reset() {
     [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
   done
 
+  # Remove DNS cron job and helper script if they exist
+  local _dns_cron="/etc/cron.d/friendbox-dns"
+  local _dns_script="/usr/local/bin/friendbox-dns-update"
+  local _dns_logrotate="/etc/logrotate.d/friendbox-dns"
+  [[ -f "$_dns_cron"     ]] && rm -f "$_dns_cron"     && info "  Removed: ${_dns_cron}"
+  [[ -f "$_dns_script"   ]] && rm -f "$_dns_script"   && info "  Removed: ${_dns_script}"
+  [[ -f "$_dns_logrotate" ]] && rm -f "$_dns_logrotate" && info "  Removed: ${_dns_logrotate}"
+
   # Remove the binary last — we're still executing from it in memory
   rm -f /usr/local/bin/friendbox
   success "Removed /usr/local/bin/friendbox"
@@ -4344,6 +4398,17 @@ main_menu() {
 #  Entrypoint
 # =============================================================================
 
+# ── Handle --dns-update BEFORE any terminal/bootstrap detection ─────────────
+# The cron script calls `friendbox --dns-update` with stdin redirected from /dev/null.
+# If checked after [[ ! -t 0 ]], the bootstrap branch would fire and overwrite the
+# installed script every 5 minutes.  Intercept the flag here, unconditionally.
+for _arg in "$@"; do
+  if [[ "$_arg" == "--dns-update" ]]; then
+    _dns_update_now
+    exit $?
+  fi
+done
+
 if [[ ! -t 0 ]]; then
   # Non-interactive (piped via curl | bash) — bootstrap only
   echo -e "${BOLD}${CYAN}Friendbox Setup — Bootstrap${RESET}"
@@ -4359,18 +4424,9 @@ else
   # Interactive launch — check for --skip-update flag (set by auto_update after
   # re-exec so we don't loop) then run the menu.
   SKIP_UPDATE=false
-  DNS_UPDATE=false
   for arg in "$@"; do
     [[ "$arg" == "--skip-update" ]] && SKIP_UPDATE=true
-    [[ "$arg" == "--dns-update"  ]] && DNS_UPDATE=true
   done
-
-  # Non-interactive DNS update — called by the cron script for providers
-  # that need the full _dns_update_* logic (Cloudflare, GoDaddy, Namecheap).
-  if [[ "$DNS_UPDATE" == "true" ]]; then
-    _dns_update_now
-    exit $?
-  fi
 
   if [[ "$SKIP_UPDATE" == "false" ]]; then
     auto_update "$@"

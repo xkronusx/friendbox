@@ -1338,6 +1338,10 @@ configure_env() {
   MEDIA_ROOT="${input:-${MEDIA_ROOT:-/mnt/media}}"
   read -rp "PUID [${PUID:-1000}]: " input; PUID="${input:-${PUID:-1000}}"
   read -rp "PGID [${PGID:-1000}]: " input; PGID="${input:-${PGID:-1000}}"
+  if ! [[ "$PUID" =~ ^[0-9]+$ ]] || ! [[ "$PGID" =~ ^[0-9]+$ ]]; then
+    warn "PUID and PGID must be integers. Defaulting to 1000:1000."
+    PUID=1000; PGID=1000
+  fi
   read -rp "Timezone [${TZ:-America/Toronto}]: " input
   TZ="${input:-${TZ:-America/Toronto}}"
   # Derive USE_TRAEFIK from saved container selection — no prompts here.
@@ -1670,7 +1674,7 @@ _traefik_show_status() {
     echo -e "  ${BOLD}ACME CA       :${RESET} ${GREEN}production${RESET}"
   fi
   local _redir_host="${ROOT_REDIRECT_HOST:-portainer}"
-  echo -e "  ${BOLD}Root redirect :${RESET} https://${_redir_host}.${DOMAIN:-yourdomain.com}  ${DIM}(option 8 to change)${RESET}"
+  echo -e "  ${BOLD}Root redirect :${RESET} https://${_redir_host}.${DOMAIN:-yourdomain.com}  ${DIM}(option 4 → 8 to change)${RESET}"
 
   # Per-provider credential summary
   case "${TRAEFIK_ACME_PROVIDER:-}" in
@@ -1754,7 +1758,7 @@ _traefik_validate() {
       _chk "acme.json ownership" 0 "got ${owner}, need root:root — run: chown root:root $acme"
     fi
   else
-    _chk "acme.json exists" 0 "run option 8 (Provision directories) to create it"
+    _chk "acme.json exists" 0 "run option 8 (Provision / fix directory ownership) to create it"
   fi
 
   # ── 3. Domain is set and not placeholder ─────────────────────────────────────
@@ -3036,7 +3040,7 @@ backup_config() {
   local cfg="${CONFIG_ROOT:-/opt/friendbox/config}"
   if [[ ! -d "$cfg" ]]; then
     warn "Config directory not found: ${cfg}"
-    warn "Run option 8 (Provision directories) first."
+    warn "Run option 8 (Provision / fix directory ownership) first."
     return 1
   fi
 
@@ -4943,12 +4947,30 @@ redeploy_menu() {
         ;;
       2)
         echo ""
-        read -rp "Container name (e.g. sonarr): " svc
-        [[ -z "$svc" ]] && { warn "No name entered."; sleep 1; continue; }
+        load_selected
+        # Build a numbered list of currently selected containers
+        local _svc_keys=() _i _k
+        for _k in "${CONTAINER_ORDER[@]}"; do
+          [[ -n "${SELECTED[$_k]+_}" ]] && _svc_keys+=("$_k")
+        done
+        if [[ ${#_svc_keys[@]} -eq 0 ]]; then
+          warn "No containers are currently selected."; sleep 1; continue
+        fi
+        echo -e "${BOLD}Select container to redeploy:${RESET}"
+        echo ""
+        for _i in "${!_svc_keys[@]}"; do
+          printf "  %2d) %s\n" "$((_i+1))" "${CONTAINER_NAMES[${_svc_keys[$_i]}]}"
+        done
+        echo ""
+        read -rp "  Choice: " _sel
+        if ! [[ "$_sel" =~ ^[0-9]+$ ]] || (( _sel < 1 || _sel > ${#_svc_keys[@]} )); then
+          warn "Invalid selection."; sleep 1; continue
+        fi
+        local svc="${_svc_keys[$((_sel-1))]}"
         [[ "$svc" == "jellyfin" ]] && _jellyfin_fix_markers
         compose_selected pull "$svc"
         compose_selected up -d --force-recreate "$svc"
-        success "${svc} redeployed."
+        success "${CONTAINER_NAMES[$svc]} redeployed."
         pause
         ;;
       3)
@@ -4963,6 +4985,14 @@ redeploy_menu() {
         # Re-provision acme.json and regenerate traefik.yml in case Traefik was
         # just added to (or removed from) the selection.
         ensure_acme
+        # Re-apply Jellyfin HW accel patch — a container re-selection may have
+        # added Jellyfin back, and ensure_acme above downloads a fresh compose
+        # that resets the jellyfin service to software transcoding.
+        [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+        if [[ -n "${JELLYFIN_HW_ACCEL:-}" && "${JELLYFIN_HW_ACCEL}" != "none" ]]; then
+          _jellyfin_hw_apply "${JELLYFIN_HW_ACCEL}" \
+            && info "Jellyfin HW accel (${JELLYFIN_HW_ACCEL}) re-applied."
+        fi
         compose_selected up -d --remove-orphans
         success "Stack updated."
         pause

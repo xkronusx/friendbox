@@ -537,6 +537,14 @@ auto_update() {
 
   mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
   chmod +x /usr/local/bin/friendbox
+
+  # Regenerate the standalone redeploy helper from the new script's embedded
+  # heredoc before re-exec — otherwise the old on-disk copy persists until the
+  # next full_install or ensure_acme call.
+  if [[ -f "${INSTALL_DIR}/scripts/redeploy.sh" ]]; then
+    generate_redeploy_sh 2>/dev/null || true
+  fi
+
   exec /usr/local/bin/friendbox --skip-update "$@"
 }
 
@@ -613,6 +621,13 @@ sync_repo() {
       _jellyfin_hw_apply "${JELLYFIN_HW_ACCEL}" \
         && info "Jellyfin HW accel (${JELLYFIN_HW_ACCEL}) re-applied to updated docker-compose.yml."
     fi
+  fi
+  # Regenerate the standalone redeploy helper so it stays in sync with the
+  # updated setup script — the helper is embedded as a heredoc in setup.sh and
+  # can change between releases.
+  if [[ -f "${INSTALL_DIR}/scripts/redeploy.sh" ]]; then
+    generate_redeploy_sh 2>/dev/null || true
+    info "redeploy.sh regenerated."
   fi
 }
 
@@ -2500,7 +2515,7 @@ _traefik_set_auth() {
   sed -i '/^TRAEFIK_AUTH=/d;/^TRAEFIK_USER=/d' "$ENV_FILE" 2>/dev/null || true
   printf 'TRAEFIK_USER=%s\nTRAEFIK_AUTH=%s\n' "$dash_user" "$new_auth" >> "$ENV_FILE"
   success "Traefik dashboard credentials saved."
-  info "Redeploy Traefik (menu option 12 → option 2 → traefik) to apply changes."
+  info "Redeploy Traefik (menu option 12 → option 2 → select Traefik) to apply changes."
 }
 
 _traefik_set_domain() {
@@ -3326,8 +3341,8 @@ check_port_conflicts() {
     [jellyseerr]="5056/tcp:Jellyseerr"
     [ampmc]="8085/tcp:AMP"
     [netbootxyz]="3000/tcp:NetbootXYZ"
-    [mumble]="64738/tcp:Mumble"
-    [teamspeak6]="10011/tcp:TS6-query 30033/tcp:TS6-filetransfer"
+    [mumble]="64738/tcp:Mumble-TCP 64738/udp:Mumble-UDP"
+    [teamspeak6]="9987/udp:TS6-voice 10011/tcp:TS6-query 30033/tcp:TS6-filetransfer"
   )
 
   local conflicts=0 key entry port proto label
@@ -3897,7 +3912,7 @@ PYEOF
     echo "JELLYFIN_HW_ACCEL=${_method}" >> "$ENV_FILE"
     _own "$COMPOSE_FILE"
     success "docker-compose.yml updated — Jellyfin HW accel: ${_method}"
-    info "Redeploy Jellyfin to activate: option 12 → option 2 → jellyfin"
+    info "Redeploy Jellyfin to activate: option 12 → option 2 → select Jellyfin"
   else
     warn "Compose patch failed — file is unchanged."
     return 1

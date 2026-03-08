@@ -469,6 +469,9 @@ fetch_remote() {
 # doesn't loop.  Skipped entirely when not root or when offline.
 auto_update() {
   [[ $EUID -ne 0 ]] && return 0
+  # Skip on first-time runs — nothing is installed yet, the compose file and
+  # .env don't exist, so there's nothing useful to update or re-apply.
+  is_installed || return 0
 
   echo -e "${CYAN}[INFO]${RESET}  Checking for updates..."
   _ensure_install_dir
@@ -3058,12 +3061,29 @@ backup_config() {
   echo -e "  ${DIM}Archive: ${archive_path}${RESET}"
   echo ""
 
+  # Stop containers before backing up so database files are in a consistent state.
+  # SQLite databases (Sonarr, Radarr, Prowlarr, etc.) can be mid-write while running,
+  # producing a corrupt or inconsistent backup if snapshotted live.
+  local _was_running=false
+  if is_running 2>/dev/null; then
+    _was_running=true
+    info "Stopping containers for a consistent backup..."
+    compose_selected stop 2>/dev/null || true
+    success "Containers stopped."
+    echo ""
+  fi
+
   # Check disk space
   local cfg_kb free_kb
   cfg_kb=$(du -sk "$cfg" 2>/dev/null | awk '{print $1}') || cfg_kb=0
   free_kb=$(df -k "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $4}') || free_kb=0
   if [[ "$cfg_kb" -gt 0 && "$free_kb" -gt 0 && "$cfg_kb" -gt "$free_kb" ]]; then
     warn "Not enough disk space — config is ~${cfg_kb}KB, free is ${free_kb}KB."
+    # Restart containers before returning so we don't leave them stopped on failure
+    if [[ "$_was_running" == "true" ]]; then
+      info "Restarting containers..."
+      compose_selected start 2>/dev/null || true
+    fi
     return 1
   fi
 
@@ -3099,7 +3119,20 @@ backup_config() {
   else
     rm -f "$archive_path"
     error "Backup failed — check disk space and permissions."
+    # Restart containers even on failure so we don't leave them stopped
+    if [[ "$_was_running" == "true" ]]; then
+      info "Restarting containers..."
+      compose_selected start 2>/dev/null || true
+    fi
     return 1
+  fi
+
+  # Restart containers that were stopped for the backup
+  if [[ "$_was_running" == "true" ]]; then
+    echo ""
+    info "Restarting containers..."
+    compose_selected start 2>/dev/null || true
+    success "Containers restarted."
   fi
 }
 
@@ -3172,7 +3205,16 @@ restore_config() {
         && info "Jellyfin HW accel (${JELLYFIN_HW_ACCEL}) re-applied from restored settings."
     fi
     success "Restore complete."
-    info "Containers are still running with old config — redeploy to apply: option 12"
+    echo ""
+    read -rp "  Redeploy all containers now to apply restored config? [Y/n] " _rd_yn
+    if [[ ! "${_rd_yn:-y}" =~ ^[Nn]$ ]]; then
+      info "Redeploying containers..."
+      _jellyfin_fix_markers
+      compose_selected up -d --force-recreate
+      success "Containers redeployed with restored config."
+    else
+      info "Containers are still running with old config — redeploy when ready: option 12"
+    fi
   else
     error "Extraction failed — archive may be corrupt."
     return 1

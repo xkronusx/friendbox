@@ -450,7 +450,7 @@ Removes all containers, pulled images, the `medianet` network, all config data, 
 ### Redeploy a single container
 
 ```bash
-sudo friendbox  →  option 12  →  option 2  →  enter container name
+sudo friendbox  →  option 12  →  option 2  →  select from numbered list
 ```
 
 ### Redeploy via helper script
@@ -569,7 +569,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - After saving, redeploy the VPN container: option 12 → option 2
 
 **TeamSpeak 6 WebAuth (port 10080) not accessible**
-- Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → `teamspeak6`
+- Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → select TeamSpeak 6
 
 **TeamSpeak 6 admin token not showing after install**
 - Option 1 automatically checks container logs and displays the token in the post-install summary. If it didn't appear, the container may not have started yet when the check ran.

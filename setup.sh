@@ -137,8 +137,10 @@ ensure_media_root() {
 
 # Returns 0 (true) if the stack appears to have active containers
 is_running() {
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps --status running \
-    2>/dev/null | grep -q "running" || return 1
+  # Must use compose_selected (not bare docker compose) so that profile-gated
+  # containers are included — every service in this project is profile-gated,
+  # so a call without --profile args would always see nothing and return false.
+  compose_selected ps --status running 2>/dev/null | grep -q "running" || return 1
 }
 
 # ── OS compatibility check ────────────────────────────────────────────────────
@@ -4723,8 +4725,16 @@ LREOF
 
 _dns_remove_cron() {
   local cron_file="/etc/cron.d/friendbox-dns"
-  if [[ -f "$cron_file" ]]; then rm -f "$cron_file"; success "Cron job removed."
-  else warn "No cron job found."; fi
+  local cron_script="/usr/local/bin/friendbox-dns-update"
+  local logrotate_file="/etc/logrotate.d/friendbox-dns"
+  if [[ -f "$cron_file" ]]; then
+    rm -f "$cron_file"
+    success "Cron job removed."
+    [[ -f "$cron_script"    ]] && rm -f "$cron_script"    && info "  Removed: ${cron_script}"
+    [[ -f "$logrotate_file" ]] && rm -f "$logrotate_file" && info "  Removed: ${logrotate_file}"
+  else
+    warn "No cron job found."
+  fi
 }
 
 configure_dns() {
@@ -5024,12 +5034,21 @@ redeploy_menu() {
       4)
         select_containers
         _jellyfin_fix_markers
+        # Sync USE_TRAEFIK in .env to match the updated selection — print_urls
+        # and _traefik_show_status read this key to decide what URLs to display.
+        load_selected
+        local _ut="false"; [[ -n "${SELECTED[traefik]+_}" ]] && _ut="true"
+        if grep -q "^USE_TRAEFIK=" "$ENV_FILE" 2>/dev/null; then
+          sed -i "s|^USE_TRAEFIK=.*|USE_TRAEFIK=${_ut}|" "$ENV_FILE"
+        else
+          echo "USE_TRAEFIK=${_ut}" >> "$ENV_FILE"
+        fi
         # Re-provision acme.json and regenerate traefik.yml in case Traefik was
         # just added to (or removed from) the selection.
         ensure_acme
-        # Re-apply Jellyfin HW accel patch — a container re-selection may have
-        # added Jellyfin back, and ensure_acme above downloads a fresh compose
-        # that resets the jellyfin service to software transcoding.
+        # Re-apply Jellyfin HW accel patch — the container re-selection may have
+        # added Jellyfin for the first time, or a prior sync_repo/auto_update may
+        # have reset the compose file to software transcoding since the last deploy.
         [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
         if [[ -n "${JELLYFIN_HW_ACCEL:-}" && "${JELLYFIN_HW_ACCEL}" != "none" ]]; then
           _jellyfin_hw_apply "${JELLYFIN_HW_ACCEL}" \

@@ -435,9 +435,9 @@ sudo friendbox  →  option 13
 sudo friendbox  →  option 16
 ```
 
-Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.gz` of all container config directories plus key state files (`.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
+Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.gz` of all container config directories plus key state files (`.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated. Before archiving, running containers are automatically stopped so that SQLite databases (Sonarr, Radarr, Prowlarr, etc.) are in a consistent state; they are restarted automatically once the archive is written. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
 
-To restore: option 16 → option 2 → select an archive. The restore extracts over the current config and re-applies correct acme.json permissions. Running containers are not stopped — redeploy after restore to apply changes.
+To restore: option 16 → option 2 → select an archive. The restore extracts over the current config, re-applies correct acme.json permissions, and offers to redeploy all containers immediately so the restored config takes effect.
 
 ### Full uninstall
 

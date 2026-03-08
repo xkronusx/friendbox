@@ -596,6 +596,13 @@ sync_repo() {
     if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
       _traefik_write_config && info "Traefik config re-applied to updated docker-compose.yml."
     fi
+    # Re-apply Jellyfin HW accel patch if one was previously configured.
+    # A fresh compose file from GitHub resets the jellyfin service to software
+    # transcoding — re-patching here keeps the user's HW accel setting intact.
+    if [[ -n "${JELLYFIN_HW_ACCEL:-}" && "${JELLYFIN_HW_ACCEL}" != "none" ]]; then
+      _jellyfin_hw_apply "${JELLYFIN_HW_ACCEL}" \
+        && info "Jellyfin HW accel (${JELLYFIN_HW_ACCEL}) re-applied to updated docker-compose.yml."
+    fi
   fi
 }
 
@@ -637,15 +644,26 @@ https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_C
     local pkgs=()
     command -v curl     &>/dev/null || pkgs+=(curl)
     command -v htpasswd &>/dev/null || pkgs+=(apache2-utils)
-    # pciutils provides lspci — used by Jellyfin HW accel for GPU detection.
-    # libva-utils provides vainfo — verifies VA-API capability (Intel/AMD HW accel).
-    command -v lspci    &>/dev/null || pkgs+=(pciutils)
-    command -v vainfo   &>/dev/null || pkgs+=(libva-utils)
     [[ ${#pkgs[@]} -gt 0 ]] && apt-get install -y "${pkgs[@]}"
 
     success "Dependencies installed."
   else
     success "All dependencies satisfied."
+  fi
+
+  # ── Diagnostic tools — installed unconditionally so they are present on
+  #    existing installs that already had Docker/curl/htpasswd. ─────────────────
+  # pciutils  → lspci  — GPU detection in Jellyfin HW accel checks.
+  # libva-utils → vainfo — VA-API capability verification (Intel/AMD).
+  local _diag_pkgs=()
+  command -v lspci  &>/dev/null || _diag_pkgs+=(pciutils)
+  command -v vainfo &>/dev/null || _diag_pkgs+=(libva-utils)
+  if [[ ${#_diag_pkgs[@]} -gt 0 ]]; then
+    info "Installing diagnostic tools: ${_diag_pkgs[*]}..."
+    apt-get update -qq
+    apt-get install -y "${_diag_pkgs[@]}" \
+      && success "Diagnostic tools installed." \
+      || warn "Could not install ${_diag_pkgs[*]} — HW accel detection may be limited."
   fi
 
   # ── MergerFS — optional, only needed for storage pool feature ────────────────
@@ -3873,7 +3891,9 @@ _jellyfin_hw_setup() {
         _jellyfin_hw_apply none || return 1
         return 0 ;;
       4)
-        _jellyfin_hw_check ;;
+        _jellyfin_hw_check
+        echo -e "  ${DIM}Press Enter to return to the menu...${RESET}"
+        read -r _dummy || true ;;
       q|Q) info "Cancelled."; return 0 ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac

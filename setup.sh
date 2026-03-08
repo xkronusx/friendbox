@@ -3647,11 +3647,14 @@ _jellyfin_hw_check() {
       export XDG_RUNTIME_DIR="$_xdg_tmp"
     fi
     local _va
-    _va=$(XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" "$_vainfo_bin" 2>&1 | head -8)
+    # Capture full output (not head -8) so we can count profiles from it without
+    # a second invocation. The temp XDG dir is cleaned up immediately after, so
+    # any second vainfo call would point to a deleted directory.
+    _va=$(XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" "$_vainfo_bin" 2>&1)
     [[ -n "$_xdg_tmp" ]] && { rm -rf "$_xdg_tmp"; unset XDG_RUNTIME_DIR; }
     if echo "$_va" | grep -q "vainfo: Supported"; then
       local _cnt
-      _cnt=$(XDG_RUNTIME_DIR="/tmp/.va-diag-$$" "$_vainfo_bin" 2>/dev/null                | grep -c "VAProfile" || true)
+      _cnt=$(echo "$_va" | grep -c "VAProfile" || true)
       echo -e "  ${GREEN}[OK]${RESET}    vainfo — VA-API available (${_cnt} profiles)"
     elif echo "$_va" | grep -qiE "XDG_RUNTIME_DIR|can.t connect to X"; then
       echo -e "  ${YELLOW}[WARN]${RESET}  vainfo: XDG_RUNTIME_DIR error (display not accessible as root)"

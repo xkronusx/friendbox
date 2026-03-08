@@ -2680,6 +2680,15 @@ _creds_show_status() {
   load_selected
   echo ""
 
+  # Jellyfin HW accel status
+  if [[ -n "${SELECTED[jellyfin]+_}" ]]; then
+    local _jf_hw="${JELLYFIN_HW_ACCEL:-none}"
+    local _jf_col="${DIM}"
+    [[ "$_jf_hw" != "none" ]] && _jf_col="${GREEN}"
+    echo -e "  ${BOLD}Jellyfin HW accel :${RESET} ${_jf_col}${_jf_hw}${RESET}"
+    echo ""
+  fi
+
   # VPN
   local vpn_containers=()
   local k
@@ -2751,9 +2760,18 @@ configure_service_credentials() {
       opt_num=$((opt_num + 1))
     fi
 
+    if [[ -n "${SELECTED[jellyfin]+_}" ]]; then
+      echo "  ${opt_num}) Jellyfin — configure hardware acceleration"
+      CRED_OPTS[$opt_num]="jellyfin_hw_setup"
+      opt_num=$((opt_num + 1))
+      echo "  ${opt_num}) Jellyfin — run hardware acceleration diagnostic"
+      CRED_OPTS[$opt_num]="jellyfin_hw_check"
+      opt_num=$((opt_num + 1))
+    fi
+
     if [[ $opt_num -eq 1 ]]; then
-      echo -e "  ${DIM}No services requiring credentials are currently selected.${RESET}"
-      echo -e "  ${DIM}Select VPN containers, AMP, or Mumble first (menu option 3).${RESET}"
+      echo -e "  ${DIM}No services requiring configuration are currently selected.${RESET}"
+      echo -e "  ${DIM}Select VPN containers, AMP, Mumble, or Jellyfin first (option 2).${RESET}"
     fi
 
     echo "  ${opt_num}) Back to main menu"
@@ -2766,10 +2784,12 @@ configure_service_credentials() {
     fi
 
     case "${CRED_OPTS[$choice]}" in
-      vpn)    _creds_configure_vpn    || true; pause ;;
-      amp)    _creds_configure_amp    || true; pause ;;
-      mumble) _creds_configure_mumble || true; pause ;;
-      back)   return ;;
+      vpn)              _creds_configure_vpn    || true; pause ;;
+      amp)              _creds_configure_amp    || true; pause ;;
+      mumble)           _creds_configure_mumble || true; pause ;;
+      jellyfin_hw_setup) _jellyfin_hw_setup     || true; pause ;;
+      jellyfin_hw_check) _jellyfin_hw_check     || true; pause ;;
+      back)             return ;;
     esac
   done
 }
@@ -3311,6 +3331,554 @@ ensure_acme() {
 }
 
 # ── Directory provisioning ────────────────────────────────────────────────────
+
+# =============================================================================
+#  Jellyfin — Hardware Acceleration
+# =============================================================================
+# Supported acceleration methods:
+#
+#   vaapi  — Intel iGPU (Quick Sync) and AMD GPU.
+#            Host requirements:
+#              • i915, xe (Intel), or amdgpu (AMD) kernel module loaded
+#              • /dev/dri/renderD128 and /dev/dri/card0 device nodes present
+#              • 'render' group exists (created automatically by the driver)
+#            Compose requirements:
+#              • devices: /dev/dri mounts
+#              • group_add: render GID (so the container can open renderD128)
+#
+#   nvenc  — NVIDIA GPU via NVENC hardware encoder.
+#            Host requirements:
+#              • NVIDIA proprietary driver installed
+#              • nvidia-container-toolkit installed
+#              • Docker nvidia runtime registered
+#                (sudo nvidia-ctk runtime configure --runtime=docker
+#                 then: sudo systemctl restart docker)
+#            Compose requirements:
+#              • runtime: nvidia
+#              • NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES env vars
+#
+#   none   — Software (CPU) transcoding. No special host or compose changes.
+#
+# _jellyfin_hw_apply() surgically patches docker-compose.yml, fenced by
+# "# HW-ACCEL-START" / "# HW-ACCEL-END" markers. Safe to call multiple times;
+# previous patches are removed before the new one is inserted.
+# =============================================================================
+
+_jellyfin_detect_gpu() {
+  # Probe available GPU hardware.
+  # Each detected device is emitted as one pipe-separated line:
+  #   TYPE|DEVICE_NAME|DRIVER_STATUS|NOTE
+  # TYPE: intel | amd | nvidia | unknown
+
+  # ── Intel ─────────────────────────────────────────────────────────────────
+  if command -v lspci &>/dev/null; then
+    while IFS= read -r _line; do
+      local _name _drv
+      _name=$(echo "$_line" | sed 's/^[^:]*:[^:]*: //')
+      if lsmod 2>/dev/null | grep -q '^i915[[:space:]]'; then
+        _drv="i915 loaded"
+      elif lsmod 2>/dev/null | grep -q '^xe[[:space:]]'; then
+        _drv="xe loaded (Arc/Meteor Lake)"
+      else
+        _drv="NO DRIVER — try: sudo modprobe i915"
+      fi
+      echo "intel|${_name}|${_drv}|Intel GPU"
+    done < <(lspci 2>/dev/null \
+      | grep -iE 'Intel.*(VGA|Display|3D|Iris|HD Graphics|UHD Graphics|Arc)' \
+      || true)
+  fi
+
+  # ── AMD ───────────────────────────────────────────────────────────────────
+  if command -v lspci &>/dev/null; then
+    while IFS= read -r _line; do
+      local _name _drv
+      _name=$(echo "$_line" | sed 's/^[^:]*:[^:]*: //')
+      if lsmod 2>/dev/null | grep -q '^amdgpu[[:space:]]'; then
+        _drv="amdgpu loaded"
+      else
+        _drv="NO DRIVER — try: sudo modprobe amdgpu"
+      fi
+      echo "amd|${_name}|${_drv}|AMD GPU"
+    done < <(lspci 2>/dev/null \
+      | grep -iE '(AMD|Advanced Micro Devices).*(VGA|Display|3D|Radeon|Rembrandt|Cezanne|Renoir)' \
+      || true)
+  fi
+
+  # ── NVIDIA ────────────────────────────────────────────────────────────────
+  if command -v lspci &>/dev/null; then
+    while IFS= read -r _line; do
+      local _name _drv
+      _name=$(echo "$_line" | sed 's/^[^:]*:[^:]*: //')
+      if lsmod 2>/dev/null | grep -q '^nvidia[[:space:]]'; then
+        _drv="nvidia module loaded"
+      else
+        _drv="NO DRIVER — install NVIDIA driver"
+      fi
+      echo "nvidia|${_name}|${_drv}|NVIDIA GPU"
+    done < <(lspci 2>/dev/null \
+      | grep -i 'NVIDIA.*\(VGA\|Display\|3D\)' \
+      || true)
+  fi
+
+  # ── Fallback when pciutils not installed ──────────────────────────────────
+  if ! command -v lspci &>/dev/null; then
+    if [[ -d /dev/dri ]]; then
+      echo "unknown|/dev/dri present (GPU type unclear)|unknown|install pciutils: sudo apt install pciutils"
+    fi
+    if [[ -e /dev/nvidia0 ]]; then
+      local _drv
+      lsmod 2>/dev/null | grep -q '^nvidia[[:space:]]' \
+        && _drv="nvidia module loaded" || _drv="NO DRIVER"
+      echo "nvidia|/dev/nvidia0 device node found|${_drv}|NVIDIA GPU"
+    fi
+  fi
+}
+
+_jellyfin_hw_check() {
+  # Full hardware acceleration diagnostic. Reads the live host state.
+  # Safe to call at any time — makes no changes.
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+
+  echo ""
+  echo -e "${BOLD}${CYAN}Jellyfin Hardware Acceleration Diagnostics${RESET}"
+  echo "══════════════════════════════════════════════════════════════"
+  local _cur="${JELLYFIN_HW_ACCEL:-none}"
+  echo -e "  ${BOLD}Configured method :${RESET} ${_cur}"
+  echo ""
+
+  # ── 1. GPU detection via lspci / device nodes ────────────────────────────
+  echo -e "  ${BOLD}── Detected GPUs ──────────────────────────────────────────${RESET}"
+  local _gpus=() _g
+  while IFS= read -r _g; do
+    [[ -n "$_g" ]] && _gpus+=("$_g")
+  done < <(_jellyfin_detect_gpu)
+
+  if [[ ${#_gpus[@]} -eq 0 ]]; then
+    echo -e "  ${YELLOW}[WARN]${RESET}  No GPU detected."
+    echo -e "         ${DIM}Install pciutils for better detection: sudo apt install pciutils${RESET}"
+  else
+    for _g in "${_gpus[@]}"; do
+      local _type _name _drv _note
+      IFS='|' read -r _type _name _drv _note <<< "$_g"
+      local _col="${CYAN}"
+      [[ "$_drv" == *"NO DRIVER"* ]] && _col="${RED}"
+      echo -e "  ${_col}[${_type^^}]${RESET}  ${_name}"
+      echo -e "         ${DIM}Driver : ${_drv}${RESET}"
+    done
+  fi
+  echo ""
+
+  # ── 2. /dev/dri device nodes ────────────────────────────────────────────
+  echo -e "  ${BOLD}── /dev/dri Device Nodes (VA-API) ─────────────────────────${RESET}"
+  if [[ -d /dev/dri ]]; then
+    local _node _found_render=false
+    for _node in /dev/dri/card* /dev/dri/renderD*; do
+      [[ -e "$_node" ]] || continue
+      local _perms _owner
+      _perms=$(stat -c "%a" "$_node" 2>/dev/null)
+      _owner=$(stat -c "%U:%G" "$_node" 2>/dev/null)
+      echo -e "  ${GREEN}[FOUND]${RESET}  ${_node}  ${DIM}(perms ${_perms}  owner ${_owner})${RESET}"
+      [[ "$_node" == */renderD* ]] && _found_render=true
+    done
+    if [[ "$_found_render" == "false" ]]; then
+      echo -e "  ${YELLOW}[WARN]${RESET}  /dev/dri exists but no renderD* node found."
+      echo -e "         ${DIM}renderD128 is required for VA-API transcoding.${RESET}"
+    fi
+  else
+    echo -e "  ${YELLOW}[NONE]${RESET}   /dev/dri directory not present on this host."
+    echo -e "         ${DIM}Normal on NVIDIA-only or CPU-only systems.${RESET}"
+    echo -e "         ${DIM}Intel iGPU: sudo modprobe i915   AMD: sudo modprobe amdgpu${RESET}"
+  fi
+  echo ""
+
+  # ── 3. render / video groups ─────────────────────────────────────────────
+  echo -e "  ${BOLD}── Device Groups ──────────────────────────────────────────${RESET}"
+  local _rgid _vgid
+  _rgid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
+  _vgid=$(getent group video  2>/dev/null | cut -d: -f3 || true)
+  if [[ -n "$_rgid" ]]; then
+    echo -e "  ${GREEN}[OK]${RESET}    render group  GID ${_rgid}"
+    echo -e "         ${DIM}Containers in this group can open /dev/dri/renderD* nodes.${RESET}"
+  else
+    echo -e "  ${YELLOW}[WARN]${RESET}  render group not found."
+    echo -e "         ${DIM}Created automatically when the GPU driver module loads.${RESET}"
+    echo -e "         ${DIM}Manual fix if needed: sudo groupadd -r render${RESET}"
+  fi
+  if [[ -n "$_vgid" ]]; then
+    echo -e "  ${GREEN}[OK]${RESET}    video group   GID ${_vgid}"
+  else
+    echo -e "  ${DIM}[INFO]  video group not found (optional for most setups)${RESET}"
+  fi
+  echo ""
+
+  # ── 4. NVIDIA toolkit / runtime ─────────────────────────────────────────
+  echo -e "  ${BOLD}── NVIDIA Stack ───────────────────────────────────────────${RESET}"
+  local _nvidia_gpu=false
+  if command -v nvidia-smi &>/dev/null; then
+    local _smi
+    _smi=$(nvidia-smi --query-gpu=name,driver_version,memory.total \
+      --format=csv,noheader 2>/dev/null | head -4)
+    if [[ -n "$_smi" ]]; then
+      _nvidia_gpu=true
+      echo -e "  ${GREEN}[OK]${RESET}    nvidia-smi — GPU(s) detected:"
+      while IFS= read -r _l; do
+        echo -e "         ${DIM}${_l}${RESET}"
+      done <<< "$_smi"
+    else
+      echo -e "  ${YELLOW}[WARN]${RESET}  nvidia-smi present but returned no GPU."
+    fi
+  else
+    echo -e "  ${DIM}[SKIP]  nvidia-smi not found — no NVIDIA GPU or driver missing.${RESET}"
+  fi
+
+  local _nctk=false
+  if command -v nvidia-ctk &>/dev/null \
+     || dpkg -l nvidia-container-toolkit &>/dev/null 2>&1; then
+    _nctk=true
+    echo -e "  ${GREEN}[OK]${RESET}    nvidia-container-toolkit installed"
+  else
+    if [[ "$_nvidia_gpu" == "true" ]]; then
+      echo -e "  ${RED}[FAIL]${RESET}  nvidia-container-toolkit NOT installed"
+      echo -e "         ${DIM}Required for Docker GPU passthrough. Install guide:${RESET}"
+      echo -e "         ${DIM}https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/${RESET}"
+    else
+      echo -e "  ${DIM}[SKIP]  nvidia-container-toolkit — not applicable${RESET}"
+    fi
+  fi
+
+  if docker info 2>/dev/null | grep -q "nvidia"; then
+    echo -e "  ${GREEN}[OK]${RESET}    Docker nvidia runtime registered"
+  else
+    if [[ "$_nvidia_gpu" == "true" ]]; then
+      echo -e "  ${RED}[FAIL]${RESET}  Docker nvidia runtime NOT registered"
+      echo -e "         ${DIM}sudo nvidia-ctk runtime configure --runtime=docker${RESET}"
+      echo -e "         ${DIM}sudo systemctl restart docker${RESET}"
+    else
+      echo -e "  ${DIM}[SKIP]  Docker nvidia runtime — not applicable${RESET}"
+    fi
+  fi
+  echo ""
+
+  # ── 5. VA-API userspace check ───────────────────────────────────────────
+  echo -e "  ${BOLD}── VA-API Userspace (Intel / AMD) ─────────────────────────${RESET}"
+  if command -v vainfo &>/dev/null; then
+    local _va
+    _va=$(vainfo 2>&1 | head -8)
+    if echo "$_va" | grep -q "vainfo: Supported"; then
+      local _cnt
+      _cnt=$(vainfo 2>/dev/null | grep -c "VAProfile" || true)
+      echo -e "  ${GREEN}[OK]${RESET}    vainfo — VA-API available (${_cnt} profiles)"
+    else
+      echo -e "  ${YELLOW}[WARN]${RESET}  vainfo reported an error:"
+      echo -e "         ${DIM}$(echo "$_va" | head -3)${RESET}"
+    fi
+  else
+    echo -e "  ${DIM}[INFO]  vainfo not installed. Install for a deeper capability check:${RESET}"
+    echo -e "         ${DIM}sudo apt install vainfo libva-utils${RESET}"
+  fi
+  echo ""
+
+  # ── 6. Compose patch state ──────────────────────────────────────────────
+  echo -e "  ${BOLD}── docker-compose.yml Patch State ─────────────────────────${RESET}"
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    if grep -q "HW-ACCEL-VAAPI" "$COMPOSE_FILE" 2>/dev/null; then
+      echo -e "  ${GREEN}[ACTIVE]${RESET} VA-API (Intel/AMD) device passthrough applied"
+      # Check whether the GID in the file still matches the live system
+      local _live_rgid
+      _live_rgid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
+      if [[ -n "$_live_rgid" ]]; then
+        if grep -q "\"${_live_rgid}\"  # render" "$COMPOSE_FILE" 2>/dev/null; then
+          echo -e "         ${DIM}render GID ${_live_rgid} matches compose group_add — OK${RESET}"
+        else
+          echo -e "  ${YELLOW}[STALE]${RESET} render GID in compose does not match live GID ${_live_rgid}"
+          echo -e "         ${DIM}Re-run option 5 → Jellyfin HW accel to refresh.${RESET}"
+        fi
+      fi
+    elif grep -q "HW-ACCEL-NVENC" "$COMPOSE_FILE" 2>/dev/null; then
+      echo -e "  ${GREEN}[ACTIVE]${RESET} NVIDIA NVENC passthrough applied"
+    else
+      echo -e "  ${DIM}[NONE]${RESET}   No HW accel patch in compose (software transcoding)"
+    fi
+  else
+    echo -e "  ${DIM}[SKIP]  compose file not found — install first${RESET}"
+  fi
+  echo ""
+  echo -e "  ${DIM}To configure: option 5 → Jellyfin hardware acceleration${RESET}"
+  echo -e "  ${DIM}To apply:     option 12 → redeploy single container → jellyfin${RESET}"
+  echo ""
+}
+
+_jellyfin_hw_apply() {
+  # Patch docker-compose.yml to configure hardware acceleration for Jellyfin.
+  # Argument: vaapi | nvenc | none
+  # Uses Python to surgically modify only the jellyfin service block.
+  # Fenced with "# HW-ACCEL-START" / "# HW-ACCEL-END" — safe to call repeatedly.
+  local _method="${1:-none}"
+
+  [[ -f "$COMPOSE_FILE" ]] \
+    || { warn "compose file not found — run Full Install (option 1) first."; return 1; }
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+
+  # Collect live group IDs for the group_add block
+  local _rgid _vgid
+  _rgid=$(getent group render 2>/dev/null | cut -d: -f3 || echo "")
+  _vgid=$(getent group video  2>/dev/null | cut -d: -f3 || echo "")
+
+  info "Patching docker-compose.yml for Jellyfin HW accel: ${_method}..."
+
+  python3 - "$COMPOSE_FILE" "$_method" "$_rgid" "$_vgid" << 'PYEOF'
+import sys, re
+
+path   = sys.argv[1]
+method = sys.argv[2]   # vaapi | nvenc | none
+rgid   = sys.argv[3]   # render group GID (may be empty string)
+vgid   = sys.argv[4]   # video  group GID (may be empty string)
+
+with open(path) as f:
+    content = f.read()
+
+# ── Step 1: Strip any previous HW-ACCEL fenced block ─────────────────────────
+lines   = content.split('\n')
+cleaned = []
+inside  = False
+for ln in lines:
+    if '# HW-ACCEL-START' in ln:
+        inside = True
+        continue
+    if '# HW-ACCEL-END' in ln:
+        inside = False
+        continue
+    if not inside:
+        cleaned.append(ln)
+content = '\n'.join(cleaned)
+
+# ── Step 2: Build the new fenced block ───────────────────────────────────────
+# The bare environment block that the original compose has (3 lines of indent).
+BARE_ENV = (
+    '    environment:\n'
+    '      - PUID=${PUID}\n'
+    '      - PGID=${PGID}\n'
+    '      - TZ=${TZ}'
+)
+
+if method == 'vaapi':
+    grp = ''
+    if rgid:
+        grp += f'      - "{rgid}"  # render — allows container to open /dev/dri/renderD*\n'
+    if vgid:
+        grp += f'      - "{vgid}"  # video\n'
+    if not grp:
+        grp  =  '      # render group not found on this host; add GID manually if needed\n'
+    block = (
+        '    # HW-ACCEL-START\n'
+        '    # HW-ACCEL-VAAPI — managed by friendbox (option 5 → Jellyfin HW accel)\n'
+        '    # VA-API hardware transcoding — Intel iGPU (Quick Sync) and AMD GPU.\n'
+        '    # Requires: GPU driver loaded, /dev/dri/renderD128 present, render group exists.\n'
+        '    # To disable: option 5 → Jellyfin HW accel → None.\n'
+        '    devices:\n'
+        '      - /dev/dri/renderD128:/dev/dri/renderD128\n'
+        '      - /dev/dri/card0:/dev/dri/card0\n'
+        '    group_add:\n'
+        + grp
+        + '    environment:\n'
+        '      - PUID=${PUID}\n'
+        '      - PGID=${PGID}\n'
+        '      - TZ=${TZ}\n'
+        '      - JELLYFIN_HW_ACCEL=vaapi\n'
+        '    # HW-ACCEL-END'
+    )
+elif method == 'nvenc':
+    block = (
+        '    # HW-ACCEL-START\n'
+        '    # HW-ACCEL-NVENC — managed by friendbox (option 5 → Jellyfin HW accel)\n'
+        '    # NVIDIA NVENC hardware transcoding.\n'
+        '    # Requires: NVIDIA driver, nvidia-container-toolkit, Docker nvidia runtime.\n'
+        '    # To disable: option 5 → Jellyfin HW accel → None.\n'
+        '    runtime: nvidia\n'
+        '    environment:\n'
+        '      - PUID=${PUID}\n'
+        '      - PGID=${PGID}\n'
+        '      - TZ=${TZ}\n'
+        '      - NVIDIA_VISIBLE_DEVICES=all\n'
+        '      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility\n'
+        '      - JELLYFIN_HW_ACCEL=nvenc\n'
+        '    # HW-ACCEL-END'
+    )
+else:
+    block = None  # none — just restore bare environment:
+
+# ── Step 3: Locate the jellyfin service block ─────────────────────────────────
+jf_start = content.find('\n  jellyfin:\n')
+if jf_start == -1:
+    print('ERROR: jellyfin service not found in compose file', file=sys.stderr)
+    sys.exit(1)
+
+# End of jellyfin block = start of the next top-level service key (2-space indent)
+nxt = re.search(r'\n  [a-zA-Z]', content[jf_start + 1:])
+jf_end = (jf_start + 1 + nxt.start()) if nxt else len(content)
+jf_section = content[jf_start:jf_end]
+
+# ── Step 4: Splice the block in / restore bare env ───────────────────────────
+if block is not None:
+    # Replace the bare environment block with our new fenced block.
+    if BARE_ENV in jf_section:
+        jf_section = jf_section.replace(BARE_ENV, block, 1)
+    else:
+        # Bare env was already replaced by a previous patch (which we just stripped).
+        # Insert before the volumes: key.
+        jf_section = re.sub(
+            r'(\n    volumes:)',
+            '\n' + block + r'\1',
+            jf_section, count=1
+        )
+else:
+    # Restore bare environment if it is missing after stripping the old block.
+    if BARE_ENV not in jf_section:
+        jf_section = jf_section.replace(
+            '\n    volumes:',
+            '\n' + BARE_ENV + '\n    volumes:',
+            1
+        )
+
+content = content[:jf_start] + jf_section + content[jf_end:]
+
+with open(path, 'w') as f:
+    f.write(content)
+
+print(f'compose patched: {method}')
+PYEOF
+
+  local _rc=$?
+  if [[ $_rc -eq 0 ]]; then
+    # Record the chosen method in .env so other functions can read it
+    sed -i '/^JELLYFIN_HW_ACCEL=/d' "$ENV_FILE" 2>/dev/null || true
+    echo "JELLYFIN_HW_ACCEL=${_method}" >> "$ENV_FILE"
+    _own "$COMPOSE_FILE"
+    success "docker-compose.yml updated — Jellyfin HW accel: ${_method}"
+    info "Redeploy Jellyfin to activate: option 12 → option 2 → jellyfin"
+  else
+    warn "Compose patch failed — file is unchanged."
+    return 1
+  fi
+}
+
+_jellyfin_hw_setup() {
+  # Interactive wizard to select and apply hardware acceleration for Jellyfin.
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+
+  echo ""
+  echo -e "${BOLD}Jellyfin — Hardware Acceleration${RESET}"
+  echo -e "${DIM}  Offloads video transcoding to a GPU, dramatically reducing CPU"
+  echo -e "  usage for 4K, HDR, and HEVC streams.${RESET}"
+  echo ""
+
+  # ── Quick host-state summary ───────────────────────────────────────────
+  local _has_dri=false _has_nvidia=false _has_intel=false _has_amd=false
+  [[ -d /dev/dri ]] && _has_dri=true
+  if [[ "$_has_dri" == "true" ]]; then
+    lsmod 2>/dev/null | grep -qE '^i915[[:space:]]|^xe[[:space:]]' && _has_intel=true
+    lsmod 2>/dev/null | grep -q '^amdgpu[[:space:]]'               && _has_amd=true
+  fi
+  if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
+    _has_nvidia=true
+  fi
+
+  # Summarise what was found and flag any missing prerequisites
+  if [[ "$_has_intel" == "true" ]]; then
+    echo -e "  ${GREEN}[DETECTED]${RESET} Intel GPU — i915/xe driver active, /dev/dri present"
+  elif [[ "$_has_amd" == "true" ]]; then
+    echo -e "  ${GREEN}[DETECTED]${RESET} AMD GPU — amdgpu driver active, /dev/dri present"
+  elif [[ "$_has_dri" == "true" ]]; then
+    echo -e "  ${YELLOW}[DETECTED]${RESET} /dev/dri present — GPU driver module status unclear"
+  else
+    echo -e "  ${DIM}[INFO]     /dev/dri not found — Intel/AMD VA-API not available${RESET}"
+  fi
+
+  if [[ "$_has_nvidia" == "true" ]]; then
+    echo -e "  ${GREEN}[DETECTED]${RESET} NVIDIA GPU — nvidia-smi OK"
+    local _nctk=false
+    { command -v nvidia-ctk &>/dev/null \
+      || dpkg -l nvidia-container-toolkit &>/dev/null 2>&1; } && _nctk=true
+    if [[ "$_nctk" == "false" ]]; then
+      echo -e "  ${RED}[MISSING]${RESET}  nvidia-container-toolkit — required for Docker GPU passthrough"
+      echo -e "           ${DIM}Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/${RESET}"
+    fi
+    if ! docker info 2>/dev/null | grep -q "nvidia"; then
+      echo -e "  ${RED}[MISSING]${RESET}  Docker nvidia runtime not registered"
+      echo -e "           ${DIM}Fix: sudo nvidia-ctk runtime configure --runtime=docker${RESET}"
+      echo -e "           ${DIM}     sudo systemctl restart docker${RESET}"
+    fi
+  else
+    echo -e "  ${DIM}[INFO]     NVIDIA not detected via nvidia-smi${RESET}"
+  fi
+
+  # Warn if /dev/dri is present but render group is missing
+  local _rgid
+  _rgid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
+  if [[ "$_has_dri" == "true" && -z "$_rgid" ]]; then
+    echo -e "  ${YELLOW}[WARN]${RESET}    render group not found — VA-API access may fail"
+    echo -e "           ${DIM}Auto-fix: sudo groupadd -r render${RESET}"
+  fi
+  echo ""
+
+  local _cur="${JELLYFIN_HW_ACCEL:-none}"
+  echo -e "  Current : ${BOLD}${_cur}${RESET}"
+  echo ""
+  echo "  1) VA-API  — Intel iGPU (Quick Sync) / AMD  [needs /dev/dri]"
+  echo "  2) NVENC   — NVIDIA GPU                     [needs nvidia-container-toolkit]"
+  echo "  3) None    — Software transcoding            [no GPU required]"
+  echo "  4) Run full diagnostic"
+  echo "  q) Cancel"
+  echo ""
+
+  while true; do
+    read -rp "  Choice: " _sel
+    case "$_sel" in
+      1)
+        if [[ "$_has_dri" == "false" ]]; then
+          echo ""
+          warn "/dev/dri not found — VA-API requires Intel/AMD GPU with driver loaded."
+          warn "The compose patch can still be applied; the container will fail to"
+          warn "start until the GPU driver is installed and /dev/dri appears."
+          echo ""
+          read -rp "  Apply VA-API patch anyway? [y/N] " _yn
+          [[ "${_yn}" =~ ^[Yy]$ ]] || { info "Cancelled."; return 0; }
+        fi
+        _jellyfin_hw_apply vaapi || return 1
+        echo ""
+        echo -e "  ${BOLD}After redeploying, finish setup in the Jellyfin web UI:${RESET}"
+        echo -e "  ${DIM}  Admin → Playback → Transcoding${RESET}"
+        echo -e "  ${DIM}  Hardware acceleration : VA-API${RESET}"
+        echo -e "  ${DIM}  VA-API device         : /dev/dri/renderD128${RESET}"
+        echo -e "  ${DIM}  Enable the codec checkboxes your GPU supports.${RESET}"
+        return 0 ;;
+      2)
+        if [[ "$_has_nvidia" == "false" ]]; then
+          echo ""
+          warn "NVIDIA GPU not confirmed via nvidia-smi."
+          read -rp "  Apply NVENC patch anyway? [y/N] " _yn
+          [[ "${_yn}" =~ ^[Yy]$ ]] || { info "Cancelled."; return 0; }
+        fi
+        _jellyfin_hw_apply nvenc || return 1
+        echo ""
+        echo -e "  ${BOLD}After redeploying, finish setup in the Jellyfin web UI:${RESET}"
+        echo -e "  ${DIM}  Admin → Playback → Transcoding${RESET}"
+        echo -e "  ${DIM}  Hardware acceleration : NVENC${RESET}"
+        echo -e "  ${DIM}  Enable NVENC encoder and relevant codec checkboxes.${RESET}"
+        return 0 ;;
+      3)
+        _jellyfin_hw_apply none || return 1
+        return 0 ;;
+      4)
+        _jellyfin_hw_check
+        echo -e "  ${DIM}Press Enter to return to the setup menu...${RESET}"
+        read -r _dummy ;;
+      q|Q) info "Cancelled."; return 0 ;;
+      *) warn "Invalid choice." ;;
+    esac
+  done
+}
+
 _jellyfin_fix_markers() {
   # Jellyfin writes path-marker files on first start (.jellyfin-config, .jellyfin-data,
   # etc.) to identify how each directory is being used. If the config directory was
@@ -3483,6 +4051,32 @@ HDEOF
     mkdir -p "${cfg}/jellyfin-cache"
     chown -R "${uid}:${gid}" "${cfg}/jellyfin-cache"
     success "  ${cfg}/jellyfin-cache  [${uid}:${gid}]"
+
+    # Verify HW accel prerequisites if a method is configured
+    local _jf_hw="${JELLYFIN_HW_ACCEL:-none}"
+    if [[ "$_jf_hw" == "vaapi" ]]; then
+      if [[ -e /dev/dri/renderD128 ]]; then
+        success "  /dev/dri/renderD128  [VA-API device present]"
+      else
+        warn "Jellyfin VA-API is configured but /dev/dri/renderD128 is missing."
+        warn "Verify GPU driver is loaded: lsmod | grep -E 'i915|amdgpu|xe'"
+        warn "Reconfigure via option 5 → Jellyfin hardware acceleration."
+      fi
+      local _jf_rgid
+      _jf_rgid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
+      if [[ -z "$_jf_rgid" ]]; then
+        warn "render group not found — VA-API /dev/dri access may be denied."
+        warn "Auto-fix: sudo groupadd -r render  then redeploy Jellyfin."
+      fi
+    elif [[ "$_jf_hw" == "nvenc" ]]; then
+      if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
+        success "  NVIDIA GPU  [nvidia-smi OK — NVENC ready]"
+      else
+        warn "Jellyfin NVENC is configured but nvidia-smi reports no GPU."
+        warn "Check NVIDIA driver and nvidia-container-toolkit."
+        warn "Run option 5 → Jellyfin hardware acceleration for full diagnostics."
+      fi
+    fi
 
     # Jellyfin writes marker files (.jellyfin-config, .jellyfin-data, etc.) to
     # whichever directories it uses on first start. If the same host directory
@@ -4107,7 +4701,7 @@ full_install() {
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
   echo -e "  ${BOLD}Next steps if needed:${RESET}"
   echo -e "  ${DIM}  • Traefik dashboard password  → menu option  4${RESET}"
-  echo -e "  ${DIM}  • VPN / AMP / Mumble creds    → menu option  5${RESET}"
+  echo -e "  ${DIM}  • VPN / AMP / Mumble / Jellyfin HW → menu option  5${RESET}"
   echo -e "  ${DIM}  • DNS A record setup           → menu option  6${RESET}"
   echo -e "  ${DIM}  • MergerFS storage pool        → menu option  7${RESET}"
   echo -e "  ${DIM}  • Backup your config           → menu option 16${RESET}"
@@ -4472,7 +5066,7 @@ main_menu() {
     echo "   2) Select containers"
     echo "   3) Configure .env (paths, PUID, timezone)"
     echo "   4) Traefik configuration"
-    echo "   5) Service credentials (VPN / AMP / Mumble)"
+    echo "   5) Service credentials & hardware acceleration"
     echo "   6) DNS A record manager"
     echo "   7) MergerFS storage manager"
     echo ""

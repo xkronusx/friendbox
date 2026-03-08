@@ -515,10 +515,15 @@ auto_update() {
   # BEFORE re-exec.  A fresh compose file from GitHub restores all certresolver
   # labels; for DuckDNS they must be stripped, and for all other providers
   # TRAEFIK_CERT_RESOLVER must be written to .env so labels expand correctly.
+  # Jellyfin HW accel is also re-applied — a fresh compose resets the jellyfin
+  # service to software transcoding, losing any VA-API/NVENC patch.
   if [[ -f "$ENV_FILE" ]]; then
     source "$ENV_FILE" 2>/dev/null || true
     if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
       _traefik_write_config 2>/dev/null || true
+    fi
+    if [[ -n "${JELLYFIN_HW_ACCEL:-}" && "${JELLYFIN_HW_ACCEL}" != "none" ]]; then
+      _jellyfin_hw_apply "${JELLYFIN_HW_ACCEL}" 2>/dev/null || true
     fi
   fi
 
@@ -3154,6 +3159,13 @@ restore_config() {
     # Regenerate traefik.yml from restored .env so it matches current provider settings
     if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
       _traefik_write_config && info "traefik.yml regenerated from restored settings."
+    fi
+    # Re-apply Jellyfin HW accel patch if it was configured in the restored .env.
+    # The docker-compose.yml on disk may be newer than the backup and won't have
+    # the HW-ACCEL block — re-patching ensures the configured method is active.
+    if [[ -n "${JELLYFIN_HW_ACCEL:-}" && "${JELLYFIN_HW_ACCEL}" != "none" ]]; then
+      _jellyfin_hw_apply "${JELLYFIN_HW_ACCEL}" \
+        && info "Jellyfin HW accel (${JELLYFIN_HW_ACCEL}) re-applied from restored settings."
     fi
     success "Restore complete."
     info "Containers are still running with old config — redeploy to apply: option 12"

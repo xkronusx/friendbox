@@ -233,6 +233,7 @@ Only shows options for services you have selected.
 | **qBittorrentVPN / DelugeVPN** | VPN provider, client type (openvpn/wireguard), username, password, LAN CIDR |
 | **AMP** | Admin username and password |
 | **Mumble** | Superuser password |
+| **Jellyfin** | Hardware acceleration method (VA-API / NVENC / None) + full diagnostic tool |
 
 > **VPN LAN CIDR note:** The default value includes your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet assigned to `medianet` (detected automatically from the live network). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik to reverse-proxy the VPN container while the tunnel is active. If your home network uses a different subnet (e.g. `192.168.0.0/24`), update the first entry accordingly.
 
@@ -335,7 +336,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 2 | Select containers | Toggle which services to deploy. |
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
 | 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery, root redirect target. |
-| 5 | Service credentials | VPN, AMP, Mumble credentials. Only shows selected services. |
+| 5 | Service credentials & hardware acceleration | VPN, AMP, Mumble credentials + Jellyfin hardware acceleration setup and diagnostics. Only shows options for selected services. |
 | 6 | DNS A record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. |
 | 7 | MergerFS storage manager | Pool setup, disk management, drive details, ownership fix. |
 
@@ -441,7 +442,7 @@ To restore: option 16 → option 2 → select an archive. The restore extracts o
 ### Full uninstall
 
 ```bash
-sudo friendbox  →  option 17
+sudo friendbox  →  option 18
 ```
 
 Removes all containers, pulled images, the `medianet` network, all config data, state files, and the `friendbox` binary. Requires typing `RESET` to confirm. Media files in your media root and any existing backups in `/opt/friendbox/backups/` are **not** touched.

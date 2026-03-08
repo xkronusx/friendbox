@@ -654,10 +654,22 @@ https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_C
   # ── Diagnostic tools — installed unconditionally so they are present on
   #    existing installs that already had Docker/curl/htpasswd. ─────────────────
   # pciutils  → lspci  — GPU detection in Jellyfin HW accel checks.
-  # libva-utils → vainfo — VA-API capability verification (Intel/AMD).
+  # vainfo               — VA-API capability verification (Intel/AMD).
+  #   Package name varies by Ubuntu release: 'vainfo' on 22.04+, 'libva-utils'
+  #   on some systems. We check dpkg (not command -v) to avoid re-running on
+  #   every call if the binary is installed to a non-standard path.
   local _diag_pkgs=()
-  command -v lspci  &>/dev/null || _diag_pkgs+=(pciutils)
-  command -v vainfo &>/dev/null || _diag_pkgs+=(libva-utils)
+  dpkg -l pciutils  2>/dev/null | grep -q '^ii' || _diag_pkgs+=(pciutils)
+  # Accept either vainfo or libva-utils as satisfying the vainfo requirement
+  if ! dpkg -l vainfo     2>/dev/null | grep -q '^ii' && \
+     ! dpkg -l libva-utils 2>/dev/null | grep -q '^ii'; then
+    # Try 'vainfo' first (Ubuntu 22.04+); fall back to 'libva-utils' (older/Debian)
+    if apt-cache show vainfo &>/dev/null 2>&1; then
+      _diag_pkgs+=(vainfo)
+    else
+      _diag_pkgs+=(libva-utils)
+    fi
+  fi
   if [[ ${#_diag_pkgs[@]} -gt 0 ]]; then
     info "Installing diagnostic tools: ${_diag_pkgs[*]}..."
     apt-get update -qq
@@ -3587,20 +3599,29 @@ _jellyfin_hw_check() {
 
   # ── 5. VA-API userspace check ───────────────────────────────────────────
   echo -e "  ${BOLD}── VA-API Userspace (Intel / AMD) ─────────────────────────${RESET}"
-  if command -v vainfo &>/dev/null; then
+  # Locate vainfo — it may live at /usr/bin/vainfo or be installed but not in PATH
+  local _vainfo_bin
+  _vainfo_bin=$(command -v vainfo 2>/dev/null \
+    || command -v /usr/bin/vainfo 2>/dev/null \
+    || true)
+  if [[ -n "$_vainfo_bin" ]]; then
     local _va
-    _va=$(vainfo 2>&1 | head -8)
+    _va=$("$_vainfo_bin" 2>&1 | head -8)
     if echo "$_va" | grep -q "vainfo: Supported"; then
       local _cnt
-      _cnt=$(vainfo 2>/dev/null | grep -c "VAProfile" || true)
+      _cnt=$("$_vainfo_bin" 2>/dev/null | grep -c "VAProfile" || true)
       echo -e "  ${GREEN}[OK]${RESET}    vainfo — VA-API available (${_cnt} profiles)"
     else
       echo -e "  ${YELLOW}[WARN]${RESET}  vainfo reported an error:"
       echo -e "         ${DIM}$(echo "$_va" | head -3)${RESET}"
     fi
+  elif dpkg -l vainfo 2>/dev/null | grep -q '^ii' \
+    || dpkg -l libva-utils 2>/dev/null | grep -q '^ii'; then
+    echo -e "  ${YELLOW}[WARN]${RESET}  vainfo package is installed but binary not found in PATH."
+    echo -e "         ${DIM}Try: /usr/bin/vainfo  or reinstall: sudo apt install --reinstall vainfo${RESET}"
   else
-    echo -e "  ${DIM}[INFO]  vainfo not installed. Install for a deeper capability check:${RESET}"
-    echo -e "         ${DIM}sudo apt install vainfo libva-utils${RESET}"
+    echo -e "  ${DIM}[INFO]  vainfo not installed — optional deeper VA-API capability check.${RESET}"
+    echo -e "         ${DIM}Install: sudo apt install vainfo${RESET}"
   fi
   echo ""
 

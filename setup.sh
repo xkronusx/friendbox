@@ -3391,61 +3391,60 @@ _jellyfin_detect_gpu() {
   # Each detected device is emitted as one pipe-separated line:
   #   TYPE|DEVICE_NAME|DRIVER_STATUS|NOTE
   # TYPE: intel | amd | nvidia | unknown
+  #
+  # lspci default output format:
+  #   "00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 630 (rev 02)"
+  #   "01:00.0 3D controller: NVIDIA Corporation GP107M [GeForce GTX 1050 Ti Mobile]"
+  #   "00:08.1 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Radeon 680M"
+  # The class keyword (VGA/3D/Display) appears BEFORE the vendor name.
+  # We match on the class first, then identify vendor from the same line.
 
-  # ── Intel ─────────────────────────────────────────────────────────────────
   if command -v lspci &>/dev/null; then
     while IFS= read -r _line; do
-      local _name _drv
-      _name=$(echo "$_line" | sed 's/^[^:]*:[^:]*: //')
-      if lsmod 2>/dev/null | grep -q '^i915[[:space:]]'; then
-        _drv="i915 loaded"
-      elif lsmod 2>/dev/null | grep -q '^xe[[:space:]]'; then
-        _drv="xe loaded (Arc/Meteor Lake)"
-      else
-        _drv="NO DRIVER — try: sudo modprobe i915"
-      fi
-      echo "intel|${_name}|${_drv}|Intel GPU"
-    done < <(lspci 2>/dev/null \
-      | grep -iE 'Intel.*(VGA|Display|3D|Iris|HD Graphics|UHD Graphics|Arc)' \
-      || true)
-  fi
+      local _name _type _drv
+      # Strip the PCI address prefix and class label to get a clean device name
+      _name=$(echo "$_line" | sed 's/^[0-9a-fA-F.:]*[[:space:]]*//' \
+                            | sed 's/^[^:]*: //')
 
-  # ── AMD ───────────────────────────────────────────────────────────────────
-  if command -v lspci &>/dev/null; then
-    while IFS= read -r _line; do
-      local _name _drv
-      _name=$(echo "$_line" | sed 's/^[^:]*:[^:]*: //')
-      if lsmod 2>/dev/null | grep -q '^amdgpu[[:space:]]'; then
-        _drv="amdgpu loaded"
+      # Identify vendor from the device description
+      if echo "$_line" | grep -qi 'intel'; then
+        _type="intel"
+        if lsmod 2>/dev/null | grep -q '^i915[[:space:]]'; then
+          _drv="i915 loaded"
+        elif lsmod 2>/dev/null | grep -q '^xe[[:space:]]'; then
+          _drv="xe loaded (Arc/Meteor Lake)"
+        else
+          _drv="NO DRIVER — try: sudo modprobe i915"
+        fi
+      elif echo "$_line" | grep -qiE 'AMD|Advanced Micro Devices|ATI'; then
+        _type="amd"
+        if lsmod 2>/dev/null | grep -q '^amdgpu[[:space:]]'; then
+          _drv="amdgpu loaded"
+        else
+          _drv="NO DRIVER — try: sudo modprobe amdgpu"
+        fi
+      elif echo "$_line" | grep -qi 'NVIDIA'; then
+        _type="nvidia"
+        if lsmod 2>/dev/null | grep -q '^nvidia[[:space:]]'; then
+          _drv="nvidia module loaded"
+        else
+          _drv="NO DRIVER — install NVIDIA driver"
+        fi
       else
-        _drv="NO DRIVER — try: sudo modprobe amdgpu"
+        _type="unknown"
+        _drv="unknown"
       fi
-      echo "amd|${_name}|${_drv}|AMD GPU"
-    done < <(lspci 2>/dev/null \
-      | grep -iE '(AMD|Advanced Micro Devices).*(VGA|Display|3D|Radeon|Rembrandt|Cezanne|Renoir)' \
-      || true)
-  fi
 
-  # ── NVIDIA ────────────────────────────────────────────────────────────────
-  if command -v lspci &>/dev/null; then
-    while IFS= read -r _line; do
-      local _name _drv
-      _name=$(echo "$_line" | sed 's/^[^:]*:[^:]*: //')
-      if lsmod 2>/dev/null | grep -q '^nvidia[[:space:]]'; then
-        _drv="nvidia module loaded"
-      else
-        _drv="NO DRIVER — install NVIDIA driver"
-      fi
-      echo "nvidia|${_name}|${_drv}|NVIDIA GPU"
+      echo "${_type}|${_name}|${_drv}|GPU"
     done < <(lspci 2>/dev/null \
-      | grep -i 'NVIDIA.*\(VGA\|Display\|3D\)' \
+      | grep -iE '(VGA compatible controller|3D controller|Display controller)' \
       || true)
   fi
 
   # ── Fallback when pciutils not installed ──────────────────────────────────
   if ! command -v lspci &>/dev/null; then
     if [[ -d /dev/dri ]]; then
-      echo "unknown|/dev/dri present (GPU type unclear)|unknown|install pciutils: sudo apt install pciutils"
+      echo "unknown|/dev/dri present (GPU type unclear)|unknown|install pciutils for GPU details"
     fi
     if [[ -e /dev/nvidia0 ]]; then
       local _drv
@@ -3476,8 +3475,13 @@ _jellyfin_hw_check() {
   done < <(_jellyfin_detect_gpu)
 
   if [[ ${#_gpus[@]} -eq 0 ]]; then
-    echo -e "  ${YELLOW}[WARN]${RESET}  No GPU detected."
-    echo -e "         ${DIM}Install pciutils for better detection: sudo apt install pciutils${RESET}"
+    if ! command -v lspci &>/dev/null; then
+      echo -e "  ${YELLOW}[WARN]${RESET}  No GPU detected — lspci not available."
+      echo -e "         ${DIM}Install pciutils for GPU detection: sudo apt install pciutils${RESET}"
+    else
+      echo -e "  ${YELLOW}[WARN]${RESET}  No display/GPU device found via lspci."
+      echo -e "         ${DIM}This may be a headless or virtual machine with no GPU passthrough.${RESET}"
+    fi
   else
     for _g in "${_gpus[@]}"; do
       local _type _name _drv _note
@@ -3807,32 +3811,45 @@ _jellyfin_hw_setup() {
     fi
     command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1 && _has_nvidia=true
 
-    if [[ "$_has_intel" == "true" ]]; then
-      echo -e "  ${GREEN}[DETECTED]${RESET} Intel GPU — i915/xe driver active, /dev/dri present"
-    elif [[ "$_has_amd" == "true" ]]; then
-      echo -e "  ${GREEN}[DETECTED]${RESET} AMD GPU — amdgpu driver active, /dev/dri present"
-    elif [[ "$_has_dri" == "true" ]]; then
-      echo -e "  ${YELLOW}[DETECTED]${RESET} /dev/dri present — GPU driver module status unclear"
+    # Show hardware found via lspci, then layer driver/runtime status on top
+    local _gpu_line _gpu_shown=false
+    while IFS= read -r _gpu_line; do
+      local _gtype _gname _gdrv
+      IFS='|' read -r _gtype _gname _gdrv _ <<< "$_gpu_line"
+      local _gcol="${CYAN}"
+      [[ "$_gdrv" == *"NO DRIVER"* ]] && _gcol="${YELLOW}"
+      echo -e "  ${_gcol}[${_gtype^^}]${RESET}  ${_gname}"
+      echo -e "         ${DIM}Driver : ${_gdrv}${RESET}"
+      _gpu_shown=true
+      [[ "$_gtype" == "intel" || "$_gtype" == "amd" ]] && _has_dri=true
+    done < <(_jellyfin_detect_gpu)
+
+    if [[ "$_gpu_shown" == "false" ]]; then
+      echo -e "  ${DIM}[INFO]  No GPU detected via lspci / device nodes${RESET}"
+    fi
+    echo ""
+
+    # VA-API readiness (Intel/AMD)
+    if [[ "$_has_dri" == "true" ]]; then
+      echo -e "  ${GREEN}[VA-API]${RESET}  /dev/dri present"
     else
-      echo -e "  ${DIM}[INFO]     /dev/dri not found — Intel/AMD VA-API not available${RESET}"
+      echo -e "  ${DIM}[VA-API]  /dev/dri not found — Intel/AMD hardware acceleration unavailable${RESET}"
     fi
 
+    # NVIDIA readiness
     if [[ "$_has_nvidia" == "true" ]]; then
-      echo -e "  ${GREEN}[DETECTED]${RESET} NVIDIA GPU — nvidia-smi OK"
+      echo -e "  ${GREEN}[NVIDIA]${RESET}  nvidia-smi OK"
       _nctk=false
       { command -v nvidia-ctk &>/dev/null \
         || dpkg -l nvidia-container-toolkit &>/dev/null 2>&1; } && _nctk=true
       if [[ "$_nctk" == "false" ]]; then
-        echo -e "  ${RED}[MISSING]${RESET}  nvidia-container-toolkit — required for Docker GPU passthrough"
+        echo -e "  ${RED}[NVIDIA]${RESET}  nvidia-container-toolkit missing — required for Docker GPU passthrough"
         echo -e "           ${DIM}Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/${RESET}"
       fi
       if ! docker info 2>/dev/null | grep -q "nvidia"; then
-        echo -e "  ${RED}[MISSING]${RESET}  Docker nvidia runtime not registered"
-        echo -e "           ${DIM}Fix: sudo nvidia-ctk runtime configure --runtime=docker${RESET}"
-        echo -e "           ${DIM}     sudo systemctl restart docker${RESET}"
+        echo -e "  ${RED}[NVIDIA]${RESET}  Docker nvidia runtime not registered"
+        echo -e "           ${DIM}Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker${RESET}"
       fi
-    else
-      echo -e "  ${DIM}[INFO]     NVIDIA not detected via nvidia-smi${RESET}"
     fi
 
     _rgid=$(getent group render 2>/dev/null | cut -d: -f3 || true)

@@ -3418,8 +3418,20 @@ _jellyfin_detect_gpu() {
       _name=$(echo "$_line" | sed 's/^[0-9a-fA-F.:]*[[:space:]]*//' \
                             | sed 's/^[^:]*: //')
 
-      # Identify vendor from the device description
-      if echo "$_line" | grep -qi 'intel'; then
+      # Identify vendor from the device description.
+      # virtio-gpu must be checked first — its lspci line may contain "[AMD/ATI]"
+      # as the subsystem vendor, which would otherwise trigger the AMD branch.
+      if echo "$_line" | grep -qi 'virtio'; then
+        _type="virtio"
+        # virtio-gpu uses the virtio_gpu kernel module (present when /dev/dri exists)
+        if lsmod 2>/dev/null | grep -qE '^virtio_gpu[[:space:]]|^virtio-gpu[[:space:]]'; then
+          _drv="virtio_gpu loaded (VM display adapter — no HW transcoding)"
+        elif [[ -d /dev/dri ]]; then
+          _drv="virtio_gpu active (/dev/dri present — no HW transcoding)"
+        else
+          _drv="NO DRIVER — try: sudo modprobe virtio-gpu"
+        fi
+      elif echo "$_line" | grep -qi 'intel'; then
         _type="intel"
         if lsmod 2>/dev/null | grep -q '^i915[[:space:]]'; then
           _drv="i915 loaded"
@@ -3486,6 +3498,7 @@ _jellyfin_hw_check() {
     [[ -n "$_g" ]] && _gpus+=("$_g")
   done < <(_jellyfin_detect_gpu)
 
+  local _virtio_found=false
   if [[ ${#_gpus[@]} -eq 0 ]]; then
     if ! command -v lspci &>/dev/null; then
       echo -e "  ${YELLOW}[WARN]${RESET}  No GPU detected — lspci not available."
@@ -3500,9 +3513,18 @@ _jellyfin_hw_check() {
       IFS='|' read -r _type _name _drv _note <<< "$_g"
       local _col="${CYAN}"
       [[ "$_drv" == *"NO DRIVER"* ]] && _col="${RED}"
+      [[ "$_type" == "virtio" ]] && _col="${YELLOW}"
       echo -e "  ${_col}[${_type^^}]${RESET}  ${_name}"
       echo -e "         ${DIM}Driver : ${_drv}${RESET}"
+      [[ "$_type" == "virtio" ]] && _virtio_found=true
     done
+    if [[ "$_virtio_found" == "true" ]]; then
+      echo ""
+      echo -e "  ${YELLOW}[NOTE]${RESET}  virtio-gpu is a paravirtual display adapter for VMs."
+      echo -e "         ${DIM}It provides /dev/dri nodes but does NOT support hardware video${RESET}"
+      echo -e "         ${DIM}encode/decode (VA-API transcoding). Jellyfin should be configured${RESET}"
+      echo -e "         ${DIM}to use software (CPU) transcoding on this host.${RESET}"
+    fi
   fi
   echo ""
 
@@ -3601,22 +3623,32 @@ _jellyfin_hw_check() {
   echo -e "  ${BOLD}── VA-API Userspace (Intel / AMD) ─────────────────────────${RESET}"
   # Locate vainfo — it may live at /usr/bin/vainfo or be installed but not in PATH
   local _vainfo_bin
-  _vainfo_bin=$(command -v vainfo 2>/dev/null \
-    || command -v /usr/bin/vainfo 2>/dev/null \
-    || true)
+  _vainfo_bin=$(command -v vainfo 2>/dev/null     || { [[ -x /usr/bin/vainfo ]] && echo /usr/bin/vainfo; }     || true)
   if [[ -n "$_vainfo_bin" ]]; then
+    # vainfo requires XDG_RUNTIME_DIR. When running as root under sudo this is
+    # typically unset, causing "XDG_RUNTIME_DIR is invalid or not set" errors
+    # that have nothing to do with VA-API support. Set a temporary dir if needed.
+    local _xdg_tmp=""
+    if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+      _xdg_tmp="/tmp/.va-diag-$$"
+      mkdir -p "$_xdg_tmp"
+      export XDG_RUNTIME_DIR="$_xdg_tmp"
+    fi
     local _va
-    _va=$("$_vainfo_bin" 2>&1 | head -8)
+    _va=$(XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" "$_vainfo_bin" 2>&1 | head -8)
+    [[ -n "$_xdg_tmp" ]] && { rm -rf "$_xdg_tmp"; unset XDG_RUNTIME_DIR; }
     if echo "$_va" | grep -q "vainfo: Supported"; then
       local _cnt
-      _cnt=$("$_vainfo_bin" 2>/dev/null | grep -c "VAProfile" || true)
+      _cnt=$(XDG_RUNTIME_DIR="/tmp/.va-diag-$$" "$_vainfo_bin" 2>/dev/null                | grep -c "VAProfile" || true)
       echo -e "  ${GREEN}[OK]${RESET}    vainfo — VA-API available (${_cnt} profiles)"
+    elif echo "$_va" | grep -qiE "XDG_RUNTIME_DIR|can.t connect to X"; then
+      echo -e "  ${YELLOW}[WARN]${RESET}  vainfo: XDG_RUNTIME_DIR error (display not accessible as root)"
+      echo -e "         ${DIM}VA-API library is present; run vainfo as a normal user to verify.${RESET}"
     else
       echo -e "  ${YELLOW}[WARN]${RESET}  vainfo reported an error:"
       echo -e "         ${DIM}$(echo "$_va" | head -3)${RESET}"
     fi
-  elif dpkg -l vainfo 2>/dev/null | grep -q '^ii' \
-    || dpkg -l libva-utils 2>/dev/null | grep -q '^ii'; then
+  elif dpkg -l vainfo 2>/dev/null | grep -q '^ii'     || dpkg -l libva-utils 2>/dev/null | grep -q '^ii'; then
     echo -e "  ${YELLOW}[WARN]${RESET}  vainfo package is installed but binary not found in PATH."
     echo -e "         ${DIM}Try: /usr/bin/vainfo  or reinstall: sudo apt install --reinstall vainfo${RESET}"
   else
@@ -3843,6 +3875,10 @@ _jellyfin_hw_setup() {
       echo -e "         ${DIM}Driver : ${_gdrv}${RESET}"
       _gpu_shown=true
       [[ "$_gtype" == "intel" || "$_gtype" == "amd" ]] && _has_dri=true
+      if [[ "$_gtype" == "virtio" ]]; then
+        echo -e "  ${YELLOW}[NOTE]${RESET}   virtio-gpu detected — paravirtual adapter, no HW transcoding"
+        echo -e "           ${DIM}VA-API is not available on virtio-gpu. Use option 3 (None).${RESET}"
+      fi
     done < <(_jellyfin_detect_gpu)
 
     if [[ "$_gpu_shown" == "false" ]]; then

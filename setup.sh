@@ -637,6 +637,10 @@ https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_C
     local pkgs=()
     command -v curl     &>/dev/null || pkgs+=(curl)
     command -v htpasswd &>/dev/null || pkgs+=(apache2-utils)
+    # pciutils provides lspci — used by Jellyfin HW accel for GPU detection.
+    # libva-utils provides vainfo — verifies VA-API capability (Intel/AMD HW accel).
+    command -v lspci    &>/dev/null || pkgs+=(pciutils)
+    command -v vainfo   &>/dev/null || pkgs+=(libva-utils)
     [[ ${#pkgs[@]} -gt 0 ]] && apt-get install -y "${pkgs[@]}"
 
     success "Dependencies installed."
@@ -3764,74 +3768,73 @@ PYEOF
 
 _jellyfin_hw_setup() {
   # Interactive wizard to select and apply hardware acceleration for Jellyfin.
-  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
-
-  echo ""
-  echo -e "${BOLD}Jellyfin — Hardware Acceleration${RESET}"
-  echo -e "${DIM}  Offloads video transcoding to a GPU, dramatically reducing CPU"
-  echo -e "  usage for 4K, HDR, and HEVC streams.${RESET}"
-  echo ""
-
-  # ── Quick host-state summary ───────────────────────────────────────────
-  local _has_dri=false _has_nvidia=false _has_intel=false _has_amd=false
-  [[ -d /dev/dri ]] && _has_dri=true
-  if [[ "$_has_dri" == "true" ]]; then
-    lsmod 2>/dev/null | grep -qE '^i915[[:space:]]|^xe[[:space:]]' && _has_intel=true
-    lsmod 2>/dev/null | grep -q '^amdgpu[[:space:]]'               && _has_amd=true
-  fi
-  if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
-    _has_nvidia=true
-  fi
-
-  # Summarise what was found and flag any missing prerequisites
-  if [[ "$_has_intel" == "true" ]]; then
-    echo -e "  ${GREEN}[DETECTED]${RESET} Intel GPU — i915/xe driver active, /dev/dri present"
-  elif [[ "$_has_amd" == "true" ]]; then
-    echo -e "  ${GREEN}[DETECTED]${RESET} AMD GPU — amdgpu driver active, /dev/dri present"
-  elif [[ "$_has_dri" == "true" ]]; then
-    echo -e "  ${YELLOW}[DETECTED]${RESET} /dev/dri present — GPU driver module status unclear"
-  else
-    echo -e "  ${DIM}[INFO]     /dev/dri not found — Intel/AMD VA-API not available${RESET}"
-  fi
-
-  if [[ "$_has_nvidia" == "true" ]]; then
-    echo -e "  ${GREEN}[DETECTED]${RESET} NVIDIA GPU — nvidia-smi OK"
-    local _nctk=false
-    { command -v nvidia-ctk &>/dev/null \
-      || dpkg -l nvidia-container-toolkit &>/dev/null 2>&1; } && _nctk=true
-    if [[ "$_nctk" == "false" ]]; then
-      echo -e "  ${RED}[MISSING]${RESET}  nvidia-container-toolkit — required for Docker GPU passthrough"
-      echo -e "           ${DIM}Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/${RESET}"
-    fi
-    if ! docker info 2>/dev/null | grep -q "nvidia"; then
-      echo -e "  ${RED}[MISSING]${RESET}  Docker nvidia runtime not registered"
-      echo -e "           ${DIM}Fix: sudo nvidia-ctk runtime configure --runtime=docker${RESET}"
-      echo -e "           ${DIM}     sudo systemctl restart docker${RESET}"
-    fi
-  else
-    echo -e "  ${DIM}[INFO]     NVIDIA not detected via nvidia-smi${RESET}"
-  fi
-
-  # Warn if /dev/dri is present but render group is missing
-  local _rgid
-  _rgid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
-  if [[ "$_has_dri" == "true" && -z "$_rgid" ]]; then
-    echo -e "  ${YELLOW}[WARN]${RESET}    render group not found — VA-API access may fail"
-    echo -e "           ${DIM}Auto-fix: sudo groupadd -r render${RESET}"
-  fi
-  echo ""
-
-  local _cur="${JELLYFIN_HW_ACCEL:-none}"
-  echo -e "  Current : ${BOLD}${_cur}${RESET}"
-  echo ""
-  echo "  1) VA-API  — Intel iGPU (Quick Sync) / AMD  [needs /dev/dri]"
-  echo "  2) NVENC   — NVIDIA GPU                     [needs nvidia-container-toolkit]"
-  echo "  3) None    — Software transcoding            [no GPU required]"
-  echo "  4) Run full diagnostic"
-  echo "  q) Cancel"
-  echo ""
+  # The detection summary and menu are printed at the top of every loop iteration
+  # so that returning from the full diagnostic (option 4) always shows the full menu.
+  local _has_dri=false _has_nvidia=false _has_intel=false _has_amd=false _rgid _nctk _cur _yn _sel
 
   while true; do
+    clear
+    echo ""
+    echo -e "${BOLD}Jellyfin — Hardware Acceleration${RESET}"
+    echo -e "${DIM}  Offloads video transcoding to a GPU, dramatically reducing CPU"
+    echo -e "  usage for 4K, HDR, and HEVC streams.${RESET}"
+    echo ""
+
+    # Re-probe live state on every iteration so display stays accurate
+    _has_dri=false; _has_nvidia=false; _has_intel=false; _has_amd=false
+    [[ -d /dev/dri ]] && _has_dri=true
+    if [[ "$_has_dri" == "true" ]]; then
+      lsmod 2>/dev/null | grep -qE '^i915[[:space:]]|^xe[[:space:]]' && _has_intel=true
+      lsmod 2>/dev/null | grep -q '^amdgpu[[:space:]]'               && _has_amd=true
+    fi
+    command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1 && _has_nvidia=true
+
+    if [[ "$_has_intel" == "true" ]]; then
+      echo -e "  ${GREEN}[DETECTED]${RESET} Intel GPU — i915/xe driver active, /dev/dri present"
+    elif [[ "$_has_amd" == "true" ]]; then
+      echo -e "  ${GREEN}[DETECTED]${RESET} AMD GPU — amdgpu driver active, /dev/dri present"
+    elif [[ "$_has_dri" == "true" ]]; then
+      echo -e "  ${YELLOW}[DETECTED]${RESET} /dev/dri present — GPU driver module status unclear"
+    else
+      echo -e "  ${DIM}[INFO]     /dev/dri not found — Intel/AMD VA-API not available${RESET}"
+    fi
+
+    if [[ "$_has_nvidia" == "true" ]]; then
+      echo -e "  ${GREEN}[DETECTED]${RESET} NVIDIA GPU — nvidia-smi OK"
+      _nctk=false
+      { command -v nvidia-ctk &>/dev/null \
+        || dpkg -l nvidia-container-toolkit &>/dev/null 2>&1; } && _nctk=true
+      if [[ "$_nctk" == "false" ]]; then
+        echo -e "  ${RED}[MISSING]${RESET}  nvidia-container-toolkit — required for Docker GPU passthrough"
+        echo -e "           ${DIM}Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/${RESET}"
+      fi
+      if ! docker info 2>/dev/null | grep -q "nvidia"; then
+        echo -e "  ${RED}[MISSING]${RESET}  Docker nvidia runtime not registered"
+        echo -e "           ${DIM}Fix: sudo nvidia-ctk runtime configure --runtime=docker${RESET}"
+        echo -e "           ${DIM}     sudo systemctl restart docker${RESET}"
+      fi
+    else
+      echo -e "  ${DIM}[INFO]     NVIDIA not detected via nvidia-smi${RESET}"
+    fi
+
+    _rgid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
+    if [[ "$_has_dri" == "true" && -z "$_rgid" ]]; then
+      echo -e "  ${YELLOW}[WARN]${RESET}    render group not found — VA-API access may fail"
+      echo -e "           ${DIM}Fix: sudo groupadd -r render${RESET}"
+    fi
+
+    [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+    _cur="${JELLYFIN_HW_ACCEL:-none}"
+    echo ""
+    echo -e "  Current : ${BOLD}${_cur}${RESET}"
+    echo ""
+    echo "  1) VA-API  — Intel iGPU (Quick Sync) / AMD  [needs /dev/dri]"
+    echo "  2) NVENC   — NVIDIA GPU                     [needs nvidia-container-toolkit]"
+    echo "  3) None    — Software transcoding            [no GPU required]"
+    echo "  4) Run full diagnostic"
+    echo "  q) Cancel"
+    echo ""
+
     read -rp "  Choice: " _sel
     case "$_sel" in
       1)
@@ -3842,7 +3845,7 @@ _jellyfin_hw_setup() {
           warn "start until the GPU driver is installed and /dev/dri appears."
           echo ""
           read -rp "  Apply VA-API patch anyway? [y/N] " _yn
-          [[ "${_yn}" =~ ^[Yy]$ ]] || { info "Cancelled."; return 0; }
+          [[ "${_yn}" =~ ^[Yy]$ ]] || continue
         fi
         _jellyfin_hw_apply vaapi || return 1
         echo ""
@@ -3857,7 +3860,7 @@ _jellyfin_hw_setup() {
           echo ""
           warn "NVIDIA GPU not confirmed via nvidia-smi."
           read -rp "  Apply NVENC patch anyway? [y/N] " _yn
-          [[ "${_yn}" =~ ^[Yy]$ ]] || { info "Cancelled."; return 0; }
+          [[ "${_yn}" =~ ^[Yy]$ ]] || continue
         fi
         _jellyfin_hw_apply nvenc || return 1
         echo ""
@@ -3870,11 +3873,9 @@ _jellyfin_hw_setup() {
         _jellyfin_hw_apply none || return 1
         return 0 ;;
       4)
-        _jellyfin_hw_check
-        echo -e "  ${DIM}Press Enter to return to the setup menu...${RESET}"
-        read -r _dummy ;;
+        _jellyfin_hw_check ;;
       q|Q) info "Cancelled."; return 0 ;;
-      *) warn "Invalid choice." ;;
+      *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
 }

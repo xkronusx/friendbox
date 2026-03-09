@@ -1603,7 +1603,10 @@ ping: {}
 log:
   level: INFO
 
-accessLog: {}
+accessLog:
+  filters:
+    statusCodes:
+      - "400-599"
 
 entryPoints:
   web:

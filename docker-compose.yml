@@ -121,6 +121,10 @@ services:
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
     logging:
       driver: json-file
       options:
@@ -169,6 +173,10 @@ services:
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
     logging:
       driver: json-file
       options:
@@ -463,6 +471,10 @@ services:
     stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
     logging:
       driver: json-file
       options:
@@ -505,6 +517,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
     networks:
       - medianet
     cap_add:
@@ -556,6 +572,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
     networks:
       - medianet
     cap_add:

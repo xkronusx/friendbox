@@ -501,6 +501,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 ## 🔒 Security Notes
 
 - `acme.json` is always `root:root 600` — required for Traefik v3 to write cert renewals
+- `.env` is `chmod 600` — contains VPN credentials, DNS provider API keys, and hashed dashboard passwords. Do not share or commit it
 - `.dns_config` is `chmod 600` — contains DNS provider API keys
 - The Traefik HTTPS dashboard requires bcrypt Basic Auth credentials (option 4 → option 1)
 - The Traefik API at `:8080` has no authentication — it is accessible from any machine on your LAN. Do not forward port 8080 through your router to the internet

@@ -103,9 +103,10 @@ _fix_install_dir_ownership() {
     chmod 600 "$acme"
   fi
 
-  # .dns_config contains API keys — keep permissions tight
+  # .env and .dns_config contain API keys and credentials — keep permissions tight
   local dns_cfg="${INSTALL_DIR}/.dns_config"
   [[ -f "$dns_cfg" ]] && chmod 600 "$dns_cfg"
+  [[ -f "$ENV_FILE" ]] && chmod 600 "$ENV_FILE"
 }
 
 ensure_media_root() {
@@ -1411,7 +1412,10 @@ configure_env() {
   }
 
   # Seed the file if it doesn't exist yet
-  [[ -f "$ENV_FILE" ]] || touch "$ENV_FILE"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    touch "$ENV_FILE"
+    chmod 600 "$ENV_FILE"   # contains API keys, VPN creds, hashed passwords
+  fi
 
   _env_set PUID         "${PUID}"
   _env_set PGID         "${PGID}"
@@ -1649,6 +1653,7 @@ http:
         customFrameOptionsValue: "SAMEORIGIN"
         contentTypeNosniff: true
         referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
         customResponseHeaders:
           X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
 HDEOF
@@ -2931,6 +2936,9 @@ _creds_configure_mumble() {
   read -srp "Mumble superuser password [${MUMBLE_SUPERUSER_PASSWORD:-changeme}]: " input
   MUMBLE_SUPERUSER_PASSWORD="${input:-${MUMBLE_SUPERUSER_PASSWORD:-changeme}}"
   echo ""
+  if [[ "$MUMBLE_SUPERUSER_PASSWORD" == "changeme" ]]; then
+    warn "Password is still set to 'changeme' — change this before exposing Mumble to the internet."
+  fi
   sed -i '/^MUMBLE_SUPERUSER_PASSWORD=/d' "$ENV_FILE" 2>/dev/null || true
   echo "MUMBLE_SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD}" >> "$ENV_FILE"
   success "Mumble password saved."
@@ -4143,6 +4151,7 @@ http:
         customFrameOptionsValue: "SAMEORIGIN"
         contentTypeNosniff: true
         referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
         customResponseHeaders:
           X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
 HDEOF

@@ -264,9 +264,9 @@ sudo friendbox  →  option 10   (Show container status)
 sudo friendbox  →  option 11   (View service URLs)
 ```
 
-Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses. If TeamSpeak 6 is selected, the admin privilege token is surfaced here automatically if it has been printed to the container logs.
+Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses. The TeamSpeak 6 admin privilege token is surfaced automatically during Full Install (option 1) — see the troubleshooting section if it didn't appear.
 
-> **Pre-flight warnings:** Full Install (option 1) runs a pre-flight check before starting containers. If your domain, ACME email, or ACME provider look incomplete, it will list the issues and ask whether to continue. These are warnings — you can proceed and fix them afterward via option 4. Port conflicts are also checked automatically during Full Install before the initial `compose up`.
+> **Pre-flight warnings:** Full Install (option 1) runs a pre-flight check before starting containers. If your domain, ACME email, or ACME provider look incomplete, it will list the issues and ask whether to continue. These are warnings — you can proceed and fix them afterward via option 4. Port conflicts are also checked automatically before any `compose up`.
 
 **First-time login reference:**
 
@@ -347,7 +347,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 8 | Provision / fix directory ownership | Creates config and media dirs, fixes permissions. |
 | 9 | Sync latest files from GitHub | Re-downloads compose file and setup script. Validates both before applying. |
 | 10 | Show container status | Runs `docker compose ps` for selected containers. |
-| 11 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). Also surfaces the TeamSpeak 6 admin token if available. |
+| 11 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
 | 12 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
 | 13 | Update stack | Sync files from GitHub, pull latest images, restart. Reports which images actually changed versus already current. |
 | 14 | View logs | Follow live logs or dump last 200 lines for all containers or a specific one. |
@@ -527,7 +527,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Run live routing diagnostics: option 4 → option 6
 - Check all routers are registered and backends show UP
 - Confirm `DOMAIN` in `.env` has no trailing whitespace — the diagnostics check will flag this
-- Restart containers to apply latest labels: `sudo friendbox` → option 12 → option 1 (redeploy all)
+- Restart containers to apply latest labels: `docker compose down && docker compose up -d`
 
 **Subdomain accessible via IP:port but not via HTTPS**
 - Confirm container is on `medianet`: `docker inspect <container> --format '{{json .NetworkSettings.Networks}}'`

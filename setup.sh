@@ -1350,8 +1350,10 @@ configure_env() {
 
   read -rp "Your domain (e.g. example.com) [${DOMAIN:-}]: " input
   DOMAIN="${input:-${DOMAIN:-example.com}}"
+  DOMAIN="${DOMAIN//[[:space:]]/}"    # strip any accidental whitespace
   read -rp "ACME/Let's Encrypt email [${ACME_EMAIL:-}]: " input
   ACME_EMAIL="${input:-${ACME_EMAIL:-admin@example.com}}"
+  ACME_EMAIL="${ACME_EMAIL//[[:space:]]/}"  # strip any accidental whitespace
   read -rp "Config root path [${CONFIG_ROOT:-/opt/friendbox/config}]: " input
   CONFIG_ROOT="${input:-${CONFIG_ROOT:-/opt/friendbox/config}}"
   read -rp "Media root path [${MEDIA_ROOT:-/mnt/media}]: " input
@@ -2528,10 +2530,12 @@ _traefik_set_domain() {
   echo -n "Domain (e.g. example.com) [${DOMAIN:-}]: "
   read -r input
   local new_domain="${input:-${DOMAIN:-}}"
+  new_domain="${new_domain//[[:space:]]/}"  # strip any accidental whitespace
   [[ -z "$new_domain" ]] && { warn "Domain cannot be empty."; return 1; }
   echo -n "ACME email [${ACME_EMAIL:-}]: "
   read -r input
   local new_email="${input:-${ACME_EMAIL:-}}"
+  new_email="${new_email//[[:space:]]/}"  # strip any accidental whitespace
   [[ -z "$new_email" ]] && { warn "ACME email cannot be empty."; return 1; }
 
   sed -i '/^DOMAIN=/d;/^ACME_EMAIL=/d' "$ENV_FILE" 2>/dev/null || true

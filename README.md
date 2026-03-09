@@ -566,7 +566,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 **VPN container Traefik backend shows DOWN**
 - The binhex VPN images use `LAN_NETWORK` to build iptables rules for traffic allowed through the VPN firewall. If the `medianet` Docker bridge subnet is not included in `LAN_NETWORK`, Traefik's reverse proxy traffic to the container is silently dropped.
 - Fix: option 5 → VPN credentials → ensure `LAN_NETWORK` includes the Docker bridge subnet alongside your home subnet. The correct subnet is shown as the default when you run the VPN credentials prompt — it is detected automatically from the live `medianet` network.
-- After saving, redeploy the VPN container: option 12 → option 2
+- After saving, redeploy the VPN container: option 12 → option 2 → select your VPN container
 
 **TeamSpeak 6 WebAuth (port 10080) not accessible**
 - Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → select TeamSpeak 6

@@ -3326,21 +3326,21 @@ check_port_conflicts() {
   declare -A _PM=(
     [traefik]="80/tcp:HTTP 443/tcp:HTTPS 8080/tcp:Traefik-dashboard"
     [portainer]="9000/tcp:Portainer"
-    [plex]="32400/tcp:Plex"
+    [plex]="32400/tcp:Plex 32410/udp:Plex-GDM1 32412/udp:Plex-GDM2 32413/udp:Plex-GDM3 32414/udp:Plex-GDM4"
     [jellyfin]="8096/tcp:Jellyfin"
     [sonarr]="8989/tcp:Sonarr"
     [radarr]="7878/tcp:Radarr"
     [prowlarr]="9696/tcp:Prowlarr"
     [bazarr]="6767/tcp:Bazarr"
-    [qbittorrent]="8082/tcp:qBittorrent"
+    [qbittorrent]="8082/tcp:qBittorrent 6881/tcp:qBT-peer 6881/udp:qBT-peer-UDP"
     [qbittorrentvpn]="8181/tcp:qBittorrentVPN"
-    [delugevpn]="8112/tcp:DelugeVPN"
+    [delugevpn]="8112/tcp:DelugeVPN 58846/tcp:Deluge-daemon"
     [nzbget]="6789/tcp:NZBGet"
     [overseerr]="5055/tcp:Overseerr"
     [ombi]="3579/tcp:Ombi"
     [jellyseerr]="5056/tcp:Jellyseerr"
-    [ampmc]="8085/tcp:AMP"
-    [netbootxyz]="3000/tcp:NetbootXYZ"
+    [ampmc]="8085/tcp:AMP 25565/tcp:Minecraft"
+    [netbootxyz]="69/udp:TFTP 3000/tcp:NetbootXYZ 8083/tcp:NetbootXYZ-assets"
     [mumble]="64738/tcp:Mumble-TCP 64738/udp:Mumble-UDP"
     [teamspeak6]="9987/udp:TS6-voice 10011/tcp:TS6-query 30033/tcp:TS6-filetransfer"
   )
@@ -3761,7 +3761,7 @@ _jellyfin_hw_check() {
   fi
   echo ""
   echo -e "  ${DIM}To configure: option 5 → Jellyfin hardware acceleration${RESET}"
-  echo -e "  ${DIM}To apply:     option 12 → redeploy single container → jellyfin${RESET}"
+  echo -e "  ${DIM}To apply:     option 12 → redeploy single container → select Jellyfin${RESET}"
   echo ""
 }
 
@@ -4706,15 +4706,19 @@ CACHE_FILE="/tmp/.friendbox_dns_ip"
 LAST_IP=$(cat "$CACHE_FILE" 2>/dev/null || true)
 [[ "$IP" == "$LAST_IP" ]] && exit 0
 
+_ok=false
 case "$DNS_PROVIDER" in
   duckdns)
-    curl -fsSL "https://www.duckdns.org/update?domains=${DNS_DUCKDNS_SUBDOMAIN}&token=${DNS_DUCKDNS_TOKEN}&ip=${IP}" >/dev/null 2>&1
+    _result=$(curl -fsSL --max-time 10 \
+      "https://www.duckdns.org/update?domains=${DNS_DUCKDNS_SUBDOMAIN}&token=${DNS_DUCKDNS_TOKEN}&ip=${IP}" 2>/dev/null)
+    [[ "$_result" == "OK" ]] && _ok=true
     ;;
   cloudflare|godaddy|namecheap)
-    /usr/local/bin/friendbox --dns-update >/dev/null 2>&1 || true
+    /usr/local/bin/friendbox --dns-update >/dev/null 2>&1 && _ok=true || true
     ;;
 esac
-echo "$IP" > "$CACHE_FILE"
+# Only cache the IP on confirmed success — a failed update must retry next run
+"$_ok" && echo "$IP" > "$CACHE_FILE"
 CRONEOF
   chmod +x "$cron_script"
   local cron_file="/etc/cron.d/friendbox-dns"

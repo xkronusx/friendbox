@@ -1615,6 +1615,11 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+    http3: {}
+    forwardedHeaders:
+      trustedIPs:
+        - "127.0.0.1/32"
+        - "172.16.0.0/12"
 ${tls_block:+${tls_block}
 }
   traefik:

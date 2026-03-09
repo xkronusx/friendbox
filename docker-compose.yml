@@ -34,6 +34,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp"    # HTTP/3 (QUIC)
       - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -133,6 +134,10 @@ services:
       - TZ=${TZ}
       - VERSION=docker
       - PLEX_CLAIM=${PLEX_CLAIM:-}
+      # ADVERTISE_IP tells Plex its public address so remote clients connect
+      # directly via Traefik instead of falling back to Plex relay servers.
+      # Relay is throttled (~2 Mbps); direct is full bandwidth.
+      - ADVERTISE_IP=https://plex.${DOMAIN}:443
     volumes:
       - ${CONFIG_ROOT}/plex:/config
       - ${MEDIA_ROOT}/tv:/data/media/tv
@@ -181,6 +186,10 @@ services:
       - ${MEDIA_ROOT}/tv:/data/media/tv
       - ${MEDIA_ROOT}/movies:/data/media/movies
       - ${MEDIA_ROOT}/downloads:/data/downloads
+    # /cache/transcodes is ephemeral — tmpfs keeps transcode off disk without
+    # losing the persistent thumbnail/metadata cache in /cache itself.
+    tmpfs:
+      - /cache/transcodes:size=4g,mode=1777
     ports:
       - "8096:8096"
       # Ports 7359/udp (client discovery) and 1900/udp (DLNA/SSDP) are omitted.

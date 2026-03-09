@@ -277,8 +277,8 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Portainer | `https://portainer.yourdomain.com` | Create admin account on first visit |
 | Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths to `/data/media/movies`, `/data/media/tv` |
 | Jellyfin | `https://jellyfin.yourdomain.com` | Create admin account, set library paths to `/data/media/tv`, `/data/media/movies` |
-| Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/data/media/tv`, connect Prowlarr + download client |
-| Radarr | `https://radarr.yourdomain.com` | Add root folder `/data/media/movies`, connect Prowlarr + download client |
+| Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/data/media/tv`, connect Prowlarr + download client. **Enable hardlinks:** Settings → Media Management → tick *Use Hardlinks instead of Copy* |
+| Radarr | `https://radarr.yourdomain.com` | Add root folder `/data/media/movies`, connect Prowlarr + download client. **Enable hardlinks:** Settings → Media Management → tick *Use Hardlinks instead of Copy* |
 | Prowlarr | `https://prowlarr.yourdomain.com` | Add indexers, sync to Sonarr/Radarr |
 | Bazarr | `https://bazarr.yourdomain.com` | Connect Sonarr + Radarr, configure subtitle providers |
 | qBittorrent | `https://qbt.yourdomain.com` (`http://IP:8082` direct) | Default: `admin` / `adminadmin` — **change immediately** |
@@ -319,10 +319,11 @@ All containers share the `medianet` Docker bridge and communicate by container n
 
 **Recommended connection order:**
 1. Prowlarr → add your indexers
-2. Sonarr → Settings → Download Clients → add qBittorrent at `http://qbittorrent:8080`
+2. Sonarr → Settings → Download Clients → add qBittorrent at `http://qbittorrent:8080`, set download category path to `/data/downloads`
 3. Sonarr → Settings → Apps → connect Prowlarr at `http://prowlarr:9696`
-4. Radarr → repeat the same steps as Sonarr
-5. Overseerr / Jellyseerr → connect to Plex or Jellyfin, then Sonarr and Radarr
+4. Sonarr → Settings → Media Management → tick **Use Hardlinks instead of Copy** (prevents file duplication on import)
+5. Radarr → repeat the same steps as Sonarr
+6. Overseerr / Jellyseerr → connect to Plex or Jellyfin, then Sonarr and Radarr
 
 ---
 

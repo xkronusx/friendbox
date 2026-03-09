@@ -275,10 +275,10 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Traefik dashboard | `http://YOUR_SERVER_IP:8080/dashboard/` or `http://localhost:8080/dashboard/` | No auth — LAN accessible. Do not expose port 8080 to the internet. |
 | Traefik (HTTPS) | `https://traefik.yourdomain.com` | Credentials set in option 4 → option 1 |
 | Portainer | `https://portainer.yourdomain.com` | Create admin account on first visit |
-| Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths to `/movies`, `/tv` |
-| Jellyfin | `https://jellyfin.yourdomain.com` | Create admin account, set library paths to `/data/tv`, `/data/movies` |
-| Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/tv`, connect Prowlarr + download client |
-| Radarr | `https://radarr.yourdomain.com` | Add root folder `/movies`, connect Prowlarr + download client |
+| Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths to `/data/media/movies`, `/data/media/tv` |
+| Jellyfin | `https://jellyfin.yourdomain.com` | Create admin account, set library paths to `/data/media/tv`, `/data/media/movies` |
+| Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/data/media/tv`, connect Prowlarr + download client |
+| Radarr | `https://radarr.yourdomain.com` | Add root folder `/data/media/movies`, connect Prowlarr + download client |
 | Prowlarr | `https://prowlarr.yourdomain.com` | Add indexers, sync to Sonarr/Radarr |
 | Bazarr | `https://bazarr.yourdomain.com` | Connect Sonarr + Radarr, configure subtitle providers |
 | qBittorrent | `https://qbt.yourdomain.com` (`http://IP:8082` direct) | Default: `admin` / `adminadmin` — **change immediately** |

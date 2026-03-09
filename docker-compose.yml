@@ -108,7 +108,7 @@ services:
       - "traefik.http.routers.portainer.entrypoints=websecure"
       - "traefik.http.routers.portainer.tls=true"
       - "traefik.http.routers.portainer.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.portainer.middlewares=secHeaders@file"
+      - "traefik.http.routers.portainer.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
   # ── Plex — media playback ───────────────────────────────────────────────────
@@ -135,9 +135,10 @@ services:
       - PLEX_CLAIM=${PLEX_CLAIM:-}
     volumes:
       - ${CONFIG_ROOT}/plex:/config
-      - ${CONFIG_ROOT}/plex-transcode:/transcode
-      - ${MEDIA_ROOT}/tv:/tv
-      - ${MEDIA_ROOT}/movies:/movies
+      - ${MEDIA_ROOT}/tv:/data/media/tv
+      - ${MEDIA_ROOT}/movies:/data/media/movies
+    tmpfs:
+      - /transcode:size=4g,mode=1777
     ports:
       - "32400:32400"
       - "32410:32410/udp"
@@ -177,8 +178,9 @@ services:
     volumes:
       - ${CONFIG_ROOT}/jellyfin:/config
       - ${CONFIG_ROOT}/jellyfin-cache:/cache
-      - ${MEDIA_ROOT}/tv:/data/tv
-      - ${MEDIA_ROOT}/movies:/data/movies
+      - ${MEDIA_ROOT}/tv:/data/media/tv
+      - ${MEDIA_ROOT}/movies:/data/media/movies
+      - ${MEDIA_ROOT}/downloads:/data/downloads
     ports:
       - "8096:8096"
       # Ports 7359/udp (client discovery) and 1900/udp (DLNA/SSDP) are omitted.
@@ -220,8 +222,8 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/sonarr:/config
-      - ${MEDIA_ROOT}/tv:/tv
-      - ${MEDIA_ROOT}/downloads:/downloads
+      - ${MEDIA_ROOT}/tv:/data/media/tv
+      - ${MEDIA_ROOT}/downloads:/data/downloads
     ports:
       - "8989:8989"
     labels:
@@ -231,7 +233,7 @@ services:
       - "traefik.http.routers.sonarr.entrypoints=websecure"
       - "traefik.http.routers.sonarr.tls=true"
       - "traefik.http.routers.sonarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.sonarr.middlewares=secHeaders@file"
+      - "traefik.http.routers.sonarr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
 
   # ── Radarr — movie management ───────────────────────────────────────────────
@@ -256,8 +258,8 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/radarr:/config
-      - ${MEDIA_ROOT}/movies:/movies
-      - ${MEDIA_ROOT}/downloads:/downloads
+      - ${MEDIA_ROOT}/movies:/data/media/movies
+      - ${MEDIA_ROOT}/downloads:/data/downloads
     ports:
       - "7878:7878"
     labels:
@@ -267,7 +269,7 @@ services:
       - "traefik.http.routers.radarr.entrypoints=websecure"
       - "traefik.http.routers.radarr.tls=true"
       - "traefik.http.routers.radarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.radarr.middlewares=secHeaders@file"
+      - "traefik.http.routers.radarr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.radarr.loadbalancer.server.port=7878"
 
   # ── Prowlarr — indexer management (nightly) ─────────────────────────────────
@@ -301,7 +303,7 @@ services:
       - "traefik.http.routers.prowlarr.entrypoints=websecure"
       - "traefik.http.routers.prowlarr.tls=true"
       - "traefik.http.routers.prowlarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.prowlarr.middlewares=secHeaders@file"
+      - "traefik.http.routers.prowlarr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.prowlarr.loadbalancer.server.port=9696"
 
   # ── Bazarr — subtitle management ────────────────────────────────────────────
@@ -326,8 +328,8 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/bazarr:/config
-      - ${MEDIA_ROOT}/movies:/movies
-      - ${MEDIA_ROOT}/tv:/tv
+      - ${MEDIA_ROOT}/movies:/data/media/movies
+      - ${MEDIA_ROOT}/tv:/data/media/tv
     ports:
       - "6767:6767"
     labels:
@@ -337,7 +339,7 @@ services:
       - "traefik.http.routers.bazarr.entrypoints=websecure"
       - "traefik.http.routers.bazarr.tls=true"
       - "traefik.http.routers.bazarr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.bazarr.middlewares=secHeaders@file"
+      - "traefik.http.routers.bazarr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
 
   # ── Ombi — media request manager (v3) ──────────────────────────────────────
@@ -371,7 +373,7 @@ services:
       - "traefik.http.routers.ombi.entrypoints=websecure"
       - "traefik.http.routers.ombi.tls=true"
       - "traefik.http.routers.ombi.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.ombi.middlewares=secHeaders@file"
+      - "traefik.http.routers.ombi.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.ombi.loadbalancer.server.port=3579"
 
   # ── Overseerr — media request & discovery manager ───────────────────────────
@@ -405,7 +407,7 @@ services:
       - "traefik.http.routers.overseerr.entrypoints=websecure"
       - "traefik.http.routers.overseerr.tls=true"
       - "traefik.http.routers.overseerr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.overseerr.middlewares=secHeaders@file"
+      - "traefik.http.routers.overseerr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.overseerr.loadbalancer.server.port=5055"
 
   # ── NZBGet — Usenet download client ────────────────────────────────────────
@@ -430,7 +432,7 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/nzbget:/config
-      - ${MEDIA_ROOT}/downloads:/downloads
+      - ${MEDIA_ROOT}/downloads:/data/downloads
     ports:
       - "6789:6789"
     labels:
@@ -440,7 +442,7 @@ services:
       - "traefik.http.routers.nzbget.entrypoints=websecure"
       - "traefik.http.routers.nzbget.tls=true"
       - "traefik.http.routers.nzbget.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.nzbget.middlewares=secHeaders@file"
+      - "traefik.http.routers.nzbget.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.nzbget.loadbalancer.server.port=6789"
 
   # ── qBittorrent — torrent client (no VPN) ──────────────────────────────────
@@ -467,7 +469,7 @@ services:
       - TORRENTING_PORT=6881
     volumes:
       - ${CONFIG_ROOT}/qbittorrent:/config
-      - ${MEDIA_ROOT}/downloads:/downloads
+      - ${MEDIA_ROOT}/downloads:/data/downloads
     ports:
       - "8082:8080"
       - "6881:6881"
@@ -479,7 +481,7 @@ services:
       - "traefik.http.routers.qbt.entrypoints=websecure"
       - "traefik.http.routers.qbt.tls=true"
       - "traefik.http.routers.qbt.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.qbt.middlewares=secHeaders@file"
+      - "traefik.http.routers.qbt.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.qbt.loadbalancer.server.port=8080"
 
   # ── qBittorrentVPN — torrent client behind VPN ─────────────────────────────
@@ -519,7 +521,7 @@ services:
       - UMASK=002
     volumes:
       - ${CONFIG_ROOT}/qbittorrentvpn:/config
-      - ${MEDIA_ROOT}/downloads:/downloads
+      - ${MEDIA_ROOT}/downloads:/data/downloads
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "8181:8080"
@@ -530,7 +532,7 @@ services:
       - "traefik.http.routers.qbtvpn.entrypoints=websecure"
       - "traefik.http.routers.qbtvpn.tls=true"
       - "traefik.http.routers.qbtvpn.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.qbtvpn.middlewares=secHeaders@file"
+      - "traefik.http.routers.qbtvpn.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.qbtvpn.loadbalancer.server.port=8080"
 
   # ── DelugeVPN — Deluge torrent client behind VPN ───────────────────────────
@@ -570,8 +572,8 @@ services:
       - UMASK=002
     volumes:
       - ${CONFIG_ROOT}/delugevpn:/config
-      - ${MEDIA_ROOT}/downloads:/downloads
-      - ${MEDIA_ROOT}/downloads/incomplete:/data/incomplete
+      - ${MEDIA_ROOT}/downloads:/data/downloads
+      - ${MEDIA_ROOT}/downloads/incomplete:/data/downloads/incomplete
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "8112:8112"
@@ -583,7 +585,7 @@ services:
       - "traefik.http.routers.delugevpn.entrypoints=websecure"
       - "traefik.http.routers.delugevpn.tls=true"
       - "traefik.http.routers.delugevpn.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.delugevpn.middlewares=secHeaders@file"
+      - "traefik.http.routers.delugevpn.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.delugevpn.loadbalancer.server.port=8112"
 
   # ── NetbootXYZ — network boot server ───────────────────────────────────────
@@ -620,7 +622,7 @@ services:
       - "traefik.http.routers.netbootxyz.entrypoints=websecure"
       - "traefik.http.routers.netbootxyz.tls=true"
       - "traefik.http.routers.netbootxyz.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.netbootxyz.middlewares=secHeaders@file"
+      - "traefik.http.routers.netbootxyz.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.netbootxyz.loadbalancer.server.port=3000"
 
   # ── TeamSpeak 6 — voice communication server ────────────────────────────────
@@ -717,7 +719,7 @@ services:
       - "traefik.http.routers.jellyseerr.entrypoints=websecure"
       - "traefik.http.routers.jellyseerr.tls=true"
       - "traefik.http.routers.jellyseerr.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.jellyseerr.middlewares=secHeaders@file"
+      - "traefik.http.routers.jellyseerr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
 
   # ── AMP (AMP-MC) — game server management panel ────────────────────────────
@@ -752,5 +754,5 @@ services:
       - "traefik.http.routers.ampmc.entrypoints=websecure"
       - "traefik.http.routers.ampmc.tls=true"
       - "traefik.http.routers.ampmc.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
-      - "traefik.http.routers.ampmc.middlewares=secHeaders@file"
+      - "traefik.http.routers.ampmc.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.ampmc.loadbalancer.server.port=8080"

@@ -1656,6 +1656,10 @@ http:
         permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
         customResponseHeaders:
           X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
+    # Gzip/brotli compression — applied to arr apps, request managers, and admin UIs.
+    # Not applied to Plex or Jellyfin (they manage their own compression internally).
+    compress:
+      compress: {}
 HDEOF
   fi
   _own "$dynamic_dir"
@@ -4154,6 +4158,10 @@ http:
         permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
         customResponseHeaders:
           X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
+    # Gzip/brotli compression — applied to arr apps, request managers, and admin UIs.
+    # Not applied to Plex or Jellyfin (they manage their own compression internally).
+    compress:
+      compress: {}
 HDEOF
     success "  ${_headers}  (written)"
     else
@@ -4224,12 +4232,7 @@ HDEOF
     created=$((created + 1))
   done
 
-  # Plex transcode dir — keeps transcode temp files out of the config volume
-  if [[ -n "${SELECTED[plex]+_}" ]]; then
-    mkdir -p "${cfg}/plex-transcode"
-    chown -R "${uid}:${gid}" "${cfg}/plex-transcode"
-    success "  ${cfg}/plex-transcode  [${uid}:${gid}]"
-  fi
+  # Plex transcode is a tmpfs mount (defined in docker-compose.yml) — no host dir needed.
 
   # Jellyfin cache dir — must be a persistent host mount or cache is lost on every
   # container recreate, forcing a full metadata/thumbnail regeneration

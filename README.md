@@ -266,7 +266,7 @@ sudo friendbox  →  option 11   (View service URLs)
 
 Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses. If TeamSpeak 6 is selected, the admin privilege token is surfaced here automatically if it has been printed to the container logs.
 
-> **Pre-flight warnings:** Full Install (option 1) runs a pre-flight check before starting containers. If your domain, ACME email, or ACME provider look incomplete, it will list the issues and ask whether to continue. These are warnings — you can proceed and fix them afterward via option 4. Port conflicts are also checked automatically before any `compose up`.
+> **Pre-flight warnings:** Full Install (option 1) runs a pre-flight check before starting containers. If your domain, ACME email, or ACME provider look incomplete, it will list the issues and ask whether to continue. These are warnings — you can proceed and fix them afterward via option 4. Port conflicts are also checked automatically during Full Install before the initial `compose up`.
 
 **First-time login reference:**
 
@@ -527,7 +527,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Run live routing diagnostics: option 4 → option 6
 - Check all routers are registered and backends show UP
 - Confirm `DOMAIN` in `.env` has no trailing whitespace — the diagnostics check will flag this
-- Restart containers to apply latest labels: `docker compose down && docker compose up -d`
+- Restart containers to apply latest labels: `sudo friendbox` → option 12 → option 1 (redeploy all)
 
 **Subdomain accessible via IP:port but not via HTTPS**
 - Confirm container is on `medianet`: `docker inspect <container> --format '{{json .NetworkSettings.Networks}}'`

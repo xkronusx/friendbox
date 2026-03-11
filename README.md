@@ -36,7 +36,7 @@ This installs the `friendbox` command to `/usr/local/bin/friendbox`. It does **n
 sudo friendbox
 ```
 
-Every launch automatically pulls the latest files from GitHub before opening the menu. If GitHub is unreachable, it falls back to the local copy silently.
+Every launch automatically pulls the latest files from GitHub before opening the menu. If GitHub is unreachable, it falls back to the local copy silently. Auto-update only runs after Full Install (option 1) has been completed — on a fresh machine it is skipped.
 
 ### 3. Run Full Install
 
@@ -422,7 +422,7 @@ Enable HAProxy via: **System → Firmware → Plugins → `os-haproxy`**
 
 ### Auto-update on launch
 
-Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `setup.sh` from GitHub. Both files are validated (syntax check for the script, YAML parse for the compose file) before replacing the live copies. If an update is found the script re-executes itself automatically. No manual sync needed.
+Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `setup.sh` from GitHub. Both files are validated (syntax check for the script, YAML parse for the compose file) before replacing the live copies. If an update is found the script re-executes itself automatically. No manual sync needed. Auto-update only runs after Full Install (option 1) has been completed — on a fresh machine before install it is skipped.
 
 ### Pull latest container images
 
@@ -495,7 +495,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
     └── redeploy.sh                   # Standalone redeploy helper
 ```
 
-> `traefik.yml` is fully generated from your `.env` settings and ACME provider selection. Do not edit manually — it will be overwritten. Use option 4 to make changes.
+> `traefik.yml` is fully generated from your `.env` settings and ACME provider selection. Do not edit manually — it will be regenerated when you run option 4. Use option 4 to make changes.
 
 ---
 
@@ -508,7 +508,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - The Traefik API at `:8080` has no authentication — it is accessible from any machine on your LAN. Do not forward port 8080 through your router to the internet
 - qBittorrent default credentials (`admin` / `adminadmin`) must be changed immediately after first login
 - `exposedByDefault: false` — only explicitly labeled containers get Traefik routes
-- All inter-container traffic uses the `medianet` bridge — nothing reaches the internet except through Traefik on ports 80 and 443
+- All inter-container traffic uses the `medianet` bridge — containers communicate with each other by name rather than host IP. Services also bind direct host ports for LAN access (e.g. Plex on 32400, TeamSpeak on 9987); Traefik on ports 80 and 443 is the HTTPS entry point but not the only host-bound path
 - qBittorrent binds host port `8082` (not 8080) to avoid conflicting with Traefik's API on port 8080
 - Jellyseerr binds host port `5056` (not 5055) to avoid conflicting with Overseerr when both are selected
 - TeamSpeak 6 WebAuth port `10080` is commented out by default — enable manually only if needed and with appropriate firewall rules
@@ -569,6 +569,10 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - The binhex VPN images use `LAN_NETWORK` to build iptables rules for traffic allowed through the VPN firewall. If the `medianet` Docker bridge subnet is not included in `LAN_NETWORK`, Traefik's reverse proxy traffic to the container is silently dropped.
 - Fix: option 5 → VPN credentials → ensure `LAN_NETWORK` includes the Docker bridge subnet alongside your home subnet. The correct subnet is shown as the default when you run the VPN credentials prompt — it is detected automatically from the live `medianet` network.
 - After saving, redeploy the VPN container: option 12 → option 2 → select your VPN container
+
+**VPN download speeds lower than expected**
+- The `medianet` bridge uses MTU 1420 (below the Ethernet default of 1500). This prevents packet fragmentation through the VPN tunnel, which adds overhead when container MTU exceeds tunnel MTU. If you ever recreate the `medianet` network manually, the MTU setting will be lost unless the network is recreated via `docker compose down && docker compose up -d`.
+- If you suspect MTU is not applied, verify in Portainer: Networks → medianet → Options → `com.docker.network.driver.mtu` should show `1420`.
 
 **TeamSpeak 6 WebAuth (port 10080) not accessible**
 - Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → select TeamSpeak 6

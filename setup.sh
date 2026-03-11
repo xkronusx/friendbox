@@ -1313,7 +1313,7 @@ setup_mergerfs() {
     _mergerfs_show_status
     echo "  1) Initial pool setup (first time)"
     echo "  2) Add a disk to the pool"
-    echo "  3) Change a disk's mode (RW / RO)"
+    echo "  3) Change a disk's mode (RW / NC / RO)"
     echo "  4) Remove a disk from the pool"
     echo "  5) Show pool & drive details"
     echo "  6) Mount / remount pool"

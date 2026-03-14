@@ -1555,6 +1555,7 @@ _traefik_write_config() {
   if [[ "$provider" == "duckdns" ]]; then
     tls_block="    http:
       tls:
+        certResolver: letsencrypt
         domains:
           - main: \"${DOMAIN}\"
             sans:
@@ -2228,40 +2229,6 @@ except Exception as e:
   fi
 
   echo ""
-  # ── Container outbound connectivity test ─────────────────────────────────────
-  echo ""
-  echo -e "  ${DIM}── Container connectivity (from inside Traefik) ────${RESET}"
-  local traefik_running
-  traefik_running=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
-  if [[ "$traefik_running" == "running" ]]; then
-    # Test outbound HTTPS to Let's Encrypt ACME endpoint from inside the container
-    local le_test
-    le_test=$(docker exec traefik wget -qO- --timeout=5 \
-      https://acme-v02.api.letsencrypt.org/directory 2>&1 || true)
-    if echo "$le_test" | grep -q "newNonce\|newAccount\|newOrder"; then
-      echo -e "  ${GREEN}[OK]${RESET}    Container can reach Let's Encrypt ACME API"
-    elif echo "$le_test" | grep -qi "certificate\|ssl\|tls"; then
-      echo -e "  ${RED}[FAIL]${RESET}  Container TLS error reaching Let's Encrypt: ${le_test:0:120}"
-    elif [[ -z "$le_test" ]]; then
-      echo -e "  ${RED}[FAIL]${RESET}  Container cannot reach Let's Encrypt (timeout/blocked) — check firewall rules for Docker bridge network"
-    else
-      echo -e "  ${RED}[FAIL]${RESET}  Unexpected response: ${le_test:0:120}"
-    fi
-    # Test DNS resolution from inside the container
-    local dns_test
-    dns_test=$(docker exec traefik wget -qO- --timeout=5 \
-      https://www.duckdns.org/update?domains=test\&token=test\&ip= 2>&1 || true)
-    if echo "$dns_test" | grep -qE "^OK$|^KO$"; then
-      echo -e "  ${GREEN}[OK]${RESET}    Container can reach DuckDNS API"
-    elif [[ -z "$dns_test" ]]; then
-      echo -e "  ${RED}[FAIL]${RESET}  Container cannot reach DuckDNS API (timeout/blocked)"
-    else
-      echo -e "  ${GREEN}[OK]${RESET}    Container can reach DuckDNS API"
-    fi
-  else
-    echo -e "  ${YELLOW}[SKIP]${RESET} Traefik container not running"
-  fi
-
   echo "══════════════════════════════════════════════════════════════"
   echo -e "${DIM}Full router list: curl -s http://localhost:8080/api/http/routers | python3 -m json.tool${RESET}"
   echo ""

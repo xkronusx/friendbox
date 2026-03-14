@@ -2140,10 +2140,13 @@ for r in sorted(routers, key=lambda x: x.get('name','')):
     name   = r.get('name','?')
     rule   = r.get('rule','?')
     status = r.get('status','?')
-    ep     = ','.join(r.get('using', r.get('entryPoints',[])))
+    eps    = r.get('using', r.get('entryPoints',[]))
+    ep_str = ','.join(eps) if eps else '?'
+    tls    = r.get('tls')
+    tls_str = ' [TLS]' if tls else ''
     err    = r.get('err','') or r.get('error','') or ''
     marker = '✓' if status == 'enabled' else '✗'
-    print(f'  {marker} {name:<30} {rule}')
+    print(f'  {marker} {name:<32} {ep_str:<12} {rule}{tls_str}')
     if err:
         print(f'    ERROR: {err}')
 " 2>/dev/null || echo "$routers_json" | python3 -m json.tool | grep -E '"name"|"rule"|"status"|"error"'

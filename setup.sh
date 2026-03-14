@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.0.2"
+FRIENDBOX_VERSION="1.0.3"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1568,7 +1568,9 @@ _traefik_write_config() {
           - main: \"${DOMAIN}\"
             sans:
               - \"*.${DOMAIN}\""
-    # Strip certresolver labels from compose file — routers inherit wildcard from entrypoint
+    # Strip certresolver labels from compose file — labels are permanently absent
+    # from the GitHub compose so this is a safety net for any that were restored
+    # by a previous non-DuckDNS provider configuration.
     sed -i '/traefik\.http\.routers\.[^.]*\.tls\.certresolver=/d' "$COMPOSE_FILE"
     info "DuckDNS: removed certresolver labels from routers (wildcard cert via entrypoint)."
   else
@@ -2313,11 +2315,15 @@ _traefik_emergency_recover() {
 
   # Start Traefik — use compose so certresolver label changes are picked up
   if [[ "$traefik_state" != "missing" ]]; then
-    info "Starting Traefik..."
-    compose_selected up -d --force-recreate traefik
-    success "Traefik started."
+    # Redeploy ALL containers, not just Traefik.
+    # Docker bakes labels into container metadata at creation time — running
+    # containers must be recreated to pick up any label changes.
+    info "Redeploying all containers to apply updated labels..."
+    compose_selected up -d --force-recreate
+    success "All containers redeployed."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    info "Watch cert request: option 14 → traefik → follow live logs"
     info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"

@@ -2140,13 +2140,10 @@ for r in sorted(routers, key=lambda x: x.get('name','')):
     name   = r.get('name','?')
     rule   = r.get('rule','?')
     status = r.get('status','?')
-    eps    = r.get('using', r.get('entryPoints',[]))
-    ep_str = ','.join(eps) if eps else '?'
-    tls    = r.get('tls')
-    tls_str = ' [TLS]' if tls else ''
+    ep     = ','.join(r.get('using', r.get('entryPoints',[])))
     err    = r.get('err','') or r.get('error','') or ''
     marker = '✓' if status == 'enabled' else '✗'
-    print(f'  {marker} {name:<32} {ep_str:<12} {rule}{tls_str}')
+    print(f'  {marker} {name:<30} {rule}')
     if err:
         print(f'    ERROR: {err}')
 " 2>/dev/null || echo "$routers_json" | python3 -m json.tool | grep -E '"name"|"rule"|"status"|"error"'
@@ -2308,11 +2305,17 @@ _traefik_emergency_recover() {
 
   # Start Traefik — use compose so certresolver label changes are picked up
   if [[ "$traefik_state" != "missing" ]]; then
-    info "Starting Traefik..."
-    compose_selected up -d --force-recreate traefik
-    success "Traefik started."
+    # Redeploy ALL containers, not just Traefik.
+    # Docker bakes labels into container metadata at creation time — the sed
+    # strip updates the compose file but running containers still have the old
+    # certresolver="" labels in their metadata. Traefik reads labels from the
+    # running container, so all services must be recreated to pick up the change.
+    info "Redeploying all containers to apply updated labels..."
+    compose_selected up -d --force-recreate
+    success "All containers redeployed."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    info "Watch cert request: option 14 → traefik → follow live logs"
     info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"

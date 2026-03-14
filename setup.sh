@@ -2472,26 +2472,43 @@ _traefik_toggle_staging() {
     fi
   fi
 
+  # Clear acme.json BEFORE regenerating config and restarting Traefik.
+  # Traefik reads acme.json on startup — if it contains a cert from the old CA
+  # it will loop on "Testing certificate renew" instead of requesting a new cert.
+  # Must be cleared while Traefik is still stopped / before force-recreate.
+  # Resolve path from .env (CONFIG_ROOT) with hardcoded fallback for robustness.
+  local acme
+  acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  # If CONFIG_ROOT was not sourced or is wrong, fall back to INSTALL_DIR-relative path
+  [[ ! -e "$(dirname "$acme")" ]] && acme="${INSTALL_DIR}/config/traefik/acme.json"
+  if [[ -f "$acme" ]]; then
+    truncate -s 0 "$acme" && success "acme.json cleared (${acme})." \
+      || warn "Could not clear acme.json at ${acme} — clear it manually: sudo truncate -s 0 ${acme}"
+    # Verify truncate actually worked — a non-empty file means Traefik will
+    # still see the old cert on next start.
+    local acme_size
+    acme_size=$(wc -c < "$acme" 2>/dev/null || echo "?")
+    if [[ "$acme_size" != "0" ]]; then
+      warn "acme.json is still non-empty (${acme_size} bytes) — attempting rm + recreate..."
+      rm -f "$acme" && touch "$acme" && chmod 600 "$acme" \
+        && success "acme.json recreated empty." \
+        || warn "Could not recreate acme.json — run manually: sudo rm ${acme} && sudo touch ${acme} && sudo chmod 600 ${acme}"
+    fi
+  else
+    warn "acme.json not found at ${acme} — it will be created fresh by Traefik."
+  fi
+
   # Regenerate traefik.yml with the new CA server URL
   _traefik_write_config
   success "traefik.yml regenerated."
-
-  # Clear acme.json so Traefik requests a fresh cert from the new CA.
-  # Keeping a cert issued by the old CA causes Traefik to loop trying to
-  # renew it against a CA that won't accept it.
-  local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
-  if [[ -f "$acme" ]]; then
-    truncate -s 0 "$acme"
-    success "acme.json cleared."
-  fi
 
   # Restart Traefik if it is currently running
   local traefik_state
   traefik_state=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
   if [[ "$traefik_state" == "running" || "$traefik_state" == "exited" ]]; then
-    info "Restarting Traefik to apply new CA and compose config..."
+    info "Restarting Traefik to apply new CA and request fresh certificate..."
     compose_selected up -d --force-recreate traefik
-    success "Traefik restarted."
+    success "Traefik restarted — watch logs with: docker logs -f traefik"
   else
     info "Traefik is not running — start it with: sudo friendbox → option 12"
   fi

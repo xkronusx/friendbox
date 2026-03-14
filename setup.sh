@@ -1962,6 +1962,14 @@ _traefik_validate() {
     else
       _chk "acme.json storage path correct" 0 "got: ${acme_storage:-missing} — regenerate config"
     fi
+    # DuckDNS wildcard: entrypoint tls block must have certResolver set
+    if grep -q "domains:" "$cfg" 2>/dev/null; then
+      if grep -q "certResolver:" "$cfg" 2>/dev/null; then
+        _chk "DuckDNS wildcard certResolver set" 1
+      else
+        _chk "DuckDNS wildcard certResolver set" 0 "traefik.yml missing certResolver in tls block — run option 7 (Emergency recovery) to fix"
+      fi
+    fi
   fi
 
   # ── 14. Let's Encrypt rate limit check (crt.sh CT logs) ───────────────────

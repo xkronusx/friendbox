@@ -2267,18 +2267,26 @@ _traefik_emergency_recover() {
 
   # Clear acme.json
   local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  # Fallback to INSTALL_DIR-relative path if CONFIG_ROOT didn't resolve correctly
+  [[ ! -e "$(dirname "$acme")" ]] && acme="${INSTALL_DIR}/config/traefik/acme.json"
   if [[ -f "$acme" ]]; then
-    truncate -s 0 "$acme"
-    chown root:root "$acme"
-    chmod 600 "$acme"
-    success "acme.json cleared (${acme})."
+    truncate -s 0 "$acme" \
+      && { chown root:root "$acme"; chmod 600 "$acme"; } \
+      && success "acme.json cleared (${acme})." \
+      || warn "truncate failed — attempting rm + recreate..."
+    local acme_size
+    acme_size=$(wc -c < "$acme" 2>/dev/null || echo "?")
+    if [[ "$acme_size" != "0" ]]; then
+      rm -f "$acme" && touch "$acme" && chown root:root "$acme" && chmod 600 "$acme" \
+        && success "acme.json recreated empty." \
+        || warn "Could not clear acme.json at ${acme} — run manually: sudo truncate -s 0 ${acme}"
+    fi
   else
     # Create it fresh if missing
     mkdir -p "$(dirname "$acme")"
-    touch "$acme"
-    chown root:root "$acme"
-    chmod 600 "$acme"
-    success "acme.json created fresh (${acme})."
+    touch "$acme" && chown root:root "$acme" && chmod 600 "$acme" \
+      && success "acme.json created fresh (${acme})." \
+      || warn "Could not create acme.json at ${acme}."
   fi
 
   # Regenerate traefik.yml
@@ -2472,43 +2480,45 @@ _traefik_toggle_staging() {
     fi
   fi
 
-  # Clear acme.json BEFORE regenerating config and restarting Traefik.
-  # Traefik reads acme.json on startup — if it contains a cert from the old CA
-  # it will loop on "Testing certificate renew" instead of requesting a new cert.
-  # Must be cleared while Traefik is still stopped / before force-recreate.
-  # Resolve path from .env (CONFIG_ROOT) with hardcoded fallback for robustness.
-  local acme
-  acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
-  # If CONFIG_ROOT was not sourced or is wrong, fall back to INSTALL_DIR-relative path
-  [[ ! -e "$(dirname "$acme")" ]] && acme="${INSTALL_DIR}/config/traefik/acme.json"
-  if [[ -f "$acme" ]]; then
-    truncate -s 0 "$acme" && success "acme.json cleared (${acme})." \
-      || warn "Could not clear acme.json at ${acme} — clear it manually: sudo truncate -s 0 ${acme}"
-    # Verify truncate actually worked — a non-empty file means Traefik will
-    # still see the old cert on next start.
-    local acme_size
-    acme_size=$(wc -c < "$acme" 2>/dev/null || echo "?")
-    if [[ "$acme_size" != "0" ]]; then
-      warn "acme.json is still non-empty (${acme_size} bytes) — attempting rm + recreate..."
-      rm -f "$acme" && touch "$acme" && chmod 600 "$acme" \
-        && success "acme.json recreated empty." \
-        || warn "Could not recreate acme.json — run manually: sudo rm ${acme} && sudo touch ${acme} && sudo chmod 600 ${acme}"
-    fi
-  else
-    warn "acme.json not found at ${acme} — it will be created fresh by Traefik."
-  fi
-
   # Regenerate traefik.yml with the new CA server URL
   _traefik_write_config
   success "traefik.yml regenerated."
+
+  # Clear acme.json BEFORE restarting Traefik.
+  # Traefik reads acme.json on startup — a cert issued by the old CA causes
+  # it to loop on "Testing certificate renew" instead of requesting a new cert.
+  local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  # Fallback to INSTALL_DIR-relative path if CONFIG_ROOT didn't resolve correctly
+  [[ ! -e "$(dirname "$acme")" ]] && acme="${INSTALL_DIR}/config/traefik/acme.json"
+  if [[ -f "$acme" ]]; then
+    truncate -s 0 "$acme" \
+      && { chown root:root "$acme"; chmod 600 "$acme"; } \
+      && success "acme.json cleared (${acme})." \
+      || warn "Could not clear acme.json — run option 7 (Emergency recovery) to fix this."
+    local acme_size
+    acme_size=$(wc -c < "$acme" 2>/dev/null || echo "?")
+    if [[ "$acme_size" != "0" ]]; then
+      warn "acme.json still non-empty after truncate — attempting rm + recreate..."
+      rm -f "$acme" && touch "$acme" && chown root:root "$acme" && chmod 600 "$acme" \
+        && success "acme.json recreated empty." \
+        || warn "Could not recreate acme.json — run option 7 (Emergency recovery) to fix this."
+    fi
+  else
+    touch "$acme" && chown root:root "$acme" && chmod 600 "$acme" \
+      && success "acme.json created fresh (${acme})." \
+      || warn "Could not create acme.json at ${acme}."
+  fi
 
   # Restart Traefik if it is currently running
   local traefik_state
   traefik_state=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
   if [[ "$traefik_state" == "running" || "$traefik_state" == "exited" ]]; then
-    info "Restarting Traefik to apply new CA and request fresh certificate..."
+    info "Restarting Traefik to apply new CA..."
     compose_selected up -d --force-recreate traefik
-    success "Traefik restarted — watch logs with: docker logs -f traefik"
+    success "Traefik restarted — new certificate will be requested shortly."
+    echo ""
+    info "Watch progress: docker logs -f traefik"
+    info "If you still see 'Testing certificate renew' after restart, run option 7 (Emergency recovery)."
   else
     info "Traefik is not running — start it with: sudo friendbox → option 12"
   fi

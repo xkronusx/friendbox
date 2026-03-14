@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.0.0"
+FRIENDBOX_VERSION="1.0.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1507,6 +1507,13 @@ _traefik_write_config() {
       # lego looks for _acme-challenge.traefik.domain.duckdns.org which DuckDNS
       # cannot create. The only working approach is a single wildcard cert
       # (*.domain.duckdns.org) requested at the entrypoint level.
+      #
+      # disablePropagationCheck: lego queries authoritative nameservers directly
+      # (no recursion). On many home networks the router intercepts these queries
+      # and returns REFUSED, causing lego to silently time out. Disabling
+      # propagation checking bypasses this — the delay below compensates.
+      # delayBeforeChecks: 120s gives DuckDNS time to propagate the TXT record
+      # before Let's Encrypt verifies it. 60s was too short in practice.
       resolvers_block="  letsencrypt:
     acme:
       email: ${email}
@@ -1515,7 +1522,8 @@ _traefik_write_config() {
       dnsChallenge:
         provider: duckdns
         propagation:
-          delayBeforeChecks: 60s
+          disablePropagationCheck: true
+          delayBeforeChecks: 120s
         resolvers:
           - \"1.1.1.1:53\"
           - \"8.8.8.8:53\""
@@ -2312,11 +2320,17 @@ _traefik_emergency_recover() {
 
   # Start Traefik — use compose so certresolver label changes are picked up
   if [[ "$traefik_state" != "missing" ]]; then
-    info "Starting Traefik..."
-    compose_selected up -d --force-recreate traefik
-    success "Traefik started."
+    # Redeploy ALL containers, not just Traefik.
+    # Docker bakes labels into container metadata at creation time — the sed
+    # strip updates the compose file but running containers still have the old
+    # certresolver="" labels in their metadata. Traefik reads labels from the
+    # running container, so all services must be recreated to pick up the change.
+    info "Redeploying all containers to apply updated labels..."
+    compose_selected up -d --force-recreate
+    success "All containers redeployed."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    info "Watch cert request: option 14 → traefik → follow live logs"
     info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"

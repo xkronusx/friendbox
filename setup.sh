@@ -27,6 +27,9 @@ DNS_STATE_FILE="${INSTALL_DIR}/.dns_config"
 INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
+# ── Version ───────────────────────────────────────────────────────────────────
+FRIENDBOX_VERSION="1.0.0"
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
 success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
@@ -534,6 +537,10 @@ auto_update() {
   fi
 
   printf 'docker-compose.yml\n/usr/local/bin/friendbox\n' > "${INSTALL_DIR}/.update_notice"
+  # Append the new version so the menu shows which version was just pulled
+  local new_ver
+  new_ver=$(grep '^FRIENDBOX_VERSION=' /usr/local/bin/friendbox.new 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "unknown")
+  [[ -n "$new_ver" && "$new_ver" != "unknown" ]] && printf 'Version: %s\n' "$new_ver" >> "${INSTALL_DIR}/.update_notice"
   _own "${INSTALL_DIR}/.update_notice"
 
   mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
@@ -1500,13 +1507,6 @@ _traefik_write_config() {
       # lego looks for _acme-challenge.traefik.domain.duckdns.org which DuckDNS
       # cannot create. The only working approach is a single wildcard cert
       # (*.domain.duckdns.org) requested at the entrypoint level.
-      #
-      # disablePropagationCheck: lego queries authoritative nameservers directly
-      # (no recursion). On many home networks the router intercepts these queries
-      # and returns REFUSED, causing lego to silently time out. Disabling
-      # propagation checking bypasses this — the delay below compensates.
-      # delayBeforeChecks: 120s gives DuckDNS time to propagate the TXT record
-      # before Let's Encrypt verifies it. 60s was too short in practice.
       resolvers_block="  letsencrypt:
     acme:
       email: ${email}
@@ -1515,8 +1515,7 @@ _traefik_write_config() {
       dnsChallenge:
         provider: duckdns
         propagation:
-          disablePropagationCheck: true
-          delayBeforeChecks: 120s
+          delayBeforeChecks: 60s
         resolvers:
           - \"1.1.1.1:53\"
           - \"8.8.8.8:53\""
@@ -5327,7 +5326,7 @@ main_menu() {
     echo "╔══════════════════════════════════════════╗"
     echo "║          📦  Friendbox Manager           ║"
     echo "╚══════════════════════════════════════════╝"
-    echo -e "${RESET}"
+    echo -e "${RESET}${DIM}  v${FRIENDBOX_VERSION}${RESET}"
     load_selected
     local count="${#SELECTED[@]}"
 

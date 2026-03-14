@@ -2285,6 +2285,16 @@ _traefik_emergency_recover() {
   # Regenerate traefik.yml
   _traefik_write_config
 
+  # Self-heal: ensure certResolver is present in the DuckDNS tls block.
+  # Older script versions omitted this line, causing Traefik v3 to silently
+  # skip the wildcard cert request. Patch the file directly if missing.
+  local tcfg="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/traefik.yml"
+  [[ ! -f "$tcfg" ]] && tcfg="${INSTALL_DIR}/config/traefik/traefik.yml"
+  if [[ -f "$tcfg" ]] && grep -q "domains:" "$tcfg" && ! grep -q "certResolver:" "$tcfg"; then
+    sed -i '/^      tls:$/a\        certResolver: letsencrypt' "$tcfg"
+    success "traefik.yml patched: added missing certResolver for DuckDNS wildcard cert."
+  fi
+
   # Start Traefik — use compose so certresolver label changes are picked up
   if [[ "$traefik_state" != "missing" ]]; then
     info "Starting Traefik..."
@@ -2476,6 +2486,16 @@ _traefik_toggle_staging() {
   # Regenerate traefik.yml with the new CA server URL
   _traefik_write_config
   success "traefik.yml regenerated."
+
+  # Self-heal: ensure certResolver is present in the DuckDNS tls block.
+  # Older script versions omitted this line, causing Traefik v3 to silently
+  # skip the wildcard cert request. Patch the file directly if missing.
+  local tcfg="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/traefik.yml"
+  [[ ! -f "$tcfg" ]] && tcfg="${INSTALL_DIR}/config/traefik/traefik.yml"
+  if [[ -f "$tcfg" ]] && grep -q "domains:" "$tcfg" && ! grep -q "certResolver:" "$tcfg"; then
+    sed -i '/^      tls:$/a\        certResolver: letsencrypt' "$tcfg"
+    success "traefik.yml patched: added missing certResolver for DuckDNS wildcard cert."
+  fi
 
   # Clear acme.json so Traefik requests a fresh cert from the new CA.
   # Keeping a cert issued by the old CA causes Traefik to loop trying to

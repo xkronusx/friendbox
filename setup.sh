@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.0.5"
+FRIENDBOX_VERSION="1.0.6"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -2087,6 +2087,38 @@ PYEOF
   echo ""
 }
 
+# Returns days remaining on the cert in acme.json, or -1 if no cert/unreadable.
+_acme_cert_days_remaining() {
+  local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  [[ ! -f "$acme" || ! -s "$acme" ]] && echo -1 && return
+  python3 - "$acme" << 'PYEOF'
+import json, base64, sys, subprocess, datetime
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    certs = (data.get("letsencrypt") or {}).get("Certificates") or []
+    if not certs:
+        print(-1); sys.exit(0)
+    cert_b64 = certs[0].get("certificate", "")
+    if not cert_b64:
+        print(-1); sys.exit(0)
+    pem = base64.b64decode(cert_b64)
+    result = subprocess.run(
+        ["openssl", "x509", "-noout", "-enddate"],
+        input=pem, capture_output=True
+    )
+    # Output: notAfter=Mar 15 12:00:00 2026 GMT
+    line = result.stdout.decode().strip()
+    date_str = line.split("=", 1)[1]
+    expiry = datetime.datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z").replace(
+        tzinfo=datetime.timezone.utc)
+    days = (expiry - datetime.datetime.now(datetime.timezone.utc)).days
+    print(days)
+except Exception:
+    print(-1)
+PYEOF
+}
+
 _traefik_live_diag() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   local api="http://localhost:8080/api"
@@ -2241,23 +2273,39 @@ for s in sorted(services, key=lambda x: x.get('name','')):
   echo -e "${BOLD}Certificates in acme.json:${RESET}"
   local acme_file="${INSTALL_DIR}/config/traefik/acme.json"
   if [[ -f "$acme_file" && -s "$acme_file" ]]; then
-    python3 -c "
-import json, sys
+    python3 - "$acme_file" << 'PYEOF'
+import json, base64, sys, subprocess, datetime
 try:
-    with open('${acme_file}') as f: data = json.load(f)
-    resolver = data.get('letsencrypt', {})
-    certs = resolver.get('Certificates') or []
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    certs = (data.get("letsencrypt") or {}).get("Certificates") or []
     if not certs:
-        print('  No certificates stored yet — ACME has not completed successfully')
+        print("  No certificates stored yet — ACME has not completed successfully")
     else:
         for c in certs:
-            domain = c.get('domain',{})
-            main   = domain.get('main','?')
-            sans   = domain.get('sans',[])
-            print(f'  ✓ {main}  SANs: {sans}')
+            domain   = c.get("domain", {})
+            main     = domain.get("main", "?")
+            sans     = domain.get("sans", [])
+            cert_b64 = c.get("certificate", "")
+            days_str = "unknown"
+            if cert_b64:
+                try:
+                    pem = base64.b64decode(cert_b64)
+                    r = subprocess.run(["openssl","x509","-noout","-enddate"],
+                                       input=pem, capture_output=True)
+                    line = r.stdout.decode().strip()
+                    date_str = line.split("=",1)[1]
+                    expiry = datetime.datetime.strptime(
+                        date_str, "%b %d %H:%M:%S %Y %Z"
+                    ).replace(tzinfo=datetime.timezone.utc)
+                    days = (expiry - datetime.datetime.now(datetime.timezone.utc)).days
+                    days_str = f"{days} days (expires {expiry.strftime('%Y-%m-%d')})"
+                except Exception:
+                    pass
+            print(f"  ✓ {main}  SANs: {sans}  Valid: {days_str}")
 except Exception as e:
-    print(f'  Could not parse acme.json: {e}')
-" 2>/dev/null
+    print(f"  Could not parse acme.json: {e}")
+PYEOF
   else
     warn "acme.json is empty or missing — no certs issued yet"
   fi
@@ -2300,20 +2348,34 @@ _traefik_emergency_recover() {
     success "Traefik stopped."
   fi
 
-  # Clear acme.json
+  # Clear acme.json — but warn first if a valid cert exists to avoid
+  # burning a Let's Encrypt rate limit slot unnecessarily.
   local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
-  if [[ -f "$acme" ]]; then
-    truncate -s 0 "$acme"
-    chown root:root "$acme"
-    chmod 600 "$acme"
-    success "acme.json cleared (${acme})."
-  else
-    # Create it fresh if missing
-    mkdir -p "$(dirname "$acme")"
-    touch "$acme"
-    chown root:root "$acme"
-    chmod 600 "$acme"
-    success "acme.json created fresh (${acme})."
+  local _days_left
+  _days_left=$(_acme_cert_days_remaining)
+  if [[ "$_days_left" -gt 30 ]] 2>/dev/null; then
+    echo ""
+    warn "A valid certificate exists with ${_days_left} days remaining."
+    warn "Clearing it will use one of your 5 weekly Let's Encrypt slots."
+    warn "Only proceed if you are changing CA (staging ↔ production) or the cert is wrong."
+    echo ""
+    read -rp "  Clear the existing valid certificate? [y/N] " _cert_yn
+    if [[ ! "${_cert_yn:-n}" =~ ^[Yy]$ ]]; then
+      info "Keeping existing certificate — skipping acme.json clear."
+    fi
+  fi
+  if [[ "${_cert_yn:-y}" =~ ^[Yy]$ || ! "$_days_left" -gt 30 ]] 2>/dev/null; then
+    if [[ -f "$acme" ]]; then
+      truncate -s 0 "$acme" \
+        && { chown root:root "$acme"; chmod 600 "$acme"; } \
+        && success "acme.json cleared (${acme})." \
+        || warn "Could not clear acme.json at ${acme}."
+    else
+      mkdir -p "$(dirname "$acme")"
+      touch "$acme" && chown root:root "$acme" && chmod 600 "$acme" \
+        && success "acme.json created fresh (${acme})." \
+        || warn "Could not create acme.json at ${acme}."
+    fi
   fi
 
   # Regenerate traefik.yml
@@ -2329,15 +2391,13 @@ _traefik_emergency_recover() {
     success "traefik.yml patched: added missing certResolver for DuckDNS wildcard cert."
   fi
 
-  # Redeploy ALL containers — Docker bakes labels into container metadata at
-  # creation time. Running containers must be recreated to pick up label changes.
+  # Start Traefik — use compose so certresolver label changes are picked up
   if [[ "$traefik_state" != "missing" ]]; then
-    info "Redeploying all containers to apply updated labels..."
-    compose_selected up -d --force-recreate
-    success "All containers redeployed."
+    info "Starting Traefik..."
+    compose_selected up -d --force-recreate traefik
+    success "Traefik started."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
-    info "Watch cert request: option 14 → traefik → follow live logs"
     info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"
@@ -2536,7 +2596,19 @@ _traefik_toggle_staging() {
   # Clear acme.json so Traefik requests a fresh cert from the new CA.
   # Keeping a cert issued by the old CA causes Traefik to loop trying to
   # renew it against a CA that won't accept it.
+  # Exception: if switching TO staging, warn if a valid production cert exists
+  # so the user doesn't accidentally burn a rate limit slot.
   local acme="${CONFIG_ROOT:-/opt/friendbox/config}/traefik/acme.json"
+  local _days_left
+  _days_left=$(_acme_cert_days_remaining)
+  if [[ "${ACME_STAGING:-false}" == "false" && "$_days_left" -gt 30 ]] 2>/dev/null; then
+    echo ""
+    warn "You have a valid production certificate with ${_days_left} days remaining."
+    warn "Switching to staging will clear it and use a Let's Encrypt rate limit slot when you switch back."
+    echo ""
+    read -rp "  Continue and clear the existing certificate? [y/N] " _cert_yn
+    [[ "${_cert_yn:-n}" =~ ^[Yy]$ ]] || { info "Aborted — certificate preserved."; return 0; }
+  fi
   if [[ -f "$acme" ]]; then
     truncate -s 0 "$acme"
     success "acme.json cleared."

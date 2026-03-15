@@ -675,6 +675,7 @@ services:
       # - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
       # - "traefik.http.routers.ts6.entrypoints=websecure"
       # - "traefik.http.routers.ts6.tls=true"
+      #
       # - "traefik.http.services.ts6.loadbalancer.server.port=10080"
 
   # ── Mumble — open-source voice chat server ──────────────────────────────────

@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.0.6"
+FRIENDBOX_VERSION="1.0.7"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -784,13 +784,33 @@ _mergerfs_write_fstab() {
     return 1
   fi
 
+  # allow_other in FUSE requires user_allow_other in /etc/fuse.conf.
+  # Without it, non-root processes (including Docker containers running as PUID)
+  # are denied access to the MergerFS pool mount — Deluge and other containers
+  # will get "Permission denied" even when branch ownership is correct.
+  if [[ -f /etc/fuse.conf ]]; then
+    if ! grep -q '^user_allow_other' /etc/fuse.conf 2>/dev/null; then
+      sed -i 's/^#\s*user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null \
+        && success "fuse.conf: user_allow_other enabled." \
+        || { echo "user_allow_other" >> /etc/fuse.conf; success "fuse.conf: user_allow_other added."; }
+    else
+      info "fuse.conf: user_allow_other already enabled."
+    fi
+  else
+    echo "user_allow_other" > /etc/fuse.conf
+    success "fuse.conf: created with user_allow_other."
+  fi
+
   # Remove any existing mergerfs entry for this pool
   sed -i "\|${pool_path}.*fuse.mergerfs|d" /etc/fstab
 
   # mergerfs v2 fstab format:
   #   source = path=RW:path=RW  (mode suffixes in source field, parsed by mergerfs)
   #   pool_path = the union mount point
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
+  # uid/gid: ensures the pool mount point reports correct ownership to all processes
+  # including Docker containers running as PUID.
+  local uid="${PUID:-1000}" gid="${PGID:-1000}"
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
   success "fstab updated."
 }
 
@@ -862,6 +882,17 @@ _mergerfs_remount() {
 
   mkdir -p "$pool_path"
 
+  # Ensure user_allow_other is enabled in /etc/fuse.conf — required for
+  # allow_other to work for non-root mounts (Docker containers as PUID).
+  if [[ -f /etc/fuse.conf ]]; then
+    if ! grep -q '^user_allow_other' /etc/fuse.conf 2>/dev/null; then
+      sed -i 's/^#\s*user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null \
+        || echo "user_allow_other" >> /etc/fuse.conf
+    fi
+  else
+    echo "user_allow_other" > /etc/fuse.conf
+  fi
+
   # Unmount first if already mounted
   if mountpoint -q "$pool_path" 2>/dev/null; then
     umount "$pool_path" 2>/dev/null || {
@@ -872,9 +903,10 @@ _mergerfs_remount() {
 
   # mergerfs v2 binary accepts path=MODE in the source argument (same as fstab).
   # branch_list already contains the correct path=RW:path=RO format.
+  # uid/gid: ensures pool mount reports correct ownership to Docker containers.
   local mount_out
   mount_out=$(mergerfs \
-    -o allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool \
+    -o allow_other,use_ino,uid=${uid},gid=${gid},cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool \
     "${branch_list}" "${pool_path}" 2>&1)
   local mount_rc=$?
   if [[ $mount_rc -eq 0 ]]; then

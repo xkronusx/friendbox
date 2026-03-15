@@ -283,7 +283,7 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Bazarr | `https://bazarr.yourdomain.com` | Connect Sonarr + Radarr, configure subtitle providers |
 | qBittorrent | `https://qbt.yourdomain.com` (`http://IP:8082` direct) | Default: `admin` / `adminadmin` — **change immediately** |
 | qBittorrentVPN | `https://qbtvpn.yourdomain.com` (`http://IP:8181` direct) | Same default credentials — **change immediately** |
-| DelugeVPN | `https://deluge.yourdomain.com` (`http://IP:8112` direct) | Default password: `deluge` — **change immediately** |
+| DelugeVPN | `https://deluge.yourdomain.com` (`http://IP:8112` direct) | Default password: `deluge` — **change immediately**. Pre-allocation is disabled by default (MergerFS incompatibility) — verify in Preferences → Downloads → *Allocate disk space before downloading* is unchecked |
 | NZBGet | `https://nzbget.yourdomain.com` (`http://IP:6789` direct) | Default: `nzbget` / `tegbzn6789` — **change immediately** |
 | Overseerr | `https://overseerr.yourdomain.com` | Sign in with Plex account |
 | Ombi | `https://ombi.yourdomain.com` (`http://IP:3579` direct) | Create admin account on first visit |

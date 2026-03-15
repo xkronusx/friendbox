@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.0.8"
+FRIENDBOX_VERSION="1.0.9"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -4473,6 +4473,36 @@ HDEOF
   if [[ -n "${SELECTED[netbootxyz]+_}" ]]; then
     mkdir -p "${media}/netboot/assets"
     chown -R "${uid}:${gid}" "${media}/netboot"
+  fi
+
+  # DelugeVPN: inject a default core.conf if one doesn't exist yet.
+  # MergerFS does not support fallocate() — Deluge's default pre-allocation
+  # setting calls fallocate on every download start, which returns ENXIO
+  # ("No such device") on MergerFS. Disabling it here prevents the error
+  # before the user ever opens the Deluge web UI.
+  # If core.conf already exists (user has configured Deluge), leave it alone.
+  if [[ -n "${SELECTED[delugevpn]+_}" ]]; then
+    local _deluge_cfg="${cfg}/delugevpn/core.conf"
+    if [[ ! -f "$_deluge_cfg" ]]; then
+      cat > "$_deluge_cfg" << 'DELUGEEOF'
+{
+  "file": 1,
+  "format": 1
+}{
+  "pre_allocate_storage": false,
+  "download_location": "/data/downloads",
+  "move_completed": false,
+  "move_completed_path": "/data/downloads",
+  "torrentfiles_location": "/data/downloads",
+  "autoadd_enable": false
+}
+DELUGEEOF
+      chown "${uid}:${gid}" "$_deluge_cfg"
+      chmod 600 "$_deluge_cfg"
+      success "  ${_deluge_cfg}  (pre_allocate_storage disabled — MergerFS compatibility)"
+    else
+      info "  ${_deluge_cfg}  (exists — preserved)"
+    fi
   fi
 
   # acme.json must be root:root 600 — Traefik v3 runs as root inside the container

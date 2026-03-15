@@ -14,7 +14,7 @@ services:
 
   # ── Traefik — reverse proxy + automatic TLS ─────────────────────────────────
   traefik:
-    image: traefik:v3.6.9
+    image: traefik:v3.6.10
     container_name: traefik
     profiles: [traefik]
     restart: unless-stopped

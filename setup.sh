@@ -1515,7 +1515,8 @@ _traefik_write_config() {
       dnsChallenge:
         provider: duckdns
         propagation:
-          delayBeforeChecks: 60s
+          disableChecks: true
+          delayBeforeChecks: 120s
         resolvers:
           - \"1.1.1.1:53\"
           - \"8.8.8.8:53\""
@@ -2331,11 +2332,12 @@ _traefik_emergency_recover() {
 
   # Start Traefik — use compose so certresolver label changes are picked up
   if [[ "$traefik_state" != "missing" ]]; then
-    info "Starting Traefik..."
-    compose_selected up -d --force-recreate traefik
-    success "Traefik started."
+    info "Redeploying all containers to apply updated labels..."
+    compose_selected up -d --force-recreate
+    success "All containers redeployed."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    info "Watch cert request: option 14 → traefik → follow live logs"
     info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"

@@ -784,13 +784,29 @@ _mergerfs_write_fstab() {
     return 1
   fi
 
+  # allow_other in FUSE requires user_allow_other in /etc/fuse.conf.
+  # Without it, non-root processes (including Docker containers running as PUID)
+  # are denied access to the MergerFS pool — writes fail with ENXIO ("No such device").
+  if [[ -f /etc/fuse.conf ]]; then
+    if ! grep -q '^user_allow_other' /etc/fuse.conf 2>/dev/null; then
+      sed -i 's/^#\s*user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null \
+        && success "fuse.conf: user_allow_other enabled." \
+        || { echo "user_allow_other" >> /etc/fuse.conf; success "fuse.conf: user_allow_other added."; }
+    else
+      info "fuse.conf: user_allow_other already enabled."
+    fi
+  else
+    echo "user_allow_other" > /etc/fuse.conf
+    success "fuse.conf: created with user_allow_other."
+  fi
+
   # Remove any existing mergerfs entry for this pool
   sed -i "\|${pool_path}.*fuse.mergerfs|d" /etc/fstab
 
-  # mergerfs v2 fstab format:
-  #   source = path=RW:path=RW  (mode suffixes in source field, parsed by mergerfs)
-  #   pool_path = the union mount point
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
+  # mergerfs v2 fstab format — uid/gid ensures pool mount reports correct
+  # ownership to Docker containers running as PUID.
+  local uid="${PUID:-1000}" gid="${PGID:-1000}"
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
   success "fstab updated."
 }
 
@@ -862,6 +878,16 @@ _mergerfs_remount() {
 
   mkdir -p "$pool_path"
 
+  # Ensure user_allow_other is set in /etc/fuse.conf — required for Docker
+  # containers (non-root) to access the FUSE mount without ENXIO errors.
+  if [[ -f /etc/fuse.conf ]]; then
+    grep -q '^user_allow_other' /etc/fuse.conf 2>/dev/null \
+      || sed -i 's/^#\s*user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null \
+      || echo "user_allow_other" >> /etc/fuse.conf
+  else
+    echo "user_allow_other" > /etc/fuse.conf
+  fi
+
   # Unmount first if already mounted
   if mountpoint -q "$pool_path" 2>/dev/null; then
     umount "$pool_path" 2>/dev/null || {
@@ -871,10 +897,10 @@ _mergerfs_remount() {
   fi
 
   # mergerfs v2 binary accepts path=MODE in the source argument (same as fstab).
-  # branch_list already contains the correct path=RW:path=RO format.
+  # uid/gid: pool mount reports correct ownership to Docker containers as PUID.
   local mount_out
   mount_out=$(mergerfs \
-    -o allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool \
+    -o allow_other,use_ino,uid=${uid},gid=${gid},cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool \
     "${branch_list}" "${pool_path}" 2>&1)
   local mount_rc=$?
   if [[ $mount_rc -eq 0 ]]; then
@@ -4345,6 +4371,7 @@ HDEOF
       if [[ -n "${SELECTED[$_dl_client]+_}" ]]; then
         mkdir -p "${media}/downloads"
         chown "${uid}:${gid}" "${media}/downloads"
+        chmod 775 "${media}/downloads"
         break
       fi
     done
@@ -4352,6 +4379,7 @@ HDEOF
     if [[ -n "${SELECTED[delugevpn]+_}" ]]; then
       mkdir -p "${media}/downloads/incomplete"
       chown "${uid}:${gid}" "${media}/downloads/incomplete"
+      chmod 775 "${media}/downloads/incomplete"
     fi
   fi
 

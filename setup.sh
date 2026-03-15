@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.0.4"
+FRIENDBOX_VERSION="1.0.5"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1515,8 +1515,7 @@ _traefik_write_config() {
       dnsChallenge:
         provider: duckdns
         propagation:
-          disableChecks: true
-          delayBeforeChecks: 120s
+          delayBeforeChecks: 60s
         resolvers:
           - \"1.1.1.1:53\"
           - \"8.8.8.8:53\""
@@ -2330,7 +2329,8 @@ _traefik_emergency_recover() {
     success "traefik.yml patched: added missing certResolver for DuckDNS wildcard cert."
   fi
 
-  # Start Traefik — use compose so certresolver label changes are picked up
+  # Redeploy ALL containers — Docker bakes labels into container metadata at
+  # creation time. Running containers must be recreated to pick up label changes.
   if [[ "$traefik_state" != "missing" ]]; then
     info "Redeploying all containers to apply updated labels..."
     compose_selected up -d --force-recreate
@@ -3864,13 +3864,23 @@ _jellyfin_hw_apply() {
 
   info "Patching docker-compose.yml for Jellyfin HW accel: ${_method}..."
 
-  python3 - "$COMPOSE_FILE" "$_method" "$_rgid" "$_vgid" << 'PYEOF'
+  # Detect the correct /dev/dri/card* device — card0 is not always the right one.
+  # On systems with integrated + discrete GPUs, or after driver changes, the
+  # Intel iGPU may be card1 or higher. Pick the first card* that actually exists.
+  local _card_dev="/dev/dri/card0"  # fallback
+  local _c
+  for _c in /dev/dri/card[0-9]*; do
+    [[ -e "$_c" ]] && { _card_dev="$_c"; break; }
+  done
+
+  python3 - "$COMPOSE_FILE" "$_method" "$_rgid" "$_vgid" "$_card_dev" << 'PYEOF'
 import sys, re
 
-path   = sys.argv[1]
-method = sys.argv[2]   # vaapi | nvenc | none
-rgid   = sys.argv[3]   # render group GID (may be empty string)
-vgid   = sys.argv[4]   # video  group GID (may be empty string)
+path     = sys.argv[1]
+method   = sys.argv[2]   # vaapi | nvenc | none
+rgid     = sys.argv[3]   # render group GID (may be empty string)
+vgid     = sys.argv[4]   # video  group GID (may be empty string)
+card_dev = sys.argv[5]   # /dev/dri/card* — detected at runtime
 
 with open(path) as f:
     content = f.read()
@@ -3915,7 +3925,7 @@ if method == 'vaapi':
         '    # To disable: option 5 → Jellyfin HW accel → None.\n'
         '    devices:\n'
         '      - /dev/dri/renderD128:/dev/dri/renderD128\n'
-        '      - /dev/dri/card0:/dev/dri/card0\n'
+        f'      - {card_dev}:{card_dev}\n'
         '    group_add:\n'
         + grp
         + '    environment:\n'

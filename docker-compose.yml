@@ -589,8 +589,7 @@ services:
       - UMASK=002
     volumes:
       - ${CONFIG_ROOT}/delugevpn:/config
-      - ${MEDIA_ROOT}/downloads:/data/downloads
-      - ${MEDIA_ROOT}/downloads/incomplete:/data/incomplete
+      - ${MEDIA_ROOT}/downloads:/data
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "8112:8112"

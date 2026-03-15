@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.0.9"
+FRIENDBOX_VERSION="1.1.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -833,8 +833,8 @@ _mergerfs_provision_branches() {
       break
     fi
   done
-  # DelugeVPN uses /data/incomplete for in-progress downloads
-  [[ -n "${SELECTED[delugevpn]+_}" ]] && subdirs+=("downloads/incomplete")
+  # DelugeVPN: /data/incomplete is managed by Deluge inside the container
+  # under ${MEDIA_ROOT}/downloads/incomplete — no need to pre-create on branches
   local _p created=0
 
   for _p in "${!DISK_MODES[@]}"; do
@@ -4375,12 +4375,8 @@ HDEOF
         break
       fi
     done
-    # DelugeVPN uses /data/incomplete for in-progress downloads
-    if [[ -n "${SELECTED[delugevpn]+_}" ]]; then
-      mkdir -p "${media}/downloads/incomplete"
-      chown "${uid}:${gid}" "${media}/downloads/incomplete"
-      chmod 775 "${media}/downloads/incomplete"
-    fi
+    # DelugeVPN: incomplete dir is created by Deluge itself under /data/incomplete
+    # which maps to ${MEDIA_ROOT}/downloads/incomplete on the host. No pre-creation needed.
   fi
 
   # Per-selected-container config dirs
@@ -4490,10 +4486,10 @@ HDEOF
   "format": 1
 }{
   "pre_allocate_storage": false,
-  "download_location": "/data/downloads",
+  "download_location": "/data",
   "move_completed": false,
-  "move_completed_path": "/data/downloads",
-  "torrentfiles_location": "/data/downloads",
+  "move_completed_path": "/data",
+  "torrentfiles_location": "/data",
   "autoadd_enable": false
 }
 DELUGEEOF

@@ -806,7 +806,7 @@ _mergerfs_write_fstab() {
   # mergerfs v2 fstab format — uid/gid ensures pool mount reports correct
   # ownership to Docker containers running as PUID.
   local uid="${PUID:-1000}" gid="${PGID:-1000}"
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
   success "fstab updated."
 }
 
@@ -833,8 +833,8 @@ _mergerfs_provision_branches() {
       break
     fi
   done
-  # DelugeVPN: /data/incomplete is managed by Deluge inside the container
-  # under ${MEDIA_ROOT}/downloads/incomplete — no need to pre-create on branches
+  # DelugeVPN uses /data/incomplete for in-progress downloads
+  [[ -n "${SELECTED[delugevpn]+_}" ]] && subdirs+=("downloads/incomplete")
   local _p created=0
 
   for _p in "${!DISK_MODES[@]}"; do
@@ -900,7 +900,7 @@ _mergerfs_remount() {
   # uid/gid: pool mount reports correct ownership to Docker containers as PUID.
   local mount_out
   mount_out=$(mergerfs \
-    -o allow_other,use_ino,uid=${uid},gid=${gid},cache.files=off,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool \
+    -o allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,dropcacheonclose=true,category.create=mfs,moveonenospc=true,fsname=mergerpool \
     "${branch_list}" "${pool_path}" 2>&1)
   local mount_rc=$?
   if [[ $mount_rc -eq 0 ]]; then
@@ -4375,8 +4375,12 @@ HDEOF
         break
       fi
     done
-    # DelugeVPN: incomplete dir is created by Deluge itself under /data/incomplete
-    # which maps to ${MEDIA_ROOT}/downloads/incomplete on the host. No pre-creation needed.
+    # DelugeVPN uses /data/incomplete for in-progress downloads
+    if [[ -n "${SELECTED[delugevpn]+_}" ]]; then
+      mkdir -p "${media}/downloads/incomplete"
+      chown "${uid}:${gid}" "${media}/downloads/incomplete"
+      chmod 775 "${media}/downloads/incomplete"
+    fi
   fi
 
   # Per-selected-container config dirs
@@ -4486,10 +4490,10 @@ HDEOF
   "format": 1
 }{
   "pre_allocate_storage": false,
-  "download_location": "/data",
+  "download_location": "/data/downloads",
   "move_completed": false,
-  "move_completed_path": "/data",
-  "torrentfiles_location": "/data",
+  "move_completed_path": "/data/downloads",
+  "torrentfiles_location": "/data/downloads",
   "autoadd_enable": false
 }
 DELUGEEOF

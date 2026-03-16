@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.1.2"
+FRIENDBOX_VERSION="1.1.3"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -875,6 +875,11 @@ _mergerfs_remount() {
     warn "No disks configured — cannot mount pool."
     return 1
   fi
+
+  # Always update fstab to match current mount options before mounting.
+  # This keeps the fstab entry in sync so reboots use the same options
+  # as the live mount — without this, old fstab options persist across reboots.
+  _mergerfs_write_fstab "$pool_path"
 
   mkdir -p "$pool_path"
 

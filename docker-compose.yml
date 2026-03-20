@@ -351,7 +351,7 @@ services:
       - "traefik.http.routers.bazarr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
 
-  # ── Ombi — media request manager (v3) ──────────────────────────────────────
+  # ── Ombi — media request manager ──────────────────────────────────────────
   ombi:
     image: lscr.io/linuxserver/ombi:latest
     container_name: ombi

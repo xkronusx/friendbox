@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.2.0"
+FRIENDBOX_VERSION="1.3.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -212,7 +212,7 @@ declare -A CONTAINER_NAMES=(
   [delugevpn]="DelugeVPN"
   [nzbget]="NZBGet"
   [overseerr]="Overseerr"
-  [ombi]="Ombi v3 (deprecated)"
+  [ombi]="Ombi"
   [jellyseerr]="Jellyseerr"
   [teamspeak6]="TeamSpeak 6"
   [mumble]="Mumble Server"
@@ -243,7 +243,7 @@ declare -A CONTAINER_DESC=(
   [delugevpn]="Deluge torrent client — routed through VPN (binhex)"
   [nzbget]="Usenet download client"
   [overseerr]="Media request & discovery manager"
-  [ombi]="Media request manager (deprecated — consider Overseerr or Jellyseerr)"
+  [ombi]="Media request manager for Plex, Emby, and Jellyfin"
   [jellyseerr]="Jellyfin-native media request manager"
   [teamspeak6]="TeamSpeak 6 voice server"
   [mumble]="Open-source Mumble voice server"

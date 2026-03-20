@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.1.9"
+FRIENDBOX_VERSION="1.2.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -190,18 +190,12 @@ CONTAINER_ORDER=(
   plex jellyfin
   sonarr radarr prowlarr bazarr
   qbittorrent qbittorrentvpn delugevpn nzbget
-  overseerr ombi jellyseerr
-  homeassistant
+  overseerr ombi jellyseerr doplarr
   heimdall homarr
-  filezilla
-  doplarr
-  unifi
-  actual
-  wgeasy
-  fail2ban
+  homeassistant actual
+  unifi wgeasy fail2ban filezilla netbootxyz
   teamspeak6 mumble
   ampmc
-  netbootxyz
 )
 
 declare -A CONTAINER_NAMES=(
@@ -218,7 +212,7 @@ declare -A CONTAINER_NAMES=(
   [delugevpn]="DelugeVPN"
   [nzbget]="NZBGet"
   [overseerr]="Overseerr"
-  [ombi]="Ombi v3 — media request manager (deprecated; consider Overseerr or Jellyseerr)"
+  [ombi]="Ombi v3 (deprecated)"
   [jellyseerr]="Jellyseerr"
   [teamspeak6]="TeamSpeak 6"
   [mumble]="Mumble Server"
@@ -249,7 +243,7 @@ declare -A CONTAINER_DESC=(
   [delugevpn]="Deluge torrent client — routed through VPN (binhex)"
   [nzbget]="Usenet download client"
   [overseerr]="Media request & discovery manager"
-  [ombi]="Media request manager (Ombi v3) — DEPRECATED, consider Overseerr or Jellyseerr"
+  [ombi]="Media request manager (deprecated — consider Overseerr or Jellyseerr)"
   [jellyseerr]="Jellyfin-native media request manager"
   [teamspeak6]="TeamSpeak 6 voice server"
   [mumble]="Open-source Mumble voice server"
@@ -272,9 +266,11 @@ declare -A CONTAINER_CATEGORY=(
   [sonarr]="── Library Management"
   [qbittorrent]="── Download Clients"
   [overseerr]="── Request Managers"
+  [heimdall]="── Dashboards"
+  [homeassistant]="── Home Automation & Finance"
+  [unifi]="── Network & Security"
   [teamspeak6]="── Voice / Communication"
   [ampmc]="── Game Servers"
-  [netbootxyz]="── Network Tools"
 )
 
 declare -A CONTAINER_ALWAYS=(

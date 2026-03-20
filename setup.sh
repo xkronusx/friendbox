@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.1.6"
+FRIENDBOX_VERSION="1.1.7"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1668,18 +1668,27 @@ PYEOF
   else
     tls_block=""
     # Restore certresolver + remove DuckDNS-specific domains labels for non-DuckDNS providers
-    python3 - "$COMPOSE_FILE" << 'PYEOF'
+    python3 - "$COMPOSE_FILE" "$DOMAIN" << 'PYEOF'
 import re, sys
-path = sys.argv[1]
+path   = sys.argv[1]
+domain = sys.argv[2]
 with open(path) as f:
     content = f.read()
-# Remove DuckDNS-specific domains labels
-content = re.sub(r'\\n      - "traefik\\.http\\.routers\\.dashboard\\.tls\\.certresolver=letsencrypt"', '', content)
-content = re.sub(r'\\n      - "traefik\\.http\\.routers\\.dashboard\\.tls\\.domains\\[0\\][^"]*"', '', content)
+
+# Remove DuckDNS-specific injected labels using str.replace on actual newlines.
+# The regex approach fails here because heredoc escaping produces literal \n
+# not real newlines. str.replace works directly on the file content.
+for duck_label in [
+    '\n      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"',
+    '\n      - "traefik.http.routers.dashboard.tls.domains[0].main=' + domain + '"',
+    '\n      - "traefik.http.routers.dashboard.tls.domains[0].sans=*.' + domain + '"',
+]:
+    content = content.replace(duck_label, '')
+
 # Add certresolver to all routers that have tls=true but no certresolver
-routers = re.findall(r'traefik\\.http\\.routers\\.([^.]+)\\.tls=true', content)
+routers = re.findall(r'traefik\.http\.routers\.([^.]+)\.tls=true', content)
 for router in routers:
-    certresolver_label = f'traefik.http.routers.{router}.tls.certresolver=${{TRAEFIK_CERT_RESOLVER}}'
+    certresolver_label = f'traefik.http.routers.{router}.tls.certresolver=${TRAEFIK_CERT_RESOLVER}'
     tls_label = f'traefik.http.routers.{router}.tls=true'
     if certresolver_label not in content:
         content = content.replace(
@@ -4642,9 +4651,14 @@ _dns_get_subdomains() {
     [qbittorrent]="qbt"       [qbittorrentvpn]="qbtvpn"
     [delugevpn]="deluge"      [nzbget]="nzbget"
     [overseerr]="overseerr"   [ombi]="ombi"
-    [jellyseerr]="jellyseerr" [teamspeak6]="ts6"         [mumble]="mumble"
-    [ampmc]="amp"             [netbootxyz]="netboot"
+    [jellyseerr]="jellyseerr" [teamspeak6]="ts6"
+    [mumble]="mumble"         [ampmc]="amp"
+    [netbootxyz]="netboot"    [filezilla]="filezilla"
+    [heimdall]="heimdall"     [homarr]="homarr"
+    [doplarr]="doplarr"       [unifi]="unifi"
+    [actual]="actual"         [wgeasy]="wg"
   )
+  # Note: homeassistant and fail2ban use host networking — no subdomain routing
   local key
   for key in "${CONTAINER_ORDER[@]}"; do
     [[ -n "${SELECTED[$key]+_}" && -n "${SUB_MAP[$key]+_}" ]] && echo "${SUB_MAP[$key]}"

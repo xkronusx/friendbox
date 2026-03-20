@@ -2,7 +2,7 @@
 
 A fully automated, menu-driven Docker media server stack for Ubuntu 24.04 LTS.
 
-**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Overseerr · Ombi · Jellyseerr · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
+**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Overseerr · Ombi · Jellyseerr · Home Assistant · Heimdall · Homarr · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
 ---
 
@@ -95,6 +95,8 @@ mkdir -p /mnt/media && chown 1000:1000 /mnt/media
 
 > **Subdirectory creation (option 7)** writes `movies/`, `tv/`, and `downloads/` (if any download client, Sonarr, or Radarr is selected) directly on each RW/NC branch disk. RO branches are never written to. Subdirs are never created through the mounted pool path.
 
+> **MergerFS and libtorrent:** Friendbox configures MergerFS with `auto_cache` and `sync_read` mount options, which are required for libtorrent-based clients (Deluge, qBittorrent) to write to the pool correctly. `auto_cache` enables the kernel page cache — without it, libtorrent's memory-mapped I/O returns "No such device". These options are applied automatically on every remount.
+
 ---
 
 ### Step 2 — Configure your environment
@@ -140,6 +142,15 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `overseerr` | Media request manager (Plex) |
 | `ombi` | Media request manager — **deprecated**, consider Overseerr or Jellyseerr |
 | `jellyseerr` | Media request manager (Jellyfin) |
+| `homeassistant` | Home automation platform — uses host networking for device discovery |
+| `heimdall` | Simple application dashboard |
+| `homarr` | Modern application dashboard (pinned 0.16.1) |
+| `filezilla` | FTP/SFTP client with browser-based GUI |
+| `doplarr` | Discord bot for Overseerr/Sonarr/Radarr media requests |
+| `unifi` | Ubiquiti UniFi network controller (includes MongoDB sidecar) |
+| `actual` | Local-first personal finance and budgeting |
+| `wgeasy` | WireGuard VPN server with web UI |
+| `fail2ban` | Log-based intrusion prevention — bans abusive IPs (host network, no web UI) |
 | `netbootxyz` | Network boot server |
 | `teamspeak6` | TeamSpeak 6 voice server — connect via TS6 client on UDP 9987 |
 | `mumble` | Mumble voice server — connect via Mumble client on port 64738 |
@@ -182,7 +193,7 @@ If Friendbox is already installed, option 1 warns before proceeding.
 | 4 | Toggle staging / production CA |
 | 5 | Run pre-flight checks |
 | 6 | Live routing diagnostics |
-| 7 | Emergency recovery (clear certs + restart Traefik) |
+| 7 | Emergency recovery (clear certs + redeploy all containers) |
 | 8 | Set root domain redirect target |
 
 **ACME challenge providers:**
@@ -195,7 +206,7 @@ If Friendbox is already installed, option 1 warns before proceeding.
 | `godaddy` | DNS-01 | Requires GoDaddy API key + secret |
 | `namecheap` | DNS-01 | Requires Namecheap Dynamic DNS credentials |
 
-> **DuckDNS note:** The DuckDNS API can only set TXT records on the root subdomain — not on sub-subdomains. Per-host certificates (e.g. `portainer.myhome.duckdns.org`) cannot be validated individually. Friendbox automatically requests a single wildcard cert (`*.yourdomain.duckdns.org`) that covers all subdomains at once. No manual configuration needed — the domain is read from your `.env` settings.
+> **DuckDNS note:** The DuckDNS API can only set TXT records on the root subdomain — not on sub-subdomains. Per-host certificates (e.g. `portainer.myhome.duckdns.org`) cannot be validated individually. Friendbox automatically requests a single wildcard cert (`*.yourdomain.duckdns.org`) that covers all subdomains at once. The cert request is placed on the Traefik dashboard router label — all other routers inherit it automatically.
 
 **Staging CA (option 4):**
 
@@ -206,6 +217,10 @@ When staging is active, the Traefik status line shows:
 ACME CA : STAGING (untrusted certs — use option 4 to switch to production)
 ```
 
+**Emergency recovery (option 7):**
+
+Redeploys **all** containers, not just Traefik. This is required because Docker bakes Traefik labels into container metadata at creation time — a running container carries its old labels until it is recreated. Always use option 7 (not a manual `docker restart traefik`) when recovering from cert issues.
+
 **Live routing diagnostics (option 6):**
 
 Queries the Traefik API at `localhost:8080` and shows:
@@ -213,7 +228,11 @@ Queries the Traefik API at `localhost:8080` and shows:
 - All service backends with health (UP/DOWN) and resolved IP:port
 - Container IP addresses on `medianet`
 - `DOMAIN` whitespace check (trailing spaces silently break `Host()` rules)
-- Certificates currently stored in `acme.json`
+- Certificates currently stored in `acme.json` with expiry date and days remaining
+
+**Cert validity checks:**
+
+Before clearing `acme.json` (in both emergency recovery and staging toggle), Friendbox checks whether a valid certificate exists with more than 30 days remaining. If one does, it warns you and asks for confirmation — this prevents accidentally consuming one of your 5 weekly Let's Encrypt slots when it isn't necessary.
 
 **Traefik dashboard access:**
 
@@ -223,7 +242,7 @@ Port 8080 is bound to all interfaces — the dashboard is reachable from the hos
 
 ---
 
-### Step 6 — Set service credentials *(required for VPN, AMP, Mumble)*
+### Step 6 — Set service credentials *(required for VPN, AMP, Mumble, WireGuard Easy)*
 **`sudo friendbox` → option 5**
 
 Only shows options for services you have selected.
@@ -236,6 +255,37 @@ Only shows options for services you have selected.
 | **Jellyfin** | Hardware acceleration method (VA-API / NVENC / None) + full diagnostic tool |
 
 > **VPN LAN CIDR note:** The default value includes your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet assigned to `medianet` (detected automatically from the live network). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik to reverse-proxy the VPN container while the tunnel is active. If your home network uses a different subnet (e.g. `192.168.0.0/24`), update the first entry accordingly.
+
+**WireGuard Easy setup:**
+
+WireGuard Easy requires a bcrypt password hash set in `.env` as `WGEASY_PASSWORD_HASH`. Generate one with:
+```bash
+echo -n 'yourpassword' | npx bcrypt-cli
+```
+Then add the result to `/opt/friendbox/.env`:
+```
+WGEASY_PASSWORD_HASH=$2b$10$...
+```
+The web UI is available at `https://wg.yourdomain.com` or `http://IP:51821`.
+
+**Doplarr setup:**
+
+Doplarr requires Discord and API credentials set in `.env`:
+```
+DOPLARR_DISCORD_TOKEN=your_discord_bot_token
+DOPLARR_OVERSEERR_API=your_overseerr_api_key
+DOPLARR_RADARR_API=your_radarr_api_key     # optional
+DOPLARR_SONARR_API=your_sonarr_api_key     # optional
+```
+Doplarr connects to Overseerr, Sonarr, and Radarr by container name on the internal `medianet` network.
+
+**UniFi setup:**
+
+UniFi requires a MongoDB password set in `.env`:
+```
+UNIFI_MONGO_PASS=yourpassword
+```
+The UniFi controller and its MongoDB sidecar (`unifi-db`) start together under the `[unifi]` profile. The web UI is at `https://unifi.yourdomain.com` or `https://IP:8443`.
 
 ---
 
@@ -264,7 +314,7 @@ sudo friendbox  →  option 10   (Show container status)
 sudo friendbox  →  option 11   (View service URLs)
 ```
 
-Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses. The TeamSpeak 6 admin privilege token is surfaced automatically during Full Install (option 1) — see the troubleshooting section if it didn't appear.
+Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdomain addresses; without Traefik it shows direct `http://ip:port` addresses.
 
 > **Pre-flight warnings:** Full Install (option 1) runs a pre-flight check before starting containers. If your domain, ACME email, or ACME provider look incomplete, it will list the issues and ask whether to continue. These are warnings — you can proceed and fix them afterward via option 4. Port conflicts are also checked automatically before any `compose up`.
 
@@ -288,6 +338,15 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Overseerr | `https://overseerr.yourdomain.com` | Sign in with Plex account |
 | Ombi | `https://ombi.yourdomain.com` (`http://IP:3579` direct) | Create admin account on first visit |
 | Jellyseerr | `https://jellyseerr.yourdomain.com` (`http://IP:5056` direct) | Sign in with Jellyfin account |
+| Home Assistant | `http://IP:8123` (host network — not routable via Traefik) | Create admin account on first visit |
+| Heimdall | `https://heimdall.yourdomain.com` (`http://IP:8091` direct) | No auth by default — add apps from the dashboard |
+| Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | No auth by default — configure from the dashboard |
+| FileZilla | `https://filezilla.yourdomain.com` (`http://IP:3300` direct) | No auth by default — add site manager entries for your servers |
+| Doplarr | No web UI — Discord bot only | Invite bot to your server, use slash commands |
+| UniFi | `https://unifi.yourdomain.com` (`https://IP:8443` direct) | Create admin account on first visit. Inform port for devices: `IP:8880` |
+| Actual Budget | `https://actual.yourdomain.com` (`http://IP:5006` direct) | Create account on first visit |
+| WireGuard Easy | `https://wg.yourdomain.com` (`http://IP:51821` direct) | Password set via `WGEASY_PASSWORD_HASH` in `.env` |
+| Fail2ban | No web UI — host network | Monitor via `docker logs fail2ban` or logs in `${CONFIG_ROOT}/fail2ban/` |
 | AMP | `https://amp.yourdomain.com` (`http://IP:8085` direct) | Credentials set in option 5 |
 | NetbootXYZ | `https://netboot.yourdomain.com` (`http://IP:3000` direct) | No auth by default |
 | TeamSpeak 6 | No web UI — connect with the TS6 client to `yourserver:9987` (UDP) | Server admin token printed in container logs on first start: `docker logs teamspeak6` |
@@ -314,8 +373,14 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | Overseerr | `http://overseerr:5055` |
 | Ombi | `http://ombi:3579` |
 | Jellyseerr | `http://jellyseerr:5055` |
+| Homarr | `http://homarr:7575` |
+| Heimdall | `http://heimdall:80` |
+| UniFi | `https://unifi:8443` |
+| Actual Budget | `http://actual:5006` |
 
 > Note: Jellyseerr's **internal** port is `5055`. The host binding is `5056` (to avoid clashing with Overseerr when both are running), but container-to-container traffic always uses the internal port.
+
+> Note: Home Assistant and Fail2ban use host networking and are not reachable by container name from other containers. Access Home Assistant via `http://HOST_IP:8123`.
 
 **Recommended connection order:**
 1. Prowlarr → add your indexers
@@ -324,6 +389,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 4. Sonarr → Settings → Media Management → tick **Use Hardlinks instead of Copy** (prevents file duplication on import)
 5. Radarr → repeat the same steps as Sonarr
 6. Overseerr / Jellyseerr → connect to Plex or Jellyfin, then Sonarr and Radarr
+7. Doplarr → configure via Discord slash commands, pointing to Overseerr at `http://overseerr:5055`
 
 ---
 
@@ -368,25 +434,19 @@ All containers share the `medianet` Docker bridge and communicate by container n
 - `exposedByDefault: false` — only containers with `traefik.enable=true` get routes
 - Every container has `traefik.enable=true` and `traefik.docker.network=medianet` hardcoded in its labels
 - The Docker `profiles:` key controls whether a container starts — a stopped container is simply not routed
-- Each router has `tls=true` and `tls.certresolver=letsencrypt` — Traefik requests and renews certs automatically
+- Each router has `tls=true` — Traefik requests and renews certs automatically
+- Home Assistant and Fail2ban use `network_mode: host` — they are not routable through Traefik and do not have Traefik labels
 - All containers also expose direct host ports for LAN access without Traefik
 
 ### DuckDNS wildcard certificate
 
-When DuckDNS is selected as the ACME provider, Friendbox configures the `websecure` entrypoint to request a single wildcard cert covering all subdomains at once. The domain is read from your `.env` at config-generation time — nothing is hardcoded:
+When DuckDNS is selected as the ACME provider, Friendbox injects `tls.certresolver` and `tls.domains` labels onto the Traefik dashboard router. This is a workaround for a confirmed Traefik v3 bug where entrypoint-level cert requests do not generate wildcard certificates. The dashboard router requests the wildcard — all other routers inherit it automatically.
 
-```yaml
-websecure:
-  address: ":443"
-  http:
-    tls:
-      domains:
-        - main: "yourdomain.duckdns.org"
-          sans:
-            - "*.yourdomain.duckdns.org"
 ```
-
-The DuckDNS API sets `_acme-challenge.yourdomain.duckdns.org` — Let's Encrypt validates it once for the wildcard rather than attempting per-subdomain validation (which DuckDNS cannot support). Individual routers inherit this cert automatically; no `certresolver` label is set on them when DuckDNS is the provider.
+traefik.http.routers.dashboard.tls.certresolver=letsencrypt
+traefik.http.routers.dashboard.tls.domains[0].main=yourdomain.duckdns.org
+traefik.http.routers.dashboard.tls.domains[0].sans=*.yourdomain.duckdns.org
+```
 
 ### acme.json permissions
 
@@ -504,13 +564,16 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - `acme.json` is always `root:root 600` — required for Traefik v3 to write cert renewals
 - `.env` is `chmod 600` — contains VPN credentials, DNS provider API keys, and hashed dashboard passwords. Do not share or commit it
 - `.dns_config` is `chmod 600` — contains DNS provider API keys
+- `WGEASY_PASSWORD_HASH` in `.env` stores a bcrypt hash — never the plaintext password
 - The Traefik HTTPS dashboard requires bcrypt Basic Auth credentials (option 4 → option 1)
 - The Traefik API at `:8080` has no authentication — it is accessible from any machine on your LAN. Do not forward port 8080 through your router to the internet
 - qBittorrent default credentials (`admin` / `adminadmin`) must be changed immediately after first login
 - `exposedByDefault: false` — only explicitly labeled containers get Traefik routes
-- All inter-container traffic uses the `medianet` bridge — containers communicate with each other by name rather than host IP. Services also bind direct host ports for LAN access (e.g. Plex on 32400, TeamSpeak on 9987); Traefik on ports 80 and 443 is the HTTPS entry point but not the only host-bound path
+- Home Assistant and Fail2ban use host networking — they bypass the `medianet` bridge entirely and bind directly to the host network stack
+- All inter-container traffic uses the `medianet` bridge — containers communicate with each other by name rather than host IP
 - qBittorrent binds host port `8082` (not 8080) to avoid conflicting with Traefik's API on port 8080
 - Jellyseerr binds host port `5056` (not 5055) to avoid conflicting with Overseerr when both are selected
+- UniFi binds host port `8880` for device inform (not 8080) to avoid conflicting with Traefik
 - TeamSpeak 6 WebAuth port `10080` is commented out by default — enable manually only if needed and with appropriate firewall rules
 
 ---
@@ -519,17 +582,18 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 
 **`Testing certificate renew` loop in Traefik logs**
 - `acme.json` is owned by the wrong user. Fix: `sudo chown root:root /opt/friendbox/config/traefik/acme.json && sudo chmod 600 /opt/friendbox/config/traefik/acme.json`
-- Clear stale data and restart: `sudo truncate -s 0 /opt/friendbox/config/traefik/acme.json && docker restart traefik`
+- Clear stale data and restart: option 4 → option 7 (emergency recovery — redeploys all containers)
 
 **Hit Let's Encrypt rate limit (5 certs/week)**
 - Switch to staging CA to continue testing: option 4 → option 4
 - The pre-flight check (option 4 → option 5) queries crt.sh and shows remaining slots and reset time
+- Friendbox warns before clearing `acme.json` if a valid cert with more than 30 days remaining exists
 
 **404 on HTTPS subdomain after accepting cert warning**
 - Run live routing diagnostics: option 4 → option 6
 - Check all routers are registered and backends show UP
 - Confirm `DOMAIN` in `.env` has no trailing whitespace — the diagnostics check will flag this
-- Restart containers to apply latest labels: `docker compose down && docker compose up -d`
+- Restart containers to apply latest labels: option 4 → option 7 (emergency recovery)
 
 **Subdomain accessible via IP:port but not via HTTPS**
 - Confirm container is on `medianet`: `docker inspect <container> --format '{{json .NetworkSettings.Networks}}'`
@@ -546,6 +610,11 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Manually remount: option 7 → option 6
 - Check individual drive mount status: option 7 → option 5
 
+**Download clients getting "No such device" errors on MergerFS**
+- This is caused by libtorrent's memory-mapped I/O (`mmap()`) on a FUSE filesystem. MergerFS requires `auto_cache` to be enabled for mmap to work — without it, every write attempt fails with ENXIO.
+- Fix: option 7 → option 6 (remount pool). The remount automatically applies the correct `auto_cache,sync_read` options and updates fstab.
+- For DelugeVPN specifically, ensure pre-allocation is disabled: Deluge web UI → Preferences → Downloads → uncheck *Allocate disk space before downloading*
+
 **Containers running but ports unreachable (127.0.0.1:9000, LAN IP:port refused)**
 - This is most commonly Ubuntu's `ufw` firewall conflicting with Docker. ufw's default `FORWARD` policy is `DROP`, which blocks Docker's iptables DNAT rules even for connections on localhost.
 - Fix: set `DEFAULT_FORWARD_POLICY=ACCEPT` in `/etc/default/ufw` and run `sudo ufw reload`
@@ -554,7 +623,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 **Container fails to start, port already in use**
 - Full Install automatically runs a port conflict check before `compose up`. If a conflict was detected and you chose to continue, the conflicting process needs to be stopped.
 - Find what's using a port: `sudo ss -tlnp | grep :<port>`
-- If the holder is a prior Docker process: `docker ps -a` then `docker rm -f <name>`
+- If the holder is a prior Docker process: `docker ps -a` then `docker rm -f <n>`
 
 **Permission errors in container logs**
 - Run option 8 to fix all directory ownership
@@ -573,6 +642,23 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 **VPN download speeds lower than expected**
 - The `medianet` bridge uses MTU 1420 (below the Ethernet default of 1500). This prevents packet fragmentation through the VPN tunnel, which adds overhead when container MTU exceeds tunnel MTU. If you ever recreate the `medianet` network manually, the MTU setting will be lost unless the network is recreated via `docker compose down && docker compose up -d`.
 - If you suspect MTU is not applied, verify in Portainer: Networks → medianet → Options → `com.docker.network.driver.mtu` should show `1420`.
+
+**Home Assistant not accessible via Traefik subdomain**
+- Home Assistant uses `network_mode: host` — it binds directly to the host network stack and cannot be reached through the `medianet` bridge. Traefik cannot route to host-networked containers. Access it directly at `http://IP:8123`.
+
+**UniFi controller can't adopt devices**
+- Devices need to reach the inform URL at `http://SERVER_IP:8880`. Port 8880 on the host maps to UniFi's internal port 8080 (remapped to avoid conflict with Traefik). Set the inform URL in device SSH: `set-inform http://SERVER_IP:8880/inform`
+- If devices were previously adopted by a different controller, factory reset them first.
+
+**WireGuard Easy web UI accessible but clients can't connect**
+- Confirm `DOMAIN` in `.env` matches your public-facing hostname — WireGuard Easy uses this as the endpoint for client configs.
+- Ensure UDP port 51820 is forwarded on your router to the Friendbox server.
+- Regenerate client configs after changing any settings.
+
+**Fail2ban not banning IPs**
+- Fail2ban reads logs from `/var/log` on the host (mounted read-only). Confirm your services are writing logs there.
+- Check active jails: `docker exec fail2ban fail2ban-client status`
+- Check a specific jail: `docker exec fail2ban fail2ban-client status sshd`
 
 **TeamSpeak 6 WebAuth (port 10080) not accessible**
 - Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → select TeamSpeak 6

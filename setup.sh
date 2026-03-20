@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.1.7"
+FRIENDBOX_VERSION="1.1.8"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1509,6 +1509,12 @@ configure_env() {
   _env_set USE_TRAEFIK  "${USE_TRAEFIK}"
   _env_set TRAEFIK_AUTH "${existing_auth}"
   [[ -n "${SELECTED[plex]+_}" && "$plex_running" == "false" ]] && _env_set PLEX_CLAIM "${PLEX_CLAIM:-}"
+  # Seed ROOT_REDIRECT_PORT if not yet set — ensures the compose label
+  # ${ROOT_REDIRECT_PORT:-9000} expands to the correct port for the selected
+  # root target, not always portainer's 9000 fallback.
+  if ! grep -q '^ROOT_REDIRECT_PORT=' "$ENV_FILE" 2>/dev/null; then
+    [[ -n "${_redir_port:-}" ]] && _env_set ROOT_REDIRECT_PORT "${_redir_port}"
+  fi
 
   _own "$ENV_FILE"
   success ".env updated (${ENV_FILE})"
@@ -2476,13 +2482,16 @@ _traefik_emergency_recover() {
     success "traefik.yml patched: added missing certResolver for DuckDNS wildcard cert."
   fi
 
-  # Start Traefik — use compose so certresolver label changes are picked up
+  # Redeploy ALL containers — Docker bakes labels into container metadata at
+  # creation time. Running containers keep their old labels until recreated.
+  # Redeploying only Traefik would leave other containers with stale labels.
   if [[ "$traefik_state" != "missing" ]]; then
-    info "Starting Traefik..."
-    compose_selected up -d --force-recreate traefik
-    success "Traefik started."
+    info "Redeploying all containers to apply updated labels..."
+    compose_selected up -d --force-recreate
+    success "All containers redeployed."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    info "Watch cert request: option 14 → traefik → follow live logs"
     info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
     info "Traefik container was not found — deploy the full stack first:"
@@ -2704,13 +2713,15 @@ _traefik_toggle_staging() {
     success "acme.json cleared."
   fi
 
-  # Restart Traefik if it is currently running
+  # Redeploy all containers — labels (including DuckDNS wildcard cert labels)
+  # are baked into container metadata at creation time. Redeploying only Traefik
+  # would leave other containers with stale cert labels from the previous CA.
   local traefik_state
   traefik_state=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
   if [[ "$traefik_state" == "running" || "$traefik_state" == "exited" ]]; then
-    info "Restarting Traefik to apply new CA and compose config..."
-    compose_selected up -d --force-recreate traefik
-    success "Traefik restarted."
+    info "Redeploying all containers to apply CA change..."
+    compose_selected up -d --force-recreate
+    success "All containers redeployed."
   else
     info "Traefik is not running — start it with: sudo friendbox → option 12"
   fi
@@ -4483,6 +4494,14 @@ HDEOF
     chown -R "${uid}:${gid}" "$dir"
     success "  ${dir}  [${uid}:${gid}]"
     created=$((created + 1))
+    # UniFi ships with a MongoDB sidecar (unifi-db) on the same profile.
+    # Create its data dir now so MongoDB starts as the correct user, not root.
+    if [[ "$key" == "unifi" ]]; then
+      local _udb="${cfg}/unifi-db"
+      mkdir -p "$_udb"
+      chown -R "${uid}:${gid}" "$_udb"
+      success "  ${_udb}  [${uid}:${gid}] (unifi-db)"
+    fi
   done
 
   # Plex transcode is a tmpfs mount (defined in docker-compose.yml) — no host dir needed.
@@ -5002,7 +5021,11 @@ _dns_install_cron() {
 #!/usr/bin/env bash
 # Friendbox automatic DNS updater — managed by friendbox
 INSTALL_DIR="/opt/friendbox"
+# Load DNS state — provider and credentials saved by the DNS manager
 source "${INSTALL_DIR}/.dns_config" 2>/dev/null || exit 0
+# Also source .env as fallback — CF credentials are written there by the
+# Traefik ACME provider config and may not be in .dns_config on all installs.
+source "${INSTALL_DIR}/.env" 2>/dev/null || true
 [[ -z "$DNS_PROVIDER" ]] && exit 0
 
 IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null) || exit 1
@@ -5017,7 +5040,15 @@ case "$DNS_PROVIDER" in
       "https://www.duckdns.org/update?domains=${DNS_DUCKDNS_SUBDOMAIN}&token=${DNS_DUCKDNS_TOKEN}&ip=${IP}" 2>/dev/null)
     [[ "$_result" == "OK" ]] && _ok=true
     ;;
-  cloudflare|godaddy|namecheap)
+  cloudflare)
+    # Prefer .dns_config credentials; fall back to .env (CF_DNS_API_TOKEN / CF_API_EMAIL)
+    _cf_key="${DNS_CF_API_KEY:-${CF_DNS_API_TOKEN:-}}"
+    _cf_zone="${DNS_CF_ZONE_ID:-}"
+    if [[ -n "$_cf_key" && -n "$_cf_zone" ]]; then
+      /usr/local/bin/friendbox --dns-update >/dev/null 2>&1 && _ok=true || true
+    fi
+    ;;
+  godaddy|namecheap)
     /usr/local/bin/friendbox --dns-update >/dev/null 2>&1 && _ok=true || true
     ;;
 esac

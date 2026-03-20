@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.1.8"
+FRIENDBOX_VERSION="1.1.9"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1645,10 +1645,13 @@ _traefik_write_config() {
   # Workaround: inject tls.certresolver and tls.domains labels onto the dashboard
   # router. Traefik issues the wildcard cert for that router; all other routers
   # with tls=true and no certresolver inherit the wildcard cert automatically.
-  if [[ "$provider" == "duckdns" ]]; then
-    # Strip any certresolver labels that may have been restored by a prior non-DuckDNS config
+  if [[ "$provider" == "duckdns" || "$provider" == "cloudflare" ]]; then
+    # Both DuckDNS and Cloudflare use DNS-01 challenge and support wildcard certs.
+    # Request ONE *.domain cert on the dashboard router; all other routers inherit it.
+    # This avoids requesting 25+ individual certs and eliminates rate limit risk.
+    # DuckDNS: entrypoint-level wildcard is broken in Traefik v3 (issue #12109) — router label is the fix.
+    # Cloudflare: same router-label approach for consistency and to stay under 50 certs/week.
     sed -i '/traefik\.http\.routers\.[^.]*\.tls\.certresolver=/d' "$COMPOSE_FILE"
-    # Inject wildcard cert request labels onto the dashboard router
     python3 - "$COMPOSE_FILE" "$DOMAIN" << 'PYEOF'
 import re, sys
 path   = sys.argv[1]
@@ -1662,18 +1665,22 @@ domain_sans   = f'traefik.http.routers.dashboard.tls.domains[0].sans=*.{domain}'
 if tls_label in content and certres_label not in content:
     content = content.replace(
         f'- "{tls_label}"',
-        f'- "{tls_label}"\n      - "{certres_label}"\n      - "{domain_main}"\n      - "{domain_sans}"'
+        f'- "{tls_label}"
+      - "{certres_label}"
+      - "{domain_main}"
+      - "{domain_sans}"'
     )
     with open(path, 'w') as f:
         f.write(content)
-    print(f"DuckDNS: injected wildcard cert labels onto dashboard router.")
+    print(f"Wildcard cert labels injected onto dashboard router ({domain}).")
 else:
-    print("DuckDNS: labels already present or tls=true not found.")
+    print("Wildcard labels already present or tls=true not found.")
 PYEOF
-    info "DuckDNS: wildcard cert labels injected onto dashboard router."
+    info "${provider}: wildcard cert labels injected onto dashboard router."
   else
     tls_block=""
-    # Restore certresolver + remove DuckDNS-specific domains labels for non-DuckDNS providers
+    # Restore per-router certresolver labels + remove any wildcard labels
+    # left by a prior DuckDNS or Cloudflare config.
     python3 - "$COMPOSE_FILE" "$DOMAIN" << 'PYEOF'
 import re, sys
 path   = sys.argv[1]
@@ -1681,15 +1688,13 @@ domain = sys.argv[2]
 with open(path) as f:
     content = f.read()
 
-# Remove DuckDNS-specific injected labels using str.replace on actual newlines.
-# The regex approach fails here because heredoc escaping produces literal \n
-# not real newlines. str.replace works directly on the file content.
-for duck_label in [
+# Remove wildcard labels injected by duckdns/cloudflare wildcard mode.
+for wildcard_label in [
     '\n      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"',
     '\n      - "traefik.http.routers.dashboard.tls.domains[0].main=' + domain + '"',
     '\n      - "traefik.http.routers.dashboard.tls.domains[0].sans=*.' + domain + '"',
 ]:
-    content = content.replace(duck_label, '')
+    content = content.replace(wildcard_label, '')
 
 # Add certresolver to all routers that have tls=true but no certresolver
 routers = re.findall(r'traefik\.http\.routers\.([^.]+)\.tls=true', content)
@@ -1800,6 +1805,10 @@ _traefik_show_status() {
   [[ -n "${TRAEFIK_AUTH:-}" && "${TRAEFIK_AUTH:-}" != "disabled" ]] && auth_set="configured"
 
   local provider_label="${TRAEFIK_ACME_PROVIDER:-not set}"
+  # Annotate providers that use wildcard cert mode
+  case "${TRAEFIK_ACME_PROVIDER:-}" in
+    duckdns|cloudflare) provider_label="${TRAEFIK_ACME_PROVIDER} ${DIM}(wildcard *.${DOMAIN:-domain})${RESET}" ;;
+  esac
 
   if [[ -n "${SELECTED[traefik]+_}" ]]; then
     echo -e "  ${BOLD}Status        :${RESET} ${GREEN}selected (will deploy)${RESET}"

@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.1.4"
+FRIENDBOX_VERSION="1.1.5"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -191,6 +191,14 @@ CONTAINER_ORDER=(
   sonarr radarr prowlarr bazarr
   qbittorrent qbittorrentvpn delugevpn nzbget
   overseerr ombi jellyseerr
+  homeassistant
+  heimdall homarr
+  filezilla
+  doplarr
+  unifi
+  actual
+  wgeasy
+  fail2ban
   teamspeak6 mumble
   ampmc
   netbootxyz
@@ -216,6 +224,15 @@ declare -A CONTAINER_NAMES=(
   [mumble]="Mumble Server"
   [ampmc]="AMP (Game Server Panel)"
   [netbootxyz]="NetbootXYZ"
+  [homeassistant]="Home Assistant"
+  [filezilla]="FileZilla"
+  [heimdall]="Heimdall"
+  [fail2ban]="Fail2ban"
+  [doplarr]="Doplarr"
+  [unifi]="UniFi Network"
+  [actual]="Actual Budget"
+  [homarr]="Homarr"
+  [wgeasy]="WireGuard Easy"
 )
 
 declare -A CONTAINER_DESC=(
@@ -238,6 +255,15 @@ declare -A CONTAINER_DESC=(
   [mumble]="Open-source Mumble voice server"
   [ampmc]="Game server management panel (Minecraft etc.)"
   [netbootxyz]="PXE/network boot server"
+  [homeassistant]="Home automation platform (linuxserver)"
+  [filezilla]="FTP/SFTP client with browser-based GUI"
+  [heimdall]="Simple application dashboard"
+  [fail2ban]="Log-based intrusion prevention — bans abusive IPs"
+  [doplarr]="Discord bot for media requests via Overseerr/Sonarr/Radarr"
+  [unifi]="Ubiquiti UniFi network controller"
+  [actual]="Local-first personal finance / budgeting"
+  [homarr]="Modern application dashboard (pinned 0.16.1)"
+  [wgeasy]="WireGuard VPN server with web UI"
 )
 
 declare -A CONTAINER_CATEGORY=(
@@ -3527,6 +3553,15 @@ check_port_conflicts() {
     [netbootxyz]="69/udp:TFTP 3000/tcp:NetbootXYZ 8083/tcp:NetbootXYZ-assets"
     [mumble]="64738/tcp:Mumble-TCP 64738/udp:Mumble-UDP"
     [teamspeak6]="9987/udp:TS6-voice 10011/tcp:TS6-query 30033/tcp:TS6-filetransfer"
+    [homeassistant]="8123/tcp:HomeAssistant"
+    [filezilla]="3300/tcp:FileZilla-web 3301/tcp:FileZilla-web-HTTPS"
+    [heimdall]="8091/tcp:Heimdall 8092/tcp:Heimdall-HTTPS"
+    [fail2ban]=""
+    [doplarr]="8787/tcp:Doplarr"
+    [unifi]="8443/tcp:UniFi-UI 8880/tcp:UniFi-inform 3478/udp:UniFi-STUN 10001/udp:UniFi-discovery"
+    [actual]="5006/tcp:ActualBudget"
+    [homarr]="7575/tcp:Homarr"
+    [wgeasy]="51820/udp:WireGuard 51821/tcp:WG-Easy-UI"
   )
 
   local conflicts=0 key entry port proto label
@@ -4399,6 +4434,11 @@ HDEOF
     [jellyseerr]="jellyseerr"   [teamspeak6]="teamspeak6"
     [mumble]="mumble"           [ampmc]="ampmc"
     [netbootxyz]="netbootxyz"
+    [homeassistant]="homeassistant" [filezilla]="filezilla"
+    [heimdall]="heimdall"           [fail2ban]="fail2ban"
+    [doplarr]="doplarr"             [unifi]="unifi"
+    [actual]="actual"               [homarr]="homarr"
+    [wgeasy]="wgeasy"
   )
 
   local created=0 key dir
@@ -5182,6 +5222,11 @@ print_urls() {
       [jellyseerr]="https://jellyseerr.${d}" [teamspeak6]="ts6.${d}:9987 (UDP)"
       [mumble]="mumble.${d}:64738"           [ampmc]="https://amp.${d}"
       [netbootxyz]="https://netboot.${d}"
+      [homeassistant]="https://ha.${d}"         [filezilla]="https://filezilla.${d}"
+      [heimdall]="https://heimdall.${d}"        [doplarr]="https://doplarr.${d}"
+      [unifi]="https://unifi.${d}"              [actual]="https://actual.${d}"
+      [homarr]="https://homarr.${d}"            [wgeasy]="https://wg.${d}"
+      [fail2ban]="(no web UI — host network)"
     )
   else
     echo -e "${BOLD}Active Service URLs${RESET} ${DIM}(direct port access — no Traefik)${RESET}"
@@ -5205,6 +5250,11 @@ print_urls() {
       [mumble]="${host_ip}:64738"
       [ampmc]="http://${host_ip}:8085"
       [netbootxyz]="http://${host_ip}:3000"
+      [homeassistant]="http://${host_ip}:8123"  [filezilla]="http://${host_ip}:3300"
+      [heimdall]="http://${host_ip}:8091"       [doplarr]="http://${host_ip}:8787"
+      [unifi]="https://${host_ip}:8443"         [actual]="http://${host_ip}:5006"
+      [homarr]="http://${host_ip}:7575"         [wgeasy]="http://${host_ip}:51821"
+      [fail2ban]="(no web UI — host network)"
     )
   fi
 

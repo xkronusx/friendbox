@@ -768,3 +768,317 @@ services:
       - "traefik.http.routers.ampmc.tls=true"
       - "traefik.http.routers.ampmc.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.ampmc.loadbalancer.server.port=8080"
+
+  # ── Home Assistant — home automation platform ────────────────────────────────
+  homeassistant:
+    image: lscr.io/linuxserver/homeassistant:latest
+    container_name: homeassistant
+    profiles: [homeassistant]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    network_mode: host
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/homeassistant:/config
+      - /run/dbus:/run/dbus:ro
+
+  # ── FileZilla — FTP/SFTP client with web UI ──────────────────────────────────
+  filezilla:
+    image: lscr.io/linuxserver/filezilla:latest
+    container_name: filezilla
+    profiles: [filezilla]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/filezilla:/config
+    ports:
+      - "3300:3000"
+      - "3301:3001"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
+      - "traefik.http.routers.filezilla.rule=Host(`filezilla.${DOMAIN}`)"
+      - "traefik.http.routers.filezilla.entrypoints=websecure"
+      - "traefik.http.routers.filezilla.tls=true"
+      - "traefik.http.routers.filezilla.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.filezilla.loadbalancer.server.port=3000"
+
+  # ── Heimdall — application dashboard ────────────────────────────────────────
+  heimdall:
+    image: lscr.io/linuxserver/heimdall:latest
+    container_name: heimdall
+    profiles: [heimdall]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/heimdall:/config
+    ports:
+      - "8091:80"
+      - "8092:443"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
+      - "traefik.http.routers.heimdall.rule=Host(`heimdall.${DOMAIN}`)"
+      - "traefik.http.routers.heimdall.entrypoints=websecure"
+      - "traefik.http.routers.heimdall.tls=true"
+      - "traefik.http.routers.heimdall.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.heimdall.loadbalancer.server.port=80"
+
+  # ── Fail2ban — intrusion prevention / log-based banning ─────────────────────
+  # Runs on host network with access to host logs. No web UI.
+  fail2ban:
+    image: lscr.io/linuxserver/fail2ban:latest
+    container_name: fail2ban
+    profiles: [fail2ban]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/fail2ban:/config
+      - /var/log:/var/log:ro
+      - /run/docker.sock:/run/docker.sock:ro
+
+  # ── Doplarr — Discord bot for Overseerr/Radarr/Sonarr requests ───────────────
+  doplarr:
+    image: lscr.io/linuxserver/doplarr:latest
+    container_name: doplarr
+    profiles: [doplarr]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - DISCORD__TOKEN=${DOPLARR_DISCORD_TOKEN:-changeme}
+      - OVERSEERR__URL=http://overseerr:5055
+      - OVERSEERR__API=${DOPLARR_OVERSEERR_API:-changeme}
+      - RADARR__URL=http://radarr:7878
+      - RADARR__API=${DOPLARR_RADARR_API:-}
+      - SONARR__URL=http://sonarr:8989
+      - SONARR__API=${DOPLARR_SONARR_API:-}
+    volumes:
+      - ${CONFIG_ROOT}/doplarr:/config
+    ports:
+      - "8787:8787"
+
+  # ── UniFi Network — Ubiquiti network controller ──────────────────────────────
+  unifi:
+    image: lscr.io/linuxserver/unifi-network-application:latest
+    container_name: unifi
+    profiles: [unifi]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - MONGO_USER=unifi
+      - MONGO_PASS=${UNIFI_MONGO_PASS:-unifipass}
+      - MONGO_HOST=unifi-db
+      - MONGO_PORT=27017
+      - MONGO_DBNAME=unifi
+    volumes:
+      - ${CONFIG_ROOT}/unifi:/config
+    ports:
+      - "8443:8443"
+      - "8880:8080"
+      - "3478:3478/udp"
+      - "10001:10001/udp"
+      - "6790:6789"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
+      - "traefik.http.routers.unifi.rule=Host(`unifi.${DOMAIN}`)"
+      - "traefik.http.routers.unifi.entrypoints=websecure"
+      - "traefik.http.routers.unifi.tls=true"
+      - "traefik.http.routers.unifi.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.unifi.loadbalancer.server.port=8443"
+      - "traefik.http.services.unifi.loadbalancer.server.scheme=https"
+
+  # ── UniFi MongoDB — database for UniFi controller (required by unifi) ────────
+  unifi-db:
+    image: mongo:7
+    container_name: unifi-db
+    profiles: [unifi]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=unifi
+      - MONGO_INITDB_ROOT_PASSWORD=${UNIFI_MONGO_PASS:-unifipass}
+      - MONGO_INITDB_DATABASE=unifi
+    volumes:
+      - ${CONFIG_ROOT}/unifi-db:/data/db
+
+  # ── Actual Budget — local-first personal finance ────────────────────────────
+  actual:
+    image: actualbudget/actual-server:latest
+    container_name: actual
+    profiles: [actual]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    volumes:
+      - ${CONFIG_ROOT}/actual:/data
+    ports:
+      - "5006:5006"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
+      - "traefik.http.routers.actual.rule=Host(`actual.${DOMAIN}`)"
+      - "traefik.http.routers.actual.entrypoints=websecure"
+      - "traefik.http.routers.actual.tls=true"
+      - "traefik.http.routers.actual.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.actual.loadbalancer.server.port=5006"
+
+  # ── Homarr — modern application dashboard (pinned 0.16.1) ───────────────────
+  homarr:
+    image: ghcr.io/ajnart/homarr:0.16.1
+    container_name: homarr
+    profiles: [homarr]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    volumes:
+      - ${CONFIG_ROOT}/homarr/configs:/app/data/configs
+      - ${CONFIG_ROOT}/homarr/icons:/app/public/icons
+      - ${CONFIG_ROOT}/homarr/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "7575:7575"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
+      - "traefik.http.routers.homarr.rule=Host(`homarr.${DOMAIN}`)"
+      - "traefik.http.routers.homarr.entrypoints=websecure"
+      - "traefik.http.routers.homarr.tls=true"
+      - "traefik.http.routers.homarr.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.homarr.loadbalancer.server.port=7575"
+
+  # ── WireGuard Easy — WireGuard VPN server with web UI ───────────────────────
+  wgeasy:
+    image: ghcr.io/wg-easy/wg-easy:edge
+    container_name: wgeasy
+    profiles: [wgeasy]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      - LANG=en
+      - WG_HOST=${DOMAIN}
+      - PASSWORD_HASH=${WGEASY_PASSWORD_HASH:-}
+      - PORT=51821
+      - WG_PORT=51820
+    volumes:
+      - ${CONFIG_ROOT}/wgeasy:/etc/wireguard
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
+      - "traefik.http.routers.wgeasy.rule=Host(`wg.${DOMAIN}`)"
+      - "traefik.http.routers.wgeasy.entrypoints=websecure"
+      - "traefik.http.routers.wgeasy.tls=true"
+      - "traefik.http.routers.wgeasy.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.wgeasy.loadbalancer.server.port=51821"

@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.1.5"
+FRIENDBOX_VERSION="1.1.6"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -432,35 +432,53 @@ select_containers() {
     }
     _env_set_inline USE_TRAEFIK "$_use_traefik"
 
-    # Set ROOT_REDIRECT_HOST — the bare-domain (https://DOMAIN) redirect target.
-    # Priority: portainer > jellyfin > plex > overseerr > sonarr > first selected container.
-    local _redir="portainer"
+    # Set ROOT_REDIRECT_HOST and ROOT_REDIRECT_PORT — which container serves https://DOMAIN.
+    # Priority: portainer > heimdall > homarr > jellyfin > plex > overseerr > sonarr > first selected.
+    # Maps container key → [container_name, internal_port]
+    declare -A _RNAME=([portainer]=portainer [heimdall]=heimdall [homarr]=homarr
+      [jellyfin]=jellyfin [plex]=plex [overseerr]=overseerr [sonarr]=sonarr)
+    declare -A _RPORT=([portainer]=9000 [heimdall]=80 [homarr]=7575
+      [jellyfin]=8096 [plex]=32400 [overseerr]=5055 [sonarr]=8989)
+    declare -A _RNAME_ALL=(
+      [traefik]=traefik     [portainer]=portainer [plex]=plex
+      [jellyfin]=jellyfin   [sonarr]=sonarr       [radarr]=radarr
+      [prowlarr]=prowlarr   [bazarr]=bazarr       [qbittorrent]=qbittorrent
+      [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
+      [overseerr]=overseerr [ombi]=ombi           [jellyseerr]=jellyseerr
+      [heimdall]=heimdall   [homarr]=homarr       [filezilla]=filezilla
+      [unifi]=unifi         [actual]=actual       [wgeasy]=wgeasy
+      [ampmc]=ampmc         [netbootxyz]=netbootxyz)
+    declare -A _RPORT_ALL=(
+      [traefik]=8080     [portainer]=9000  [plex]=32400
+      [jellyfin]=8096    [sonarr]=8989     [radarr]=7878
+      [prowlarr]=9696    [bazarr]=6767     [qbittorrent]=8080
+      [qbittorrentvpn]=8080 [delugevpn]=8112 [nzbget]=6789
+      [overseerr]=5055   [ombi]=3579      [jellyseerr]=5055
+      [heimdall]=80      [homarr]=7575    [filezilla]=3000
+      [unifi]=8443       [actual]=5006    [wgeasy]=51821
+      [ampmc]=8080       [netbootxyz]=3000)
+    local _redir_name="" _redir_port=""
     local _redir_set=false
-    for _cand in portainer jellyfin plex overseerr sonarr; do
+    for _cand in portainer heimdall homarr jellyfin plex overseerr sonarr; do
       if [[ -n "${SELECTED[$_cand]+_}" ]]; then
-        # Map container key to its subdomain
-        declare -A _SD=([portainer]=portainer [jellyfin]=jellyfin [plex]=plex [overseerr]=overseerr [sonarr]=sonarr)
-        _redir="${_SD[$_cand]}"
+        _redir_name="${_RNAME[$_cand]}"
+        _redir_port="${_RPORT[$_cand]}"
         _redir_set=true
         break
       fi
     done
-    # If none of the preferred containers are selected, use the first selected one
     if [[ "$_redir_set" == "false" ]]; then
-      declare -A _ALL_SD=([traefik]=traefik [portainer]=portainer [plex]=plex [jellyfin]=jellyfin
-        [sonarr]=sonarr [radarr]=radarr [prowlarr]=prowlarr [bazarr]=bazarr
-        [qbittorrent]=qbt [qbittorrentvpn]=qbtvpn [delugevpn]=deluge [nzbget]=nzbget
-        [overseerr]=overseerr [ombi]=ombi [jellyseerr]=jellyseerr
-        [ampmc]=amp [netbootxyz]=netboot)
       local _k
       for _k in "${CONTAINER_ORDER[@]}"; do
-        if [[ -n "${SELECTED[$_k]+_}" && -n "${_ALL_SD[$_k]+_}" ]]; then
-          _redir="${_ALL_SD[$_k]}"
+        if [[ -n "${SELECTED[$_k]+_}" && -n "${_RNAME_ALL[$_k]+_}" ]]; then
+          _redir_name="${_RNAME_ALL[$_k]}"
+          _redir_port="${_RPORT_ALL[$_k]}"
           break
         fi
       done
     fi
-    _env_set_inline ROOT_REDIRECT_HOST "$_redir"
+    _env_set_inline ROOT_REDIRECT_HOST "$_redir_name"
+    _env_set_inline ROOT_REDIRECT_PORT "$_redir_port"
   fi
 }
 
@@ -1797,7 +1815,8 @@ _traefik_show_status() {
     echo -e "  ${BOLD}ACME CA       :${RESET} ${GREEN}production${RESET}"
   fi
   local _redir_host="${ROOT_REDIRECT_HOST:-portainer}"
-  echo -e "  ${BOLD}Root redirect :${RESET} https://${_redir_host}.${DOMAIN:-yourdomain.com}  ${DIM}(option 4 → 8 to change)${RESET}"
+  local _redir_port="${ROOT_REDIRECT_PORT:-9000}"
+  echo -e "  ${BOLD}Root domain   :${RESET} ${CYAN}${_redir_host}:${_redir_port}${RESET}  ${DIM}serves https://${DOMAIN:-yourdomain.com} (option 4 → 8 to change)${RESET}"
 
   # Per-provider credential summary
   case "${TRAEFIK_ACME_PROVIDER:-}" in
@@ -2466,32 +2485,47 @@ _traefik_set_redirect() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   load_selected
 
-  # Build an ordered list of selected containers that have a web UI subdomain
-  # (voice-only services like teamspeak6 and mumble are excluded).
-  declare -A _SUB=(
-    [traefik]=traefik   [portainer]=portainer [plex]=plex
-    [jellyfin]=jellyfin [sonarr]=sonarr       [radarr]=radarr
-    [prowlarr]=prowlarr [bazarr]=bazarr       [qbittorrent]=qbt
-    [qbittorrentvpn]=qbtvpn [delugevpn]=deluge [nzbget]=nzbget
-    [overseerr]=overseerr   [ombi]=ombi       [jellyseerr]=jellyseerr
-    [ampmc]=amp             [netbootxyz]=netboot
+  # Map container key → [container_name, internal_port]
+  # Excludes host-network containers (homeassistant, fail2ban) and
+  # non-web services (teamspeak6, mumble, doplarr).
+  declare -A _NAME=(
+    [traefik]=traefik         [portainer]=portainer     [plex]=plex
+    [jellyfin]=jellyfin       [sonarr]=sonarr           [radarr]=radarr
+    [prowlarr]=prowlarr       [bazarr]=bazarr           [qbittorrent]=qbittorrent
+    [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
+    [overseerr]=overseerr     [ombi]=ombi               [jellyseerr]=jellyseerr
+    [heimdall]=heimdall       [homarr]=homarr           [filezilla]=filezilla
+    [unifi]=unifi             [actual]=actual           [wgeasy]=wgeasy
+    [ampmc]=ampmc             [netbootxyz]=netbootxyz
+  )
+  declare -A _PORT=(
+    [traefik]=8080            [portainer]=9000          [plex]=32400
+    [jellyfin]=8096           [sonarr]=8989             [radarr]=7878
+    [prowlarr]=9696           [bazarr]=6767             [qbittorrent]=8080
+    [qbittorrentvpn]=8080     [delugevpn]=8112          [nzbget]=6789
+    [overseerr]=5055          [ombi]=3579               [jellyseerr]=5055
+    [heimdall]=80             [homarr]=7575             [filezilla]=3000
+    [unifi]=8443              [actual]=5006             [wgeasy]=51821
+    [ampmc]=8080              [netbootxyz]=3000
   )
 
-  local keys=() subdomains=()
+  local keys=() labels=()
   local k
   for k in "${CONTAINER_ORDER[@]}"; do
-    [[ -n "${SELECTED[$k]+_}" && -n "${_SUB[$k]+_}" ]] || continue
+    [[ -n "${SELECTED[$k]+_}" && -n "${_NAME[$k]+_}" ]] || continue
     keys+=("$k")
-    subdomains+=("${_SUB[$k]}")
+    labels+=("${CONTAINER_NAMES[$k]:-$k}  (${_NAME[$k]}:${_PORT[$k]})")
   done
 
-  local current="${ROOT_REDIRECT_HOST:-portainer}"
+  local current_host="${ROOT_REDIRECT_HOST:-portainer}"
+  local current_port="${ROOT_REDIRECT_PORT:-9000}"
   local d="${DOMAIN:-yourdomain.com}"
 
   echo ""
-  echo -e "${BOLD}Root Domain Redirect${RESET}"
-  echo -e "${DIM}  Visiting https://${d} redirects to https://<subdomain>.${d}${RESET}"
-  echo -e "${DIM}  Current target: ${CYAN}${current}.${d}${RESET}"
+  echo -e "${BOLD}Root Domain Target${RESET}"
+  echo -e "${DIM}  Visiting https://${d} serves content directly from the selected container.${RESET}"
+  echo -e "${DIM}  The URL stays as https://${d} — no redirect.${RESET}"
+  echo -e "${DIM}  Current: ${CYAN}${current_host}:${current_port}${RESET}"
   echo ""
 
   if [[ ${#keys[@]} -eq 0 ]]; then
@@ -2502,41 +2536,25 @@ _traefik_set_redirect() {
 
   local i
   for i in "${!keys[@]}"; do
-    # $'\e[...]' (ANSI C quoting) stores the actual ESC byte in the variable,
-    # so printf/echo print it correctly without needing -e interpretation.
     local _green=$'\e[0;32m' _reset=$'\e[0m' _dim=$'\e[2m'
     local marker="  "
-    [[ "${subdomains[$i]}" == "$current" ]] && marker="${_green}▶${_reset} "
-    local _num _name _url
-    printf -v _num  "%2d"   "$((i+1))"
-    printf -v _name "%-14s" "${CONTAINER_NAMES[${keys[$i]}]}"
-    printf -v _url  "https://%s.%s" "${subdomains[$i]}" "$d"
-    printf "  %s%s) %s  %shttps://%s.%s%s\n" \
-      "$marker" "$_num" "$_name" "$_dim" "${subdomains[$i]}" "$d" "$_reset"
+    [[ "${_NAME[${keys[$i]}]}" == "$current_host" ]] && marker="${_green}▶${_reset} "
+    printf "  %s%2d) %s\n" "$marker" "$((i+1))" "${labels[$i]}"
   done
   echo ""
-  echo -e "   c) Enter a custom subdomain"
   echo -e "   q) Cancel"
   echo ""
 
+  local ROOT_REDIRECT_HOST ROOT_REDIRECT_PORT
   while true; do
     read -rp "  Choice: " sel
     case "$sel" in
-      q|Q) info "Cancelled — redirect unchanged."; return 0 ;;
-      c|C)
-        echo ""
-        read -rp "  Custom subdomain (just the label, e.g. 'home'): " custom
-        custom="${custom// /}"   # strip any spaces
-        if [[ -z "$custom" ]]; then
-          warn "Empty input — redirect unchanged."
-          return 1
-        fi
-        ROOT_REDIRECT_HOST="$custom"
-        ;;
+      q|Q) info "Cancelled — root target unchanged."; return 0 ;;
       *)
-        if [[ "$sel" =~ ^[0-9]+$ ]] && \
-           (( sel >= 1 && sel <= ${#keys[@]} )); then
-          ROOT_REDIRECT_HOST="${subdomains[$((sel-1))]}"
+        if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#keys[@]} )); then
+          local chosen="${keys[$((sel-1))]}"
+          ROOT_REDIRECT_HOST="${_NAME[$chosen]}"
+          ROOT_REDIRECT_PORT="${_PORT[$chosen]}"
         else
           warn "Invalid choice."
           continue
@@ -2546,15 +2564,21 @@ _traefik_set_redirect() {
     break
   done
 
-  # Persist to .env
+  # Persist both host and port to .env
   if grep -q '^ROOT_REDIRECT_HOST=' "$ENV_FILE" 2>/dev/null; then
     sed -i "s|^ROOT_REDIRECT_HOST=.*|ROOT_REDIRECT_HOST=${ROOT_REDIRECT_HOST}|" "$ENV_FILE"
   else
     echo "ROOT_REDIRECT_HOST=${ROOT_REDIRECT_HOST}" >> "$ENV_FILE"
   fi
+  if grep -q '^ROOT_REDIRECT_PORT=' "$ENV_FILE" 2>/dev/null; then
+    sed -i "s|^ROOT_REDIRECT_PORT=.*|ROOT_REDIRECT_PORT=${ROOT_REDIRECT_PORT}|" "$ENV_FILE"
+  else
+    echo "ROOT_REDIRECT_PORT=${ROOT_REDIRECT_PORT}" >> "$ENV_FILE"
+  fi
 
   echo ""
-  success "Root redirect set to: ${CYAN}https://${ROOT_REDIRECT_HOST}.${d}${RESET}"
+  success "Root domain target set to: ${CYAN}${ROOT_REDIRECT_HOST}:${ROOT_REDIRECT_PORT}${RESET}"
+  success "Visiting https://${d} will serve ${ROOT_REDIRECT_HOST} directly."
   info "Redeploy Traefik (option 12) to apply the change."
 }
 
@@ -2575,7 +2599,7 @@ configure_traefik() {
     echo "  5) Run pre-flight checks"
     echo "  6) Live routing diagnostics"
     echo "  7) Emergency recovery (clear certs + restart Traefik)"
-    echo "  8) Set root domain redirect target"
+    echo "  8) Set root domain target (current: ${ROOT_REDIRECT_HOST:-portainer})"
     echo "  9) Back to main menu"
     echo ""
     read -rp "  Choice: " choice

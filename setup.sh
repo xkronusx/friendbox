@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.8.3"
+FRIENDBOX_VERSION="1.9.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -5838,6 +5838,7 @@ full_install() {
   echo -e "  ${DIM}  • DNS record setup             → menu option  6${RESET}"
   echo -e "  ${DIM}  • MergerFS storage pool        → menu option  7${RESET}"
   echo -e "  ${DIM}  • Backup your config           → menu option 16${RESET}"
+  echo -e "  ${DIM}  • System performance tuning    → menu option 19${RESET}"
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
 
   # ── TeamSpeak 6: surface the admin token if TS6 was deployed ─────────────────
@@ -6127,6 +6128,7 @@ full_reset() {
   echo -e "  ${RED}  • All config data in ${CONFIG_ROOT:-/opt/friendbox/config}${RESET}"
   echo -e "  ${RED}  • All state files (.env, .selected_containers, etc.)${RESET}"
   echo -e "  ${RED}  • The /usr/local/bin/friendbox command${RESET}"
+  echo -e "  ${RED}  • System performance tuning (sysctl + THP settings reverted)${RESET}"
   echo ""
   echo -e "  ${BOLD}Media files in ${MEDIA_ROOT:-/mnt/media} are NOT deleted.${RESET}"
   echo -e "  ${BOLD}Backups in ${BACKUP_DIR:-/opt/friendbox/backups} are NOT deleted.${RESET}"
@@ -6167,6 +6169,28 @@ full_reset() {
             "${INSTALL_DIR}/docker-compose.yml" "${INSTALL_DIR}/scripts/redeploy.sh"; do
     [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
   done
+
+  # Remove system tuning files if they exist
+  local _tune_conf="/etc/sysctl.d/99-friendbox.conf"
+  local _tune_svc="/etc/systemd/system/friendbox-thp.service"
+  if [[ -f "$_tune_conf" ]]; then
+    rm -f "$_tune_conf"
+    info "  Removed: ${_tune_conf}"
+    # Restore kernel defaults immediately so the running session is clean
+    sysctl vm.swappiness=60 vm.dirty_ratio=20 vm.dirty_background_ratio=10 \
+           vm.vfs_cache_pressure=100 vm.overcommit_memory=0 \
+           net.core.rmem_max=212992 net.core.wmem_max=212992 \
+           net.ipv4.tcp_fastopen=0 fs.inotify.max_user_watches=8192 \
+           fs.inotify.max_user_instances=128 2>/dev/null || true
+    echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+    echo always > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
+  fi
+  if [[ -f "$_tune_svc" ]]; then
+    systemctl disable --now friendbox-thp.service 2>/dev/null || true
+    rm -f "$_tune_svc"
+    systemctl daemon-reload 2>/dev/null || true
+    info "  Removed: ${_tune_svc}"
+  fi
 
   # Remove DNS cron job and helper script if they exist
   local _dns_cron="/etc/cron.d/friendbox-dns"
@@ -6245,6 +6269,240 @@ view_logs() {
   fi
 }
 
+
+# =============================================================================
+#  System Performance Tuning
+# =============================================================================
+# Applies host-level kernel tunings optimised for a Docker media server
+# workload. Writes to /etc/sysctl.d/99-friendbox.conf so settings survive
+# reboots. Each parameter is reversible via the revert option.
+
+_SYSCTL_CONF="/etc/sysctl.d/99-friendbox.conf"
+_THP_SYSTEMD="/etc/systemd/system/friendbox-thp.service"
+
+_tuning_is_applied() {
+  [[ -f "$_SYSCTL_CONF" ]]
+}
+
+_tuning_show_current() {
+  echo ""
+  echo -e "  ${BOLD}Current kernel values:${RESET}"
+  echo ""
+
+  local params=(
+    "vm.swappiness"
+    "vm.dirty_ratio"
+    "vm.dirty_background_ratio"
+    "vm.vfs_cache_pressure"
+    "vm.overcommit_memory"
+    "net.core.rmem_max"
+    "net.core.wmem_max"
+    "net.ipv4.tcp_fastopen"
+    "fs.inotify.max_user_watches"
+    "fs.inotify.max_user_instances"
+  )
+
+  local param val
+  for param in "${params[@]}"; do
+    val=$(sysctl -n "$param" 2>/dev/null || echo "n/a")
+    printf "    %-40s %s\n" "$param" "$val"
+  done
+
+  local thp
+  thp=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null     | grep -oP '(?<=\[)[^\]]+' || echo "n/a")
+  printf "    %-40s %s\n" "transparent_hugepages" "$thp"
+  echo ""
+}
+
+_tuning_apply() {
+  echo ""
+  echo -e "${BOLD}Applying Friendbox system tunings...${RESET}"
+  echo ""
+
+  cat > "$_SYSCTL_CONF" << 'SYSCTLEOF'
+# =============================================================================
+#  Friendbox system performance tuning
+#  Managed by: sudo friendbox → option 19
+#  To remove: sudo friendbox → option 19 → Revert
+# =============================================================================
+
+# ── Memory management ─────────────────────────────────────────────────────────
+
+# Reduce swap aggressiveness. Default 60 causes heavy swapping under moderate
+# memory pressure, killing Plex/Jellyfin transcode performance. Value 10 means
+# the kernel only swaps when RAM is nearly exhausted.
+vm.swappiness = 10
+
+# Reduce dirty page ratio before writes block applications. Default 20% means
+# up to 20% of RAM can buffer unwritten data — on 16GB that is 3.2GB. Lower
+# values mean more frequent small flushes, reducing write spikes that stall
+# Sonarr/Radarr SQLite writes and torrent completion handling.
+vm.dirty_ratio = 5
+
+# % of RAM at which background writeback starts. Pairs with dirty_ratio.
+# More proactive flushing reduces the chance of hitting dirty_ratio and
+# causing application-blocking writes.
+vm.dirty_background_ratio = 3
+
+# Reduce kernel eagerness to reclaim dentry/inode cache. Default 100 treats
+# directory metadata the same as file data for reclaim. Sonarr/Radarr scan
+# media directories repeatedly — keeping dentries cached is a clear win.
+vm.vfs_cache_pressure = 50
+
+# Allow memory overcommit. Docker (and databases like MongoDB/Redis inside
+# UniFi) rely on fork-based copy-on-write which requires overcommit. Value 1
+# prevents spurious OOM kills on fork-heavy container workloads.
+vm.overcommit_memory = 1
+
+# ── Network buffers ───────────────────────────────────────────────────────────
+
+# Maximum socket receive/send buffer sizes (16 MB). Traefik, torrent clients,
+# and Docker overlay networking all benefit from larger socket buffers —
+# reduces packet loss and retransmits on high-throughput connections.
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+
+# Enable TCP Fast Open for both client (1) and server (2) roles.
+# Reduces round-trip latency for repeated short-lived TCP connections —
+# relevant for Traefik health checks, container-to-container HTTP calls.
+net.ipv4.tcp_fastopen = 3
+
+# ── File watching ─────────────────────────────────────────────────────────────
+
+# Maximum inotify watches per user. Default 8192 is exhausted quickly when
+# Home Assistant, Sonarr, Radarr, and other containers each monitor large
+# directory trees. Memory cost is ~32 bytes per watch (16 MB total at max).
+fs.inotify.max_user_watches = 524288
+
+# Maximum inotify instances per user. Each container process that uses inotify
+# consumes one instance. 128 is easily exhausted with 10+ active containers.
+fs.inotify.max_user_instances = 512
+SYSCTLEOF
+
+  # Apply immediately (no reboot needed)
+  if sysctl -p "$_SYSCTL_CONF" 2>/dev/null; then
+    success "sysctl settings applied and written to ${_SYSCTL_CONF}"
+  else
+    warn "sysctl -p returned errors — some settings may not have applied."
+    warn "Check: sudo sysctl -p ${_SYSCTL_CONF}"
+  fi
+
+  # ── Transparent Huge Pages ───────────────────────────────────────────────────
+  # THP 'always' causes latency spikes during hugepage collapse in database
+  # containers (MongoDB inside UniFi, SQLite in Sonarr/Radarr). MongoDB and
+  # Redis both recommend disabling THP or using 'madvise'. 'madvise' lets apps
+  # that genuinely benefit from THP opt in via madvise(MADV_HUGEPAGE).
+  echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+  echo madvise > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
+
+  # Persist THP setting across reboots via a systemd one-shot service.
+  # /sys/kernel/mm/... is a runtime interface that resets after reboot.
+  cat > "$_THP_SYSTEMD" << 'SVCEOF'
+[Unit]
+Description=Friendbox — disable Transparent HugePages (madvise)
+Documentation=https://github.com/xkronusx/friendbox
+After=sysinit.target local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "echo madvise > /sys/kernel/mm/transparent_hugepage/enabled; echo madvise > /sys/kernel/mm/transparent_hugepage/defrag"
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now friendbox-thp.service 2>/dev/null     && success "Transparent HugePages set to madvise (persistent via systemd)"     || warn "Could not enable THP service — THP set for this session only."
+
+  echo ""
+  success "All tunings applied. Changes take effect immediately and persist across reboots."
+  info "To review: sudo sysctl -a | grep -E 'swappiness|dirty|vfs_cache|overcommit|rmem|wmem|fastopen|inotify'"
+  info "To revert: run this menu again and choose 'Revert to defaults'."
+}
+
+_tuning_revert() {
+  echo ""
+  info "Reverting Friendbox system tunings to kernel defaults..."
+
+  if [[ -f "$_SYSCTL_CONF" ]]; then
+    rm -f "$_SYSCTL_CONF"
+    success "Removed ${_SYSCTL_CONF}"
+  fi
+
+  # Re-apply kernel defaults explicitly (in case the values were changed in
+  # the running session — removing the conf file only affects next boot)
+  sysctl vm.swappiness=60                   2>/dev/null || true
+  sysctl vm.dirty_ratio=20                  2>/dev/null || true
+  sysctl vm.dirty_background_ratio=10       2>/dev/null || true
+  sysctl vm.vfs_cache_pressure=100          2>/dev/null || true
+  sysctl vm.overcommit_memory=0             2>/dev/null || true
+  sysctl net.core.rmem_max=212992           2>/dev/null || true
+  sysctl net.core.wmem_max=212992           2>/dev/null || true
+  sysctl net.ipv4.tcp_fastopen=0            2>/dev/null || true
+  sysctl fs.inotify.max_user_watches=8192   2>/dev/null || true
+  sysctl fs.inotify.max_user_instances=128  2>/dev/null || true
+
+  # Restore THP to 'always' (Ubuntu default) and remove the systemd service
+  echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+  echo always > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
+  if [[ -f "$_THP_SYSTEMD" ]]; then
+    systemctl disable --now friendbox-thp.service 2>/dev/null || true
+    rm -f "$_THP_SYSTEMD"
+    systemctl daemon-reload 2>/dev/null || true
+    success "Removed THP systemd service"
+  fi
+
+  success "All tunings reverted to kernel defaults."
+}
+
+setup_system_tuning() {
+  require_root || return 1
+
+  while true; do
+    clear
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║          ⚡  System Performance Tuning                   ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${RESET}"
+
+    if _tuning_is_applied; then
+      echo -e "  ${GREEN}✔ Friendbox tunings are currently APPLIED${RESET}"
+    else
+      echo -e "  ${YELLOW}○ Friendbox tunings are NOT applied (kernel defaults in use)${RESET}"
+    fi
+
+    echo ""
+    echo -e "  ${DIM}Tunings optimised for a Docker media server workload:${RESET}"
+    echo -e "  ${DIM}  vm.swappiness          60 → 10   (less aggressive swapping)${RESET}"
+    echo -e "  ${DIM}  vm.dirty_ratio         20 → 5    (smaller write buffers, fewer spikes)${RESET}"
+    echo -e "  ${DIM}  vm.dirty_background    10 → 3    (more proactive background flushing)${RESET}"
+    echo -e "  ${DIM}  vm.vfs_cache_pressure 100 → 50   (keep directory metadata cached longer)${RESET}"
+    echo -e "  ${DIM}  vm.overcommit_memory    0 → 1    (safer for Docker + MongoDB/Redis)${RESET}"
+    echo -e "  ${DIM}  net.core.rmem/wmem_max 208KB→16MB (larger socket buffers for Traefik/torrents)${RESET}"
+    echo -e "  ${DIM}  net.ipv4.tcp_fastopen   0 → 3    (lower TCP handshake latency)${RESET}"
+    echo -e "  ${DIM}  fs.inotify.max_watches 8K → 512K (needed for HA, Sonarr, Radarr watchers)${RESET}"
+    echo -e "  ${DIM}  fs.inotify.max_instances 128→512 (more concurrent inotify users)${RESET}"
+    echo -e "  ${DIM}  transparent_hugepages always→madvise (reduce DB latency spikes)${RESET}"
+    echo ""
+    echo "  1) Show current kernel values"
+    echo "  2) Apply Friendbox tunings (persistent — survives reboot)"
+    echo "  3) Revert to kernel defaults"
+    echo "  4) Back"
+    echo ""
+    read -rp "  Choice: " choice
+    case "$choice" in
+      1) _tuning_show_current          || true; pause ;;
+      2) _tuning_apply                 || true; pause ;;
+      3) _tuning_revert                || true; pause ;;
+      4) return ;;
+      *) warn "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
 # =============================================================================
 #  Main Menu
 # =============================================================================
@@ -6307,6 +6565,7 @@ main_menu() {
     echo "  16) Backup & Restore"
     echo "  17) Teardown (stop & remove containers)"
     echo "  18) Full Reset (wipe everything)"
+    echo "  19) System performance tuning"
     echo "   q) Quit"
     echo ""
     read -rp "Select option: " opt
@@ -6339,6 +6598,7 @@ main_menu() {
       16) setup_backup                           ;;   # has its own loop+return
       17) teardown                        || true; pause ;;
       18) full_reset                      || true; pause ;;
+      19) setup_system_tuning                    ;;   # has its own loop+return
       q|Q) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid option '$opt'"; sleep 1 ;;
     esac

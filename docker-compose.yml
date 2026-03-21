@@ -1044,7 +1044,7 @@ services:
 
   # ── WireGuard Easy — WireGuard VPN server with web UI ───────────────────────
   wgeasy:
-    image: ghcr.io/wg-easy/wg-easy:latest
+    image: ghcr.io/wg-easy/wg-easy:edge
     container_name: wgeasy
     profiles: [wgeasy]
     restart: unless-stopped

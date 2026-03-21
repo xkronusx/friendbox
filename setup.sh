@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.9.6"
+FRIENDBOX_VERSION="2.0.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -6213,6 +6213,24 @@ full_reset() {
     echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
     echo always > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
   fi
+  # Remove max-concurrent-downloads from daemon.json if we set it
+  local _daemon_json="/etc/docker/daemon.json"
+  if [[ -f "$_daemon_json" ]] && grep -q '"max-concurrent-downloads"' "$_daemon_json" 2>/dev/null; then
+    python3 - "$_daemon_json" << 'DAEMONJSONEOF' 2>/dev/null || true
+import json, sys, os
+path = sys.argv[1]
+try:
+    with open(path) as f: cfg = json.load(f)
+except Exception: cfg = {}
+cfg.pop("max-concurrent-downloads", None)
+if cfg:
+    with open(path, "w") as f: json.dump(cfg, f, indent=2); f.write("\n")
+else:
+    os.remove(path)
+DAEMONJSONEOF
+    systemctl reload docker 2>/dev/null || systemctl restart docker 2>/dev/null || true
+    info "  Removed max-concurrent-downloads from ${_daemon_json}"
+  fi
   if [[ -f "$_tune_svc" ]]; then
     systemctl disable --now friendbox-thp.service 2>/dev/null || true
     rm -f "$_tune_svc"
@@ -6307,9 +6325,14 @@ view_logs() {
 
 _SYSCTL_CONF="/etc/sysctl.d/99-friendbox.conf"
 _THP_SYSTEMD="/etc/systemd/system/friendbox-thp.service"
+_DOCKER_DAEMON="/etc/docker/daemon.json"
 
 _tuning_is_applied() {
   [[ -f "$_SYSCTL_CONF" ]]
+}
+
+_tuning_docker_is_applied() {
+  [[ -f "$_DOCKER_DAEMON" ]] && grep -q '"max-concurrent-downloads"' "$_DOCKER_DAEMON" 2>/dev/null
 }
 
 _tuning_show_current() {
@@ -6337,8 +6360,40 @@ _tuning_show_current() {
   done
 
   local thp
-  thp=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null     | grep -oP '(?<=\[)[^\]]+' || echo "n/a")
+  thp=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null \
+    | grep -oP '(?<=\[)[^\]]+' || echo "n/a")
   printf "    %-40s %s\n" "transparent_hugepages" "$thp"
+
+  # ── Docker daemon ──────────────────────────────────────────────────────────
+  echo ""
+  echo -e "  ${BOLD}Docker daemon:${RESET}"
+  echo ""
+  local _dl_val
+  if [[ -f "$_DOCKER_DAEMON" ]]; then
+    _dl_val=$(python3 -c "import json; d=json.load(open('$_DOCKER_DAEMON')); print(d.get('max-concurrent-downloads', '3 (default)'))" 2>/dev/null || echo "3 (default)")
+  else
+    _dl_val="3 (default — no daemon.json)"
+  fi
+  printf "    %-40s %s\n" "max-concurrent-downloads" "$_dl_val"
+
+  # ── Swap ───────────────────────────────────────────────────────────────────
+  echo ""
+  echo -e "  ${BOLD}Swap:${RESET}"
+  echo ""
+  local swap_total swap_used
+  swap_total=$(free -h 2>/dev/null | awk '/^Swap:/{print $2}')
+  swap_used=$(free -h  2>/dev/null | awk '/^Swap:/{print $3}')
+  if [[ -z "$swap_total" || "$swap_total" == "0B" || "$swap_total" == "0" ]]; then
+    printf "    %-40s %s\n" "swap" "none"
+    echo ""
+    warn "No swap detected. Without swap, the OOM killer fires immediately"
+    warn "when RAM is exhausted. A swapfile provides emergency overflow:"
+    echo -e "  ${DIM}  sudo fallocate -l 4G /swapfile${RESET}"
+    echo -e "  ${DIM}  sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile${RESET}"
+    echo -e "  ${DIM}  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab${RESET}"
+  else
+    printf "    %-40s %s used of %s total\n" "swap" "$swap_used" "$swap_total"
+  fi
   echo ""
 }
 
@@ -6444,6 +6499,46 @@ SVCEOF
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --now friendbox-thp.service 2>/dev/null     && success "Transparent HugePages set to madvise (persistent via systemd)"     || warn "Could not enable THP service — THP set for this session only."
 
+  # ── Docker daemon.json ─────────────────────────────────────────────────────
+  # Increase max-concurrent-downloads from 3 (default) to 6.
+  # Doubles the number of image layers pulled in parallel, visibly cutting
+  # first-install time for large images like binhex/arch-delugevpn and Jellyfin.
+  local _daemon_dir
+  _daemon_dir=$(dirname "$_DOCKER_DAEMON")
+  mkdir -p "$_daemon_dir"
+  if [[ -f "$_DOCKER_DAEMON" ]]; then
+    # Merge into existing daemon.json using Python — preserve any user settings.
+    if python3 - "$_DOCKER_DAEMON" << 'DAEMONEOF'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+cfg["max-concurrent-downloads"] = 6
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+DAEMONEOF
+    then
+      success "daemon.json updated (max-concurrent-downloads=6)"
+    else
+      warn "Could not update ${_DOCKER_DAEMON} — Docker download concurrency not changed."
+    fi
+  else
+    printf '{"max-concurrent-downloads": 6}\n' > "$_DOCKER_DAEMON"
+    success "daemon.json created (max-concurrent-downloads=6)"
+  fi
+  # Reload Docker daemon to pick up the new setting (no container restart needed).
+  if systemctl reload docker 2>/dev/null; then
+    success "Docker daemon reloaded — new download concurrency active."
+  elif systemctl restart docker 2>/dev/null; then
+    warn "Docker daemon restarted (reload not supported) — containers will restart."
+  else
+    warn "Could not reload Docker daemon — setting will apply on next Docker restart."
+  fi
+
   echo ""
   success "All tunings applied. Changes take effect immediately and persist across reboots."
   info "To review: sudo sysctl -a | grep -E 'swappiness|dirty|vfs_cache|overcommit|rmem|wmem|fastopen|inotify'"
@@ -6482,7 +6577,85 @@ _tuning_revert() {
     success "Removed THP systemd service"
   fi
 
+  # Revert daemon.json — remove the max-concurrent-downloads key if we set it.
+  if [[ -f "$_DOCKER_DAEMON" ]]; then
+    if python3 - "$_DOCKER_DAEMON" << 'DAEMONEOF'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+cfg.pop("max-concurrent-downloads", None)
+if cfg:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+else:
+    import os
+    os.remove(path)
+DAEMONEOF
+    then
+      success "daemon.json reverted (max-concurrent-downloads removed)"
+    else
+      warn "Could not revert ${_DOCKER_DAEMON}"
+    fi
+    systemctl reload docker 2>/dev/null || systemctl restart docker 2>/dev/null || true
+  fi
+
   success "All tunings reverted to kernel defaults."
+}
+
+_tuning_docker_prune() {
+  echo ""
+  echo -e "${BOLD}Docker Image Prune${RESET}"
+  echo ""
+
+  # Show current disk usage before pruning
+  local before
+  before=$(docker system df 2>/dev/null || echo "  (docker system df unavailable)")
+  echo -e "  ${BOLD}Current Docker disk usage:${RESET}"
+  echo "$before" | while IFS= read -r line; do echo "    $line"; done
+  echo ""
+
+  # Dangling images = untagged layers left over after pulls and updates.
+  # These are safe to remove — they are not referenced by any container.
+  local dangling
+  dangling=$(docker images -f "dangling=true" -q 2>/dev/null | wc -l || echo 0)
+  if [[ "$dangling" -eq 0 ]]; then
+    info "No dangling image layers to remove."
+  else
+    info "Found ${dangling} dangling image layer(s). Removing..."
+    docker image prune -f 2>/dev/null && success "Dangling layers removed." || warn "Prune returned errors."
+  fi
+
+  # Unused images = pulled images not referenced by any container (running or stopped).
+  # These are safe to remove for containers not currently selected in Friendbox,
+  # but removing an image for a RUNNING container would cause issues.
+  # We only prune dangling by default; unused requires explicit confirmation.
+  echo ""
+  local unused
+  unused=$(docker images --filter "dangling=false" -q 2>/dev/null)
+  local unused_count
+  unused_count=$(echo "$unused" | grep -c . 2>/dev/null || echo 0)
+  if [[ "$unused_count" -gt 0 ]]; then
+    info "There are also ${unused_count} non-dangling image(s) that could be pruned."
+    warn "WARNING: This includes images for containers that are currently stopped."
+    warn "Pruning unused images means those containers must re-pull on next start."
+    echo ""
+    read -rp "  Also prune ALL unused images (not just dangling)? [y/N] " _prune_all
+    if [[ "$_prune_all" =~ ^[Yy]$ ]]; then
+      docker image prune -a -f 2>/dev/null \
+        && success "All unused images removed." \
+        || warn "Prune returned errors — some images may be in use."
+    fi
+  fi
+
+  # Show reclaimed space
+  echo ""
+  echo -e "  ${BOLD}Docker disk usage after prune:${RESET}"
+  docker system df 2>/dev/null | while IFS= read -r line; do echo "    $line"; done
 }
 
 setup_system_tuning() {
@@ -6497,9 +6670,14 @@ setup_system_tuning() {
     echo -e "${RESET}"
 
     if _tuning_is_applied; then
-      echo -e "  ${GREEN}✔ Friendbox tunings are currently APPLIED${RESET}"
+      echo -e "  ${GREEN}✔ Kernel tunings APPLIED${RESET}"
     else
-      echo -e "  ${YELLOW}○ Friendbox tunings are NOT applied (kernel defaults in use)${RESET}"
+      echo -e "  ${YELLOW}○ Kernel tunings NOT applied (kernel defaults in use)${RESET}"
+    fi
+    if _tuning_docker_is_applied; then
+      echo -e "  ${GREEN}✔ Docker daemon tuning APPLIED${RESET}"
+    else
+      echo -e "  ${YELLOW}○ Docker daemon tuning NOT applied (default concurrency)${RESET}"
     fi
 
     echo ""
@@ -6514,18 +6692,21 @@ setup_system_tuning() {
     echo -e "  ${DIM}  fs.inotify.max_watches 8K → 512K (needed for HA, Sonarr, Radarr watchers)${RESET}"
     echo -e "  ${DIM}  fs.inotify.max_instances 128→512 (more concurrent inotify users)${RESET}"
     echo -e "  ${DIM}  transparent_hugepages always→madvise (reduce DB latency spikes)${RESET}"
+    echo -e "  ${DIM}  max-concurrent-downloads   3 → 6    (faster image pulls)${RESET}"
     echo ""
-    echo "  1) Show current kernel values"
+    echo "  1) Show current kernel values + swap + Docker status"
     echo "  2) Apply Friendbox tunings (persistent — survives reboot)"
     echo "  3) Revert to kernel defaults"
-    echo "  4) Back"
+    echo "  4) Docker image prune (reclaim disk from unused layers)"
+    echo "  5) Back"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
       1) _tuning_show_current          || true; pause ;;
       2) _tuning_apply                 || true; pause ;;
       3) _tuning_revert                || true; pause ;;
-      4) return ;;
+      4) _tuning_docker_prune          || true; pause ;;
+      5) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

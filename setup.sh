@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.8.1"
+FRIENDBOX_VERSION="1.8.2"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -396,6 +396,13 @@ select_containers() {
     echo ""
     info "VPN client container(s) selected — use menu option 5 (Service credentials) to set provider credentials (username, password, LAN CIDR) before deploying."
   fi
+  # Reminder if Doplarr selected — it requires a Discord bot token and at least
+  # one API key (Overseerr) to function. Without them it starts but ignores all
+  # Discord commands with no useful error in the logs.
+  if [[ -n "${SELECTED[doplarr]+_}" ]]; then
+    echo ""
+    info "Doplarr selected — use menu option 5 (Service credentials) to set the Discord bot token and Overseerr API key before deploying."
+  fi
   echo ""
   success "Selection saved."
 
@@ -508,6 +515,20 @@ auto_update() {
   # .env don't exist, so there's nothing useful to update or re-apply.
   is_installed || return 0
 
+  # Rate-limit GitHub checks to once per hour. If the cache file exists and
+  # is less than 3600 seconds old, skip the network calls entirely.
+  # The cache is invalidated immediately whenever an update is actually applied.
+  local _update_cache="${INSTALL_DIR}/.last_update_check"
+  if [[ -f "$_update_cache" ]]; then
+    local _now _last _age
+    _now=$(date +%s 2>/dev/null || echo 0)
+    _last=$(cat "$_update_cache" 2>/dev/null || echo 0)
+    _age=$(( _now - _last ))
+    if [[ "$_age" -lt 3600 ]]; then
+      return 0
+    fi
+  fi
+
   echo -e "${CYAN}[INFO]${RESET}  Checking for updates..."
   _ensure_install_dir
 
@@ -567,8 +588,14 @@ auto_update() {
   # If neither file changed, skip everything — no re-exec, no update notice.
   if [[ "$script_changed" == "false" && "$compose_changed" == "false" ]]; then
     rm -f /usr/local/bin/friendbox.new "${COMPOSE_FILE}.new"
+    # Record the timestamp so the next launch skips the network check
+    date +%s > "$_update_cache" 2>/dev/null || true
+    echo -e "${CYAN}[INFO]${RESET}  Already up to date (v${FRIENDBOX_VERSION})."
     return 0
   fi
+  # An update was found — invalidate the cache so the new version is checked
+  # on the next launch after re-exec (avoids a stale 1-hour window post-update).
+  rm -f "$_update_cache"
 
   # Apply compose file if it changed; otherwise discard the download.
   if [[ "$compose_changed" == "true" ]]; then
@@ -603,6 +630,8 @@ auto_update() {
         generate_redeploy_sh 2>/dev/null || true
       fi
     fi
+    # Record check timestamp — compose was updated, script is current
+    date +%s > "$_update_cache" 2>/dev/null || true
     return 0
   fi
 
@@ -5904,13 +5933,17 @@ print_urls() {
 show_status() {
   echo ""
   echo -e "${BOLD}Container Status${RESET}"
-  echo "──────────────────────────────────────────────────────────────"
-  # Use a consistent format so output is readable regardless of terminal width.
-  # Falls back to plain docker ps if compose isn't available (e.g. before first install).
-  if ! compose_selected ps --format "table {{.Name}}\t{{.Status}}\t{{.Image}}" 2>/dev/null; then
-    docker ps --filter "network=medianet"       --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" 2>/dev/null       || warn "No containers found on medianet — has Friendbox been installed yet?"
+  echo "──────────────────────────────────────────────────────────────────────────────"
+  # Include uptime (Status) and port mappings so users can see at a glance
+  # which containers are healthy and what ports are exposed, without needing
+  # to run docker ps manually. Falls back to plain docker ps pre-install.
+  if ! compose_selected ps \
+       --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null; then
+    docker ps --filter "network=medianet" \
+      --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null \
+      || warn "No containers found on medianet — has Friendbox been installed yet?"
   fi
-  echo "──────────────────────────────────────────────────────────────"
+  echo "──────────────────────────────────────────────────────────────────────────────"
 }
 
 redeploy_menu() {
@@ -6112,7 +6145,7 @@ full_reset() {
   local sf
   for sf in "$ENV_FILE" "$STATE_FILE" "$SELECTED_FILE" "$MERGERFS_MODES_FILE" \
             "$MERGERFS_POOL_FILE" "$DNS_STATE_FILE" "$INSTALL_FLAG" \
-            "${INSTALL_DIR}/.update_notice" \
+            "${INSTALL_DIR}/.update_notice" "${INSTALL_DIR}/.last_update_check" \
             "${INSTALL_DIR}/docker-compose.yml" "${INSTALL_DIR}/scripts/redeploy.sh"; do
     [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
   done

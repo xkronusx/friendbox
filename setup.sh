@@ -5096,6 +5096,285 @@ _dns_remove_cron() {
   fi
 }
 
+_dns_srv_cloudflare() {
+  # SRV record manager for Cloudflare.
+  # SRV records are defined by RFC 2782 — service names MUST begin with an
+  # underscore (e.g. _ts3, _minecraft). All known records are hardcoded with
+  # correct service names, protocols, and ports. There is no freeform entry.
+  # Records point to a hostname (target), not an IP — they never need updating
+  # when your WAN IP changes. Create once; delete only if decommissioning.
+  _dns_load
+  [[ -z "$DNS_CF_API_KEY" || -z "$DNS_CF_ZONE_ID" || -z "$DNS_DOMAIN" ]] \
+    && { error "Cloudflare not fully configured. Run option 1 first."; return 1; }
+  load_selected 2>/dev/null || true
+
+  # ── Helper: Cloudflare auth headers (reused throughout) ─────────────────────
+  local _cf_h1="X-Auth-Email: ${DNS_CF_EMAIL}"
+  local _cf_h2="X-Auth-Key: ${DNS_CF_API_KEY}"
+  local _cf_ct="Content-Type: application/json"
+  local _cf_api="https://api.cloudflare.com/client/v4/zones/${DNS_CF_ZONE_ID}/dns_records"
+
+  # ── Helper: fetch all current SRV records from Cloudflare ───────────────────
+  _srv_fetch_existing() {
+    curl -fsSL --max-time 10 \
+      -H "$_cf_h1" -H "$_cf_h2" -H "$_cf_ct" \
+      "${_cf_api}?type=SRV&per_page=100" 2>/dev/null
+  }
+
+  # ── Helper: create or replace a single SRV record ───────────────────────────
+  # Args: service proto priority weight port target
+  # All service and proto values are hardcoded with required leading underscores.
+  # e.g.: _srv_upsert "_ts3" "_udp" 1 1 9987 "teamspeak.example.com"
+  _srv_upsert() {
+    local svc="$1" proto="$2" pri="$3" wt="$4" port="$5" target="$6"
+    local record_name="${svc}.${proto}.${DNS_DOMAIN}"
+
+    # Check for existing record by matching name
+    local existing_json existing_id
+    existing_json=$(_srv_fetch_existing)
+    existing_id=$(echo "$existing_json" \
+      | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+for r in data.get('result',[]):
+    if r.get('name','').lower() == '${record_name}'.lower():
+        print(r['id']); break
+" 2>/dev/null || true)
+
+    local payload
+    payload=$(printf '{"type":"SRV","data":{"service":"%s","proto":"%s","name":"%s","priority":%d,"weight":%d,"port":%d,"target":"%s"}}' \
+      "$svc" "$proto" "$DNS_DOMAIN" "$pri" "$wt" "$port" "$target")
+
+    local result
+    if [[ -n "$existing_id" ]]; then
+      result=$(curl -fsSL --max-time 10 -X PUT \
+        -H "$_cf_h1" -H "$_cf_h2" -H "$_cf_ct" \
+        --data "$payload" \
+        "${_cf_api}/${existing_id}" 2>/dev/null)
+    else
+      result=$(curl -fsSL --max-time 10 -X POST \
+        -H "$_cf_h1" -H "$_cf_h2" -H "$_cf_ct" \
+        --data "$payload" \
+        "${_cf_api}" 2>/dev/null)
+    fi
+
+    if echo "$result" | grep -q '"success":true'; then
+      [[ -n "$existing_id" ]] \
+        && success "  Updated: ${record_name} → ${target}:${port}" \
+        || success "  Created: ${record_name} → ${target}:${port}"
+      return 0
+    else
+      local err
+      err=$(echo "$result" | python3 -c \
+        "import json,sys; d=json.load(sys.stdin); print(d.get('errors',[{}])[0].get('message','unknown'))" \
+        2>/dev/null || echo "unknown error")
+      warn "  Failed: ${record_name} — ${err}"
+      return 1
+    fi
+  }
+
+  # ── Helper: delete a SRV record by ID ───────────────────────────────────────
+  _srv_delete_by_id() {
+    local del_id="$1" del_name="$2"
+    local result
+    result=$(curl -fsSL --max-time 10 -X DELETE \
+      -H "$_cf_h1" -H "$_cf_h2" -H "$_cf_ct" \
+      "${_cf_api}/${del_id}" 2>/dev/null)
+    if echo "$result" | grep -q '"success":true'; then
+      success "  Deleted: ${del_name}"
+    else
+      warn "  Failed to delete: ${del_name}"
+    fi
+  }
+
+  # ── Catalogue of all known SRV records (RFC 2782 compliant) ─────────────────
+  # Format: "service|proto|port|target_subdomain|label"
+  # service and proto MUST begin with _ per RFC 2782 — hardcoded here, no user input.
+  declare -a _KNOWN_SRV=()
+  [[ -n "${SELECTED[teamspeak6]+_}" ]] && \
+    _KNOWN_SRV+=("_ts3|_udp|9987|teamspeak|TeamSpeak 6")
+  [[ -n "${SELECTED[ampmc]+_}" ]] && \
+    _KNOWN_SRV+=("_minecraft|_tcp|25565|mc|Minecraft (AMP)")
+  [[ -n "${SELECTED[mumble]+_}" ]] && \
+    _KNOWN_SRV+=("_mumble|_tcp|64738|mumble|Mumble")
+
+  while true; do
+    clear
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║           🗂  Cloudflare SRV Record Manager              ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${RESET}"
+    echo -e "  ${DIM}Domain: ${DNS_DOMAIN}${RESET}"
+    echo -e "  ${DIM}SRV service names follow RFC 2782 — all use required leading underscores.${RESET}"
+    echo ""
+
+    # ── Show existing SRV records live from Cloudflare ───────────────────────
+    echo -e "  ${BOLD}Current SRV records in Cloudflare:${RESET}"
+    echo "  ──────────────────────────────────────────────────────────"
+    local existing_json
+    existing_json=$(_srv_fetch_existing)
+    local srv_count
+    srv_count=$(echo "$existing_json" \
+      | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+recs=[r for r in data.get('result',[]) if r.get('type')=='SRV']
+print(len(recs))
+for r in recs:
+    d=r.get('data',{})
+    print(r['id']+'|'+r.get('name','?')+'|'+str(d.get('port','?'))+'|'+d.get('target','?'))
+" 2>/dev/null || echo "0")
+
+    local _first_line=true
+    local _has_records=false
+    while IFS= read -r _line; do
+      if [[ "$_first_line" == "true" ]]; then
+        _first_line=false
+        [[ "$_line" -gt 0 ]] 2>/dev/null && _has_records=true || true
+        continue
+      fi
+      _has_records=true
+      local _id _name _port _target
+      IFS='|' read -r _id _name _port _target <<< "$_line"
+      printf "  ${GREEN}✔${RESET}  %-36s port %-6s → %s\n" "$_name" "$_port" "$_target"
+    done <<< "$srv_count"
+
+    if [[ "$_has_records" == "false" ]]; then
+      echo -e "  ${DIM}  No SRV records found.${RESET}"
+    fi
+    echo "  ──────────────────────────────────────────────────────────"
+    echo ""
+
+    # ── Menu ────────────────────────────────────────────────────────────────
+    local _opt=1
+    declare -A _OPT_MAP=()
+
+    if [[ ${#_KNOWN_SRV[@]} -gt 0 ]]; then
+      echo -e "  ${BOLD}── Create / Update (based on your selected containers) ─────${RESET}"
+      local _entry
+      for _entry in "${_KNOWN_SRV[@]}"; do
+        local _svc _proto _port _sub _label
+        IFS='|' read -r _svc _proto _port _sub _label <<< "$_entry"
+        local _target="${_sub}.${DNS_DOMAIN}"
+        printf "  %2d) %-18s  %s → %s:%s\n" \
+          "$_opt" "$_label" "${_svc}.${_proto}.${DNS_DOMAIN}" "$_target" "$_port"
+        _OPT_MAP[$_opt]="create|${_svc}|${_proto}|${_port}|${_target}"
+        _opt=$((_opt + 1))
+      done
+      echo ""
+      printf "  %2d) Create ALL of the above at once\n" "$_opt"
+      _OPT_MAP[$_opt]="all"
+      _opt=$((_opt + 1))
+      echo ""
+    else
+      echo -e "  ${DIM}  No containers with known SRV records are currently selected.${RESET}"
+      echo -e "  ${DIM}  Select TeamSpeak, AMP (Minecraft), or Mumble (main menu → option 2).${RESET}"
+      echo ""
+    fi
+
+    if [[ "$_has_records" == "true" ]]; then
+      echo -e "  ${BOLD}── Remove ──────────────────────────────────────────────────${RESET}"
+      printf "  %2d) Delete a SRV record\n" "$_opt"
+      _OPT_MAP[$_opt]="delete"
+      _opt=$((_opt + 1))
+      echo ""
+    fi
+
+    echo "   q) Back"
+    echo ""
+    read -rp "  Choice: " _sel
+
+    case "${_sel}" in
+      q|Q) return 0 ;;
+    esac
+
+    local _action="${_OPT_MAP[$_sel]:-}"
+    if [[ -z "$_action" ]]; then
+      warn "Invalid choice."; sleep 1; continue
+    fi
+
+    case "${_action%%|*}" in
+
+      create)
+        local _svc _proto _port _target
+        IFS='|' read -r _ _svc _proto _port _target <<< "$_action"
+        echo ""
+        info "Creating SRV record: ${_svc}.${_proto}.${DNS_DOMAIN} → ${_target}:${_port}"
+        _srv_upsert "$_svc" "$_proto" 1 1 "$_port" "$_target" || true
+        pause
+        ;;
+
+      delete)
+        echo ""
+        echo -e "${BOLD}Delete SRV Record${RESET}"
+        echo ""
+        # Re-fetch and build numbered list
+        local _del_json _del_lines=() _dl
+        _del_json=$(_srv_fetch_existing)
+        while IFS= read -r _dl; do
+          [[ -n "$_dl" ]] && _del_lines+=("$_dl")
+        done < <(echo "$_del_json" \
+          | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+for r in data.get('result',[]):
+    if r.get('type')=='SRV':
+        d=r.get('data',{})
+        print(r['id']+'|'+r.get('name','?')+'|'+str(d.get('port','?'))+'|'+d.get('target','?'))
+" 2>/dev/null || true)
+
+        if [[ ${#_del_lines[@]} -eq 0 ]]; then
+          warn "No SRV records found to delete."; pause; continue
+        fi
+
+        local _di
+        for _di in "${!_del_lines[@]}"; do
+          local _did _dname _dport _dtgt
+          IFS='|' read -r _did _dname _dport _dtgt <<< "${_del_lines[$_di]}"
+          printf "  %2d) %-36s port %-6s → %s\n" \
+            "$((_di+1))" "$_dname" "$_dport" "$_dtgt"
+        done
+        echo ""
+        read -rp "  Select record to delete (or Enter to cancel): " _dsel
+        [[ -z "$_dsel" ]] && continue
+        if ! [[ "$_dsel" =~ ^[0-9]+$ ]] || (( _dsel < 1 || _dsel > ${#_del_lines[@]} )); then
+          warn "Invalid selection."; pause; continue
+        fi
+        local _chosen="${_del_lines[$((_dsel-1))]}"
+        local _cid _cname
+        IFS='|' read -r _cid _cname _ _ <<< "$_chosen"
+        read -rp "  Delete ${_cname}? [y/N] " _dyn
+        if [[ "$_dyn" =~ ^[Yy]$ ]]; then
+          _srv_delete_by_id "$_cid" "$_cname"
+        else
+          info "Aborted."
+        fi
+        pause
+        ;;
+
+      all)
+        echo ""
+        if [[ ${#_KNOWN_SRV[@]} -eq 0 ]]; then
+          warn "No containers with known SRV records are selected."
+          warn "Select TeamSpeak, AMP (Minecraft), or Mumble first (main menu → option 2)."
+          pause; continue
+        fi
+        info "Creating all suggested SRV records..."
+        echo ""
+        local _ae
+        for _ae in "${_KNOWN_SRV[@]}"; do
+          local _asvc _aproto _aport _asub _alabel
+          IFS='|' read -r _asvc _aproto _aport _asub _alabel <<< "$_ae"
+          _srv_upsert "$_asvc" "$_aproto" 1 1 "$_aport" "${_asub}.${DNS_DOMAIN}" || true
+        done
+        pause
+        ;;
+
+    esac
+  done
+}
+
 configure_dns() {
   # Fetch the public IP once before entering the menu loop.
   # _dns_get_public_ip makes up to 3 sequential curl calls (max 15s total) —
@@ -5110,9 +5389,10 @@ configure_dns() {
     clear
     echo -e "${BOLD}${CYAN}"
     echo "╔══════════════════════════════════════════════════════════╗"
-    echo "║              🌐  DNS A Record Manager                   ║"
+    echo "║               🌐  DNS Record Manager                    ║"
     echo "╚══════════════════════════════════════════════════════════╝"
     echo -e "${RESET}"
+    _dns_load
     _dns_show_status
     echo -e "  ${DIM}Current public IP: ${_dns_cached_ip}${RESET}"
     echo ""
@@ -5122,12 +5402,16 @@ configure_dns() {
     echo "  3) GoDaddy"
     echo "  4) Namecheap"
     echo ""
-    echo "  ── Actions ──────────────────────────────────────────────"
+    echo "  ── A Records ────────────────────────────────────────────"
     echo "  5) Update DNS now (push current IP to all A records)"
     echo "  6) Show subdomains that will be managed"
     echo "  7) Install auto-update cron job (every 5 minutes)"
     echo "  8) Remove auto-update cron job"
-    echo "  9) Back to main menu"
+    echo ""
+    echo "  ── SRV Records (Cloudflare only) ────────────────────────"
+    echo "  9) Manage SRV records (TeamSpeak, Minecraft, Mumble...)"
+    echo ""
+    echo "  10) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
@@ -5139,7 +5423,16 @@ configure_dns() {
       6) _dns_show_subdomains      || true; pause ;;
       7) _dns_install_cron         || true; pause ;;
       8) _dns_remove_cron          || true; pause ;;
-      9) return ;;
+      9)
+        if [[ "${DNS_PROVIDER:-}" != "cloudflare" ]]; then
+          warn "SRV record management requires Cloudflare as your DNS provider."
+          warn "Configure Cloudflare first via option 1."
+          pause
+        else
+          _dns_srv_cloudflare || true
+        fi
+        ;;
+      10) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done

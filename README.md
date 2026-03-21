@@ -140,7 +140,7 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `delugevpn` | Deluge with built-in VPN kill switch |
 | `nzbget` | Usenet download client |
 | `overseerr` | Media request manager (Plex) |
-| `ombi` | Media request manager — **deprecated**, consider Overseerr or Jellyseerr |
+| `ombi` | Media request manager for Plex, Emby, and Jellyfin |
 | `jellyseerr` | Media request manager (Jellyfin) |
 | `homeassistant` | Home automation platform — uses host networking for device discovery |
 | `heimdall` | Simple application dashboard |
@@ -301,6 +301,8 @@ Each selected container gets its own subdomain (e.g. `portainer.yourdomain.com`,
 | 6 | Show subdomains that will be managed |
 | 7 | Install auto-update cron job (runs every 5 minutes) |
 | 8 | Remove auto-update cron job |
+| 9 | Manage SRV records — TeamSpeak, Minecraft, Mumble (Cloudflare only) |
+| 10 | Back to main menu |
 
 > DNS propagation can take minutes to hours. Traefik retries certificate issuance automatically — no restart needed.
 
@@ -404,7 +406,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
 | 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery, root redirect target. |
 | 5 | Service credentials & hardware acceleration | VPN, AMP, Mumble credentials + Jellyfin hardware acceleration setup and diagnostics. Only shows options for selected services. |
-| 6 | DNS A record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. |
+| 6 | DNS record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. A records + SRV records (Cloudflare). |
 | 7 | MergerFS storage manager | Pool setup, disk management, drive details, ownership fix. |
 
 ### Operations

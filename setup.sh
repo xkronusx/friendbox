@@ -3106,7 +3106,7 @@ configure_service_credentials() {
       vpn)              _creds_configure_vpn    || true; pause ;;
       amp)              _creds_configure_amp    || true; pause ;;
       mumble)           _creds_configure_mumble || true; pause ;;
-      jellyfin_hw_setup) _jellyfin_hw_setup     || true; pause ;;
+      jellyfin_hw_setup) _jellyfin_hw_setup             ;;   # has its own loop+return
       jellyfin_hw_check) _jellyfin_hw_check     || true; pause ;;
       back)             return ;;
     esac
@@ -5404,7 +5404,6 @@ configure_dns() {
     echo "║               🌐  DNS Record Manager                    ║"
     echo "╚══════════════════════════════════════════════════════════╝"
     echo -e "${RESET}"
-    _dns_load
     _dns_show_status
     echo -e "  ${DIM}Current public IP: ${_dns_cached_ip}${RESET}"
     echo ""
@@ -5524,7 +5523,7 @@ full_install() {
   echo -e "  ${BOLD}Next steps if needed:${RESET}"
   echo -e "  ${DIM}  • Traefik dashboard password  → menu option  4${RESET}"
   echo -e "  ${DIM}  • VPN / AMP / Mumble / Jellyfin HW → menu option  5${RESET}"
-  echo -e "  ${DIM}  • DNS A record setup           → menu option  6${RESET}"
+  echo -e "  ${DIM}  • DNS record setup             → menu option  6${RESET}"
   echo -e "  ${DIM}  • MergerFS storage pool        → menu option  7${RESET}"
   echo -e "  ${DIM}  • Backup your config           → menu option 16${RESET}"
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
@@ -5934,7 +5933,7 @@ main_menu() {
     echo "   3) Configure .env (paths, PUID, timezone)"
     echo "   4) Traefik configuration"
     echo "   5) Service credentials & hardware acceleration"
-    echo "   6) DNS A record manager"
+    echo "   6) DNS record manager"
     echo "   7) MergerFS storage manager"
     echo ""
     echo "  ── Operations ───────────────────────────"

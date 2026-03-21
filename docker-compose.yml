@@ -1044,7 +1044,7 @@ services:
 
   # ── WireGuard Easy — WireGuard VPN server with web UI ───────────────────────
   wgeasy:
-    image: ghcr.io/wg-easy/wg-easy:edge
+    image: ghcr.io/wg-easy/wg-easy:latest
     container_name: wgeasy
     profiles: [wgeasy]
     restart: unless-stopped
@@ -1062,17 +1062,30 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.all.forwarding=1
+      - net.ipv6.conf.default.forwarding=1
     environment:
-      - LANG=en
-      - WG_HOST=${DOMAIN}
-      - PASSWORD_HASH=${WGEASY_PASSWORD_HASH:-}
+      # Web UI port — accessed via Traefik or directly at http://IP:51821
       - PORT=51821
-      - WG_PORT=51820
+      # INSECURE allows the web UI to load over plain HTTP (e.g. direct port access).
+      # Traefik handles HTTPS termination externally; the container itself speaks HTTP.
+      - INSECURE=true
+      # INIT_* vars configure the first-start setup wizard without user interaction.
+      # They are only consumed on the very first container start; once the internal
+      # database is created they are ignored. Remove them from .env after first deploy
+      # if you want to avoid the plaintext password persisting on disk.
+      - INIT_ENABLED=${WGEASY_INIT_ENABLED:-false}
+      - INIT_USERNAME=${WGEASY_INIT_USERNAME:-admin}
+      - INIT_PASSWORD=${WGEASY_INIT_PASSWORD:-}
+      - INIT_HOST=${WGEASY_INIT_HOST:-}
+      - INIT_PORT=${WGEASY_INIT_PORT:-51820}
     volumes:
       - ${CONFIG_ROOT}/wgeasy:/etc/wireguard
+      - /lib/modules:/lib/modules:ro
     ports:
       - "51820:51820/udp"
-      - "51821:51821"
+      - "51821:51821/tcp"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"

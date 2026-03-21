@@ -242,7 +242,7 @@ Port 8080 is bound to all interfaces — the dashboard is reachable from the hos
 
 ---
 
-### Step 6 — Set service credentials *(required for VPN clients, AMP, Mumble, WireGuard Easy, Doplarr)*
+### Step 6 — Set service credentials *(required for VPN clients, AMP, Mumble, Doplarr — optional for WireGuard Easy)*
 **`sudo friendbox` → option 5**
 
 Only shows options for services you have selected.
@@ -254,11 +254,11 @@ Only shows options for services you have selected.
 | **Mumble** | Superuser password |
 | **Jellyfin** | Hardware acceleration method (VA-API / NVENC / None) + full diagnostic tool |
 | **Doplarr** | Discord bot token, Overseerr API key (required), Radarr and Sonarr API keys (optional) |
-| **WireGuard Easy** | Web UI password (stored as a bcrypt hash — plaintext is never saved) |
+| **WireGuard Easy** | Optional unattended first-start setup (username, password, host, port). If skipped, a setup wizard runs on first visit to the web UI. |
 
 > **VPN LAN CIDR note:** The default value includes your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet assigned to `medianet` (detected automatically from the live network). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik to reverse-proxy the VPN container while the tunnel is active. If your home network uses a different subnet (e.g. `192.168.0.0/24`), update the first entry accordingly.
 
-> **WireGuard Easy note:** The password wizard generates a bcrypt hash using `htpasswd` (part of `apache2-utils`, installed automatically if missing) and saves it as `WGEASY_PASSWORD_HASH` in `.env`. The plaintext password is never stored.
+> **WireGuard Easy note:** WireGuard Easy v15 stores all configuration (users, password, host, VPN settings) in its internal database, not in environment variables. The option 5 wizard lets you optionally pre-configure the first-start setup so the container deploys without requiring a manual visit to the setup wizard. If you skip the wizard, visit `https://wg.yourdomain.com` (or `http://IP:51821`) after first deploy to complete setup. The `INIT_PASSWORD` stored in `.env` is plaintext and only used once — run the wizard again after first deploy to disable unattended init and remove it.
 
 > **Doplarr note:** Doplarr connects to Overseerr, Sonarr, and Radarr by container name on the internal `medianet` network. API keys are found in each service's web UI under Settings → General → API Key.
 
@@ -330,7 +330,7 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Doplarr | No web UI — Discord bot only | Invite bot to your server, use slash commands |
 | UniFi | `https://unifi.yourdomain.com` (`https://IP:8443` direct) | Create admin account on first visit. Inform port for devices: `IP:8880` |
 | Actual Budget | `https://actual.yourdomain.com` (`http://IP:5006` direct) | Create account on first visit |
-| WireGuard Easy | `https://wg.yourdomain.com` (`http://IP:51821` direct) | Password set via `WGEASY_PASSWORD_HASH` in `.env` |
+| WireGuard Easy | `https://wg.yourdomain.com` (`http://IP:51821` direct) | Username and password set via setup wizard on first visit, or via option 5 unattended init |
 | Fail2ban | No web UI — host network | Monitor via `docker logs fail2ban` or logs in `${CONFIG_ROOT}/fail2ban/` |
 | AMP | `https://amp.yourdomain.com` (`http://IP:8085` direct) | Credentials set in option 5 |
 | NetbootXYZ | `https://netboot.yourdomain.com` (`http://IP:3000` direct) | No auth by default |
@@ -549,7 +549,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - `acme.json` is always `root:root 600` — required for Traefik v3 to write cert renewals
 - `.env` is `chmod 600` — contains VPN credentials, DNS provider API keys, and hashed dashboard passwords. Do not share or commit it
 - `.dns_config` is `chmod 600` — contains DNS provider API keys
-- `WGEASY_PASSWORD_HASH` in `.env` stores a bcrypt hash — never the plaintext password
+- WireGuard Easy v15 stores credentials in its internal database — `INIT_PASSWORD` in `.env` is plaintext and only consumed on first start; remove it after first deploy
 - The Traefik HTTPS dashboard requires bcrypt Basic Auth credentials (option 4 → option 1)
 - The Traefik API at `:8080` has no authentication — it is accessible from any machine on your LAN. Do not forward port 8080 through your router to the internet
 - qBittorrent default credentials (`admin` / `adminadmin`) must be changed immediately after first login
@@ -636,7 +636,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - If devices were previously adopted by a different controller, factory reset them first.
 
 **WireGuard Easy web UI accessible but clients can't connect**
-- Confirm `DOMAIN` in `.env` matches your public-facing hostname — WireGuard Easy uses this as the endpoint for client configs.
+- Confirm the host entered during setup (or `WGEASY_INIT_HOST` if using unattended init) matches your public-facing hostname — WireGuard Easy uses this as the endpoint address in generated client configs.
 - Ensure UDP port 51820 is forwarded on your router to the Friendbox server.
 - Regenerate client configs after changing any settings.
 

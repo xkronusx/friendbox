@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.7.1"
+FRIENDBOX_VERSION="1.7.2"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -3091,7 +3091,15 @@ _creds_show_status() {
 
   # WireGuard Easy
   if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
-    echo -e "  ${BOLD}WG-Easy password hash  :${RESET} ${WGEASY_PASSWORD_HASH:+[set]}"
+    local _wg_init="${WGEASY_INIT_ENABLED:-false}"
+    if [[ "$_wg_init" == "true" ]]; then
+      echo -e "  ${BOLD}WG-Easy init username  :${RESET} ${WGEASY_INIT_USERNAME:-admin}"
+      echo -e "  ${BOLD}WG-Easy init password  :${RESET} ${WGEASY_INIT_PASSWORD:+[set]}"
+      echo -e "  ${BOLD}WG-Easy init host      :${RESET} ${WGEASY_INIT_HOST:-not set}"
+      echo -e "  ${DIM}  (INIT_* vars used on first start only — configure via web UI after deploy)${RESET}"
+    else
+      echo -e "  ${BOLD}WG-Easy unattended init:${RESET} ${DIM}disabled — setup wizard will run on first visit${RESET}"
+    fi
     echo ""
   fi
 }
@@ -3151,7 +3159,7 @@ configure_service_credentials() {
     fi
 
     if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
-      echo "  ${opt_num}) Configure WireGuard Easy password"
+      echo "  ${opt_num}) Configure WireGuard Easy first-start setup"
       CRED_OPTS[$opt_num]="wgeasy"
       opt_num=$((opt_num + 1))
     fi
@@ -3159,6 +3167,7 @@ configure_service_credentials() {
     if [[ $opt_num -eq 1 ]]; then
       echo -e "  ${DIM}No services requiring configuration are currently selected.${RESET}"
       echo -e "  ${DIM}Select VPN containers, AMP, Mumble, Jellyfin, Doplarr, or WireGuard Easy first (option 2).${RESET}"
+      echo -e "  ${DIM}(WireGuard Easy v15 can also be configured via its web UI without using this wizard.)${RESET}"
     fi
 
     echo "  ${opt_num}) Back to main menu"
@@ -3330,45 +3339,68 @@ _creds_configure_doplarr() {
 _creds_configure_wgeasy() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   echo ""
-  echo -e "${BOLD}WireGuard Easy — Web UI Password${RESET}"
-  echo -e "${DIM}Sets the password for the WG-Easy web interface at https://wg.${DOMAIN:-yourdomain.com}${RESET}"
-  echo -e "${DIM}The password is stored as a bcrypt hash — the plaintext is never saved.${RESET}"
+  echo -e "${BOLD}WireGuard Easy — First-Start Configuration${RESET}"
+  echo -e "${DIM}WireGuard Easy v15 is configured through its web UI after first deploy.${RESET}"
+  echo -e "${DIM}Optionally enable unattended setup to pre-configure it without visiting${RESET}"
+  echo -e "${DIM}the setup wizard. These values are only used on the very first container${RESET}"
+  echo -e "${DIM}start — after that they are ignored and settings live in the container DB.${RESET}"
+  echo ""
+  echo -e "${DIM}Leave unattended init disabled to run the setup wizard manually at:${RESET}"
+  echo -e "${DIM}  https://wg.${DOMAIN:-yourdomain.com}  (or  http://IP:51821  if no Traefik)${RESET}"
   echo ""
 
-  if ! command -v htpasswd &>/dev/null; then
-    warn "htpasswd not found. Installing apache2-utils..."
-    apt-get install -y apache2-utils || { error "Could not install apache2-utils."; return 1; }
+  local _enable_init
+  read -rp "Enable unattended first-start init? [y/N]: " _enable_init
+  if [[ ! "${_enable_init}" =~ ^[Yy]$ ]]; then
+    # Ensure INIT_ENABLED is false so the setup wizard runs on first visit
+    sed -i '/^WGEASY_INIT_ENABLED=/d;/^WGEASY_INIT_USERNAME=/d' "$ENV_FILE" 2>/dev/null || true
+    sed -i '/^WGEASY_INIT_PASSWORD=/d;/^WGEASY_INIT_HOST=/d;/^WGEASY_INIT_PORT=/d' "$ENV_FILE" 2>/dev/null || true
+    printf "WGEASY_INIT_ENABLED='false'\n" >> "$ENV_FILE"
+    info "Unattended init disabled — setup wizard will run on first visit to the web UI."
+    info "Redeploy WireGuard Easy (option 12) to apply."
+    return 0
   fi
 
-  local wg_pass
-  echo -n "WireGuard Easy web UI password (press Enter to keep existing): "
-  read -rs wg_pass; echo ""
+  echo ""
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
 
+  read -rp "Admin username [${WGEASY_INIT_USERNAME:-admin}]: " input
+  local wg_user="${input:-${WGEASY_INIT_USERNAME:-admin}}"
+
+  local wg_pass
+  read -srp "Admin password (press Enter to keep existing): " wg_pass; echo ""
   if [[ -z "$wg_pass" ]]; then
-    if [[ -n "${WGEASY_PASSWORD_HASH:-}" ]]; then
+    if [[ -n "${WGEASY_INIT_PASSWORD:-}" ]]; then
       info "Password unchanged."
-      return 0
+      wg_pass="${WGEASY_INIT_PASSWORD}"
     else
-      warn "No password set — WG-Easy will be accessible without authentication."
-      warn "Set a password before exposing WireGuard Easy to the internet."
-      return 1
+      warn "Password is required for unattended init."; return 1
     fi
   fi
 
-  # WG-Easy expects a bcrypt hash in PASSWORD_HASH env var.
-  # htpasswd -nbB generates "user:hash" — we strip the "user:" prefix.
-  local new_hash
-  new_hash=$(htpasswd -nbB wgeasy "$wg_pass" 2>/dev/null | cut -d: -f2)
-  if [[ -z "$new_hash" ]]; then
-    error "Failed to generate bcrypt hash."; return 1
-  fi
+  # INIT_HOST is the public hostname or IP that WireGuard clients connect to.
+  # Defaults to DOMAIN (the root domain, not wg.DOMAIN — clients need the raw host).
+  read -rp "WireGuard host for clients [${WGEASY_INIT_HOST:-${DOMAIN:-}}]: " input
+  local wg_host="${input:-${WGEASY_INIT_HOST:-${DOMAIN:-}}}"
+  [[ -z "$wg_host" ]] && { warn "Host is required (e.g. vpn.example.com or your public IP)."; return 1; }
 
-  sed -i '/^WGEASY_PASSWORD_HASH=/d' "$ENV_FILE" 2>/dev/null || true
-  # Single-quote the bcrypt hash — it contains literal $ characters
-  # that would be expanded as variables when .env is sourced by bash.
-  printf "WGEASY_PASSWORD_HASH='%s'\n" "$new_hash" >> "$ENV_FILE"
-  success "WireGuard Easy password hash saved."
-  info "Redeploy WireGuard Easy (option 12) to apply changes."
+  read -rp "WireGuard listen port [${WGEASY_INIT_PORT:-51820}]: " input
+  local wg_port="${input:-${WGEASY_INIT_PORT:-51820}}"
+
+  sed -i '/^WGEASY_INIT_ENABLED=/d;/^WGEASY_INIT_USERNAME=/d' "$ENV_FILE" 2>/dev/null || true
+  sed -i '/^WGEASY_INIT_PASSWORD=/d;/^WGEASY_INIT_HOST=/d;/^WGEASY_INIT_PORT=/d' "$ENV_FILE" 2>/dev/null || true
+  printf "WGEASY_INIT_ENABLED='true'\n" >> "$ENV_FILE"
+  printf "WGEASY_INIT_USERNAME='%s'\n" "$wg_user" >> "$ENV_FILE"
+  # Single-quote to protect special characters on bash source
+  printf "WGEASY_INIT_PASSWORD='%s'\n" "$wg_pass" >> "$ENV_FILE"
+  printf "WGEASY_INIT_HOST='%s'\n"     "$wg_host" >> "$ENV_FILE"
+  printf "WGEASY_INIT_PORT='%s'\n"     "$wg_port" >> "$ENV_FILE"
+
+  success "WireGuard Easy unattended init configured."
+  warn "INIT_PASSWORD is stored in plaintext in .env — remove it after first deploy"
+  warn "by running this wizard again and disabling unattended init."
+  info "Redeploy WireGuard Easy (option 12) to apply."
 }
 
 generate_redeploy_sh() {
@@ -5742,7 +5774,7 @@ full_install() {
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
   echo -e "  ${BOLD}Next steps if needed:${RESET}"
   echo -e "  ${DIM}  • Traefik dashboard password  → menu option  4${RESET}"
-  echo -e "  ${DIM}  • VPN client / AMP / Mumble / Jellyfin HW / WireGuard Easy → menu option  5${RESET}"
+  echo -e "  ${DIM}  • VPN client / AMP / Mumble / Jellyfin HW / WireGuard Easy (optional) → menu option  5${RESET}"
   echo -e "  ${DIM}  • DNS record setup             → menu option  6${RESET}"
   echo -e "  ${DIM}  • MergerFS storage pool        → menu option  7${RESET}"
   echo -e "  ${DIM}  • Backup your config           → menu option 16${RESET}"

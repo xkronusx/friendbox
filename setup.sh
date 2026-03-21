@@ -5104,8 +5104,20 @@ _dns_srv_cloudflare() {
   # Records point to a hostname (target), not an IP — they never need updating
   # when your WAN IP changes. Create once; delete only if decommissioning.
   _dns_load
-  [[ -z "$DNS_CF_API_KEY" || -z "$DNS_CF_ZONE_ID" || -z "$DNS_DOMAIN" ]] \
-    && { error "Cloudflare not fully configured. Run option 1 first."; return 1; }
+  if [[ "${DNS_PROVIDER:-}" != "cloudflare" ]]; then
+    echo ""
+    warn "SRV record management requires Cloudflare as your DNS provider."
+    warn "Configure Cloudflare first via option 1 in the DNS manager."
+    pause
+    return 0
+  fi
+  if [[ -z "$DNS_CF_API_KEY" || -z "$DNS_CF_ZONE_ID" || -z "$DNS_DOMAIN" ]]; then
+    echo ""
+    error "Cloudflare credentials incomplete — API key, Zone ID, or domain is missing."
+    error "Re-run option 1 (Cloudflare) in the DNS manager to complete setup."
+    pause
+    return 1
+  fi
   load_selected 2>/dev/null || true
 
   # ── Helper: Cloudflare auth headers (reused throughout) ─────────────────────
@@ -5423,15 +5435,7 @@ configure_dns() {
       6) _dns_show_subdomains      || true; pause ;;
       7) _dns_install_cron         || true; pause ;;
       8) _dns_remove_cron          || true; pause ;;
-      9)
-        if [[ "${DNS_PROVIDER:-}" != "cloudflare" ]]; then
-          warn "SRV record management requires Cloudflare as your DNS provider."
-          warn "Configure Cloudflare first via option 1."
-          pause
-        else
-          _dns_srv_cloudflare || true
-        fi
-        ;;
+      9) _dns_srv_cloudflare ;;
       10) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac

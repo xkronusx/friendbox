@@ -149,7 +149,7 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `doplarr` | Discord bot for Overseerr/Sonarr/Radarr media requests |
 | `unifi` | Ubiquiti UniFi network controller (includes MongoDB sidecar) |
 | `actual` | Local-first personal finance and budgeting |
-| `wgeasy` | WireGuard VPN server with web UI |
+| `wgeasy` | Self-hosted WireGuard VPN server — inbound remote access to your network (not a client VPN for download traffic) |
 | `fail2ban` | Log-based intrusion prevention — bans abusive IPs (host network, no web UI) |
 | `netbootxyz` | Network boot server |
 | `teamspeak6` | TeamSpeak 6 voice server — connect via TS6 client on UDP 9987 |
@@ -242,14 +242,14 @@ Port 8080 is bound to all interfaces — the dashboard is reachable from the hos
 
 ---
 
-### Step 6 — Set service credentials *(required for VPN, AMP, Mumble, WireGuard Easy, Doplarr)*
+### Step 6 — Set service credentials *(required for VPN clients, AMP, Mumble, WireGuard Easy, Doplarr)*
 **`sudo friendbox` → option 5**
 
 Only shows options for services you have selected.
 
 | Service | What is configured |
 |---|---|
-| **qBittorrentVPN / DelugeVPN** | VPN provider, client type (openvpn/wireguard), username, password, LAN CIDR |
+| **qBittorrentVPN / DelugeVPN** | External VPN provider credentials — provider name, client type (openvpn/wireguard), username, password, LAN CIDR. Unrelated to WireGuard Easy. |
 | **AMP** | Admin username and password |
 | **Mumble** | Superuser password |
 | **Jellyfin** | Hardware acceleration method (VA-API / NVENC / None) + full diagnostic tool |
@@ -388,7 +388,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 2 | Select containers | Toggle which services to deploy. |
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
 | 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery, root redirect target. |
-| 5 | Service credentials & hardware acceleration | VPN, AMP, Mumble, Doplarr, WireGuard Easy credentials + Jellyfin hardware acceleration setup and diagnostics. Only shows options for selected services. |
+| 5 | Service credentials & hardware acceleration | VPN client credentials (qBittorrentVPN / DelugeVPN), AMP, Mumble, Doplarr, WireGuard Easy + Jellyfin hardware acceleration setup and diagnostics. Only shows options for selected services. |
 | 6 | DNS record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. A records + SRV records (Cloudflare). |
 | 7 | MergerFS storage manager | Pool setup, disk management, drive details, ownership fix. |
 

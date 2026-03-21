@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.6.0"
+FRIENDBOX_VERSION="1.6.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -257,7 +257,7 @@ declare -A CONTAINER_DESC=(
   [unifi]="Ubiquiti UniFi network controller"
   [actual]="Local-first personal finance / budgeting"
   [homarr]="Modern application dashboard (pinned 0.16.1)"
-  [wgeasy]="WireGuard VPN server with web UI"
+  [wgeasy]="Self-hosted WireGuard VPN server (inbound — for remote access to your network)"
 )
 
 declare -A CONTAINER_CATEGORY=(
@@ -394,7 +394,7 @@ select_containers() {
   done
   if [[ "$vpn_selected" == "true" ]]; then
     echo ""
-    info "VPN container(s) selected — use menu option 5 (Service credentials) to set VPN credentials before deploying."
+    info "VPN client container(s) selected — use menu option 5 (Service credentials) to set provider credentials (username, password, LAN CIDR) before deploying."
   fi
   echo ""
   success "Selection saved."
@@ -3017,7 +3017,7 @@ _traefik_provider_namecheap() {
 }
 
 # =============================================================================
-#  Service Credentials (VPN, AMP, Mumble)
+#  Service Credentials (VPN clients, AMP, Mumble)
 # =============================================================================
 
 _creds_show_status() {
@@ -3041,14 +3041,15 @@ _creds_show_status() {
     [[ -n "${SELECTED[$k]+_}" ]] && vpn_containers+=("${CONTAINER_NAMES[$k]}")
   done
   if [[ ${#vpn_containers[@]} -gt 0 ]]; then
-    echo -e "  ${BOLD}VPN containers :${RESET} ${vpn_containers[*]}"
+    echo -e "  ${BOLD}VPN client containers :${RESET} ${vpn_containers[*]}"
+    echo -e "  ${DIM}  (External provider credentials — unrelated to WireGuard Easy)${RESET}"
     echo -e "  ${BOLD}VPN provider   :${RESET} ${VPN_PROV:-not set}"
     echo -e "  ${BOLD}VPN client     :${RESET} ${VPN_CLIENT:-not set}"
     echo -e "  ${BOLD}VPN user       :${RESET} ${VPN_USER:-not set}"
     echo -e "  ${BOLD}VPN password   :${RESET} ${VPN_PASS:+[set]}"
     echo -e "  ${BOLD}LAN CIDR       :${RESET} ${LAN_NETWORK:-not set}"
   else
-    echo -e "  ${DIM}No VPN containers selected.${RESET}"
+    echo -e "  ${DIM}No VPN client containers selected.${RESET}"
   fi
   echo ""
 
@@ -3103,7 +3104,7 @@ configure_service_credentials() {
     done
 
     if [[ "$vpn_needed" == "true" ]]; then
-      echo "  ${opt_num}) Configure VPN credentials"
+      echo "  ${opt_num}) Configure VPN client credentials (qBittorrentVPN / DelugeVPN)"
       CRED_OPTS[$opt_num]="vpn"
       opt_num=$((opt_num + 1))
     fi
@@ -3171,8 +3172,9 @@ configure_service_credentials() {
 _creds_configure_vpn() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   echo ""
-  echo -e "${BOLD}VPN Credentials${RESET}"
-  echo -e "${DIM}Used by qBittorrentVPN and/or DelugeVPN.${RESET}"
+  echo -e "${BOLD}VPN Client Credentials${RESET}"
+  echo -e "${DIM}Used by qBittorrentVPN and/or DelugeVPN to route download traffic through an${RESET}"
+  echo -e "${DIM}external VPN provider (e.g. PIA, Mullvad). Unrelated to WireGuard Easy.${RESET}"
   echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
   echo ""
 
@@ -5722,7 +5724,7 @@ full_install() {
   echo -e "  ${DIM}──────────────────────────────────────────────────────────${RESET}"
   echo -e "  ${BOLD}Next steps if needed:${RESET}"
   echo -e "  ${DIM}  • Traefik dashboard password  → menu option  4${RESET}"
-  echo -e "  ${DIM}  • VPN / AMP / Mumble / Jellyfin HW → menu option  5${RESET}"
+  echo -e "  ${DIM}  • VPN client / AMP / Mumble / Jellyfin HW / WireGuard Easy → menu option  5${RESET}"
   echo -e "  ${DIM}  • DNS record setup             → menu option  6${RESET}"
   echo -e "  ${DIM}  • MergerFS storage pool        → menu option  7${RESET}"
   echo -e "  ${DIM}  • Backup your config           → menu option 16${RESET}"

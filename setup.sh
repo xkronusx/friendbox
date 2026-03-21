@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.5.0"
+FRIENDBOX_VERSION="1.6.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -546,27 +546,41 @@ auto_update() {
     fi
   fi
 
-  # Skip re-exec if the downloaded version is identical to the running version.
-  # Avoids an unnecessary process restart and update notice on every launch
-  # when the repo hasn't changed since the last update.
+  # Check script version — if identical, no re-exec needed for the script itself.
   local new_ver
   new_ver=$(grep '^FRIENDBOX_VERSION=' /usr/local/bin/friendbox.new 2>/dev/null \
     | cut -d= -f2 | tr -d '"' || echo "unknown")
-  if [[ -n "$new_ver" && "$new_ver" != "unknown" && "$new_ver" == "$FRIENDBOX_VERSION" ]]; then
+  local script_changed=true
+  [[ -n "$new_ver" && "$new_ver" != "unknown" && "$new_ver" == "$FRIENDBOX_VERSION" ]] \
+    && script_changed=false
+
+  # Check compose file independently — it can change without a version bump
+  # (e.g. image pin updates, label fixes). Compare checksums to detect real changes.
+  local compose_changed=true
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    local old_sum new_sum
+    old_sum=$(md5sum "$COMPOSE_FILE"       2>/dev/null | cut -d' ' -f1)
+    new_sum=$(md5sum "${COMPOSE_FILE}.new" 2>/dev/null | cut -d' ' -f1)
+    [[ -n "$old_sum" && "$old_sum" == "$new_sum" ]] && compose_changed=false
+  fi
+
+  # If neither file changed, skip everything — no re-exec, no update notice.
+  if [[ "$script_changed" == "false" && "$compose_changed" == "false" ]]; then
     rm -f /usr/local/bin/friendbox.new "${COMPOSE_FILE}.new"
     return 0
   fi
 
-  mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
-  _own "${COMPOSE_FILE}"
+  # Apply compose file if it changed; otherwise discard the download.
+  if [[ "$compose_changed" == "true" ]]; then
+    mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
+    _own "${COMPOSE_FILE}"
+  else
+    rm -f "${COMPOSE_FILE}.new"
+  fi
 
-  # Re-apply Traefik patches to the freshly downloaded docker-compose.yml
-  # BEFORE re-exec.  A fresh compose file from GitHub restores all certresolver
-  # labels; for DuckDNS they must be stripped, and for all other providers
-  # TRAEFIK_CERT_RESOLVER must be written to .env so labels expand correctly.
-  # Jellyfin HW accel is also re-applied — a fresh compose resets the jellyfin
-  # service to software transcoding, losing any VA-API/NVENC patch.
-  if [[ -f "$ENV_FILE" ]]; then
+  # Re-apply Traefik/Jellyfin patches whenever the compose file changed.
+  # A fresh compose from GitHub resets certresolver labels and HW accel blocks.
+  if [[ "$compose_changed" == "true" && -f "$ENV_FILE" ]]; then
     source "$ENV_FILE" 2>/dev/null || true
     if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
       _traefik_write_config 2>/dev/null || true
@@ -576,7 +590,21 @@ auto_update() {
     fi
   fi
 
-  printf 'docker-compose.yml\n/usr/local/bin/friendbox\n' > "${INSTALL_DIR}/.update_notice"
+  # Script re-exec is only needed when the script itself changed.
+  # If only the compose changed, the running script is already current —
+  # patches have been applied above and the session can continue without restart.
+  if [[ "$script_changed" == "false" ]]; then
+    if [[ "$compose_changed" == "true" ]]; then
+      printf 'docker-compose.yml\n' > "${INSTALL_DIR}/.update_notice"
+      _own "${INSTALL_DIR}/.update_notice"
+    fi
+    return 0
+  fi
+
+  # Script changed — write update notice, replace binary, and re-exec.
+  local notice_items="docker-compose.yml\n/usr/local/bin/friendbox\n"
+  [[ "$compose_changed" == "false" ]] && notice_items="/usr/local/bin/friendbox\n"
+  printf "$notice_items" > "${INSTALL_DIR}/.update_notice"
   # new_ver already set above — append it so the menu shows which version was just pulled
   [[ -n "$new_ver" && "$new_ver" != "unknown" ]] && printf 'Version: %s\n' "$new_ver" >> "${INSTALL_DIR}/.update_notice"
   _own "${INSTALL_DIR}/.update_notice"
@@ -3175,7 +3203,9 @@ _creds_configure_vpn() {
   local var
   for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
     sed -i "/^${var}=/d" "$ENV_FILE" 2>/dev/null || true
-    echo "${var}=${!var}" >> "$ENV_FILE"
+    # Single-quote the value so special characters (e.g. $ in passwords) are
+    # written literally and not expanded when .env is later sourced by bash.
+    printf "%s='%s'\n" "$var" "${!var}" >> "$ENV_FILE"
   done
   success "VPN credentials saved."
 }
@@ -3197,7 +3227,8 @@ _creds_configure_amp() {
     info "AMP password unchanged."
   fi
   sed -i '/^AMP_USER=/d;/^AMP_PASS=/d' "$ENV_FILE" 2>/dev/null || true
-  printf 'AMP_USER=%s\nAMP_PASS=%s\n' "$AMP_USER" "$AMP_PASS" >> "$ENV_FILE"
+  # Single-quote values to protect special characters on bash source.
+  printf "AMP_USER='%s'\nAMP_PASS='%s'\n" "$AMP_USER" "$AMP_PASS" >> "$ENV_FILE"
   success "AMP credentials saved."
 }
 
@@ -3214,7 +3245,8 @@ _creds_configure_mumble() {
     warn "Password is still set to 'changeme' — change this before exposing Mumble to the internet."
   fi
   sed -i '/^MUMBLE_SUPERUSER_PASSWORD=/d' "$ENV_FILE" 2>/dev/null || true
-  echo "MUMBLE_SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD}" >> "$ENV_FILE"
+  # Single-quote value to protect special characters on bash source.
+  printf "MUMBLE_SUPERUSER_PASSWORD='%s'\n" "$MUMBLE_SUPERUSER_PASSWORD" >> "$ENV_FILE"
   success "Mumble password saved."
 }
 
@@ -3270,12 +3302,11 @@ _creds_configure_doplarr() {
 
   sed -i '/^DOPLARR_DISCORD_TOKEN=/d;/^DOPLARR_OVERSEERR_API=/d' "$ENV_FILE" 2>/dev/null || true
   sed -i '/^DOPLARR_RADARR_API=/d;/^DOPLARR_SONARR_API=/d'       "$ENV_FILE" 2>/dev/null || true
-  printf 'DOPLARR_DISCORD_TOKEN=%s
-DOPLARR_OVERSEERR_API=%s
-'     "$DOPLARR_DISCORD_TOKEN" "$DOPLARR_OVERSEERR_API" >> "$ENV_FILE"
-  printf 'DOPLARR_RADARR_API=%s
-DOPLARR_SONARR_API=%s
-'     "$DOPLARR_RADARR_API" "$DOPLARR_SONARR_API" >> "$ENV_FILE"
+  # Single-quote values to protect special characters on bash source.
+  printf "DOPLARR_DISCORD_TOKEN='%s'\nDOPLARR_OVERSEERR_API='%s'\n" \
+    "$DOPLARR_DISCORD_TOKEN" "$DOPLARR_OVERSEERR_API" >> "$ENV_FILE"
+  printf "DOPLARR_RADARR_API='%s'\nDOPLARR_SONARR_API='%s'\n" \
+    "$DOPLARR_RADARR_API" "$DOPLARR_SONARR_API" >> "$ENV_FILE"
   success "Doplarr credentials saved."
   info "Redeploy Doplarr (option 12) to apply changes."
 }
@@ -3317,8 +3348,9 @@ _creds_configure_wgeasy() {
   fi
 
   sed -i '/^WGEASY_PASSWORD_HASH=/d' "$ENV_FILE" 2>/dev/null || true
-  printf 'WGEASY_PASSWORD_HASH=%s
-' "$new_hash" >> "$ENV_FILE"
+  # Single-quote the bcrypt hash — it contains literal $ characters
+  # that would be expanded as variables when .env is sourced by bash.
+  printf "WGEASY_PASSWORD_HASH='%s'\n" "$new_hash" >> "$ENV_FILE"
   success "WireGuard Easy password hash saved."
   info "Redeploy WireGuard Easy (option 12) to apply changes."
 }
@@ -5097,23 +5129,29 @@ _dns_update_namecheap() {
 _dns_verify_propagation() {
   # After a DNS update, confirm the record is visible from a public resolver.
   # Tries 3 times with 10s gaps before giving up gracefully.
+  # Optional first arg: pre-fetched public IP — avoids a redundant detection
+  # call when invoked from _dns_update_now, which already has the IP.
+  local expected_ip="${1:-}"
   _dns_load
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   local domain="${DNS_DOMAIN:-${DOMAIN:-}}"
   [[ -z "$domain" ]] && return 0
 
-  local expected_ip
-  expected_ip=$(_dns_get_public_ip 2>/dev/null) \
-    || { info "Could not detect public IP — skipping propagation check."; return 0; }
+  if [[ -z "$expected_ip" ]]; then
+    expected_ip=$(_dns_get_public_ip 2>/dev/null) \
+      || { info "Could not detect public IP — skipping propagation check."; return 0; }
+  fi
 
   command -v dig &>/dev/null \
     || { info "dig not found — skipping propagation check (install dnsutils to enable)."; return 0; }
 
   # Also check a representative subdomain — subdomains propagate independently
   # of the root, so a passing root check doesn't guarantee subdomains are live.
-  # Pick the first subdomain from the managed list as the sample check target.
+  # load_selected must be called in the parent shell (not inside a subshell) so
+  # that SELECTED is populated before _dns_get_subdomains reads it.
+  load_selected 2>/dev/null || true
   local sample_sub sample_domain=""
-  sample_sub=$(load_selected 2>/dev/null; _dns_get_subdomains 2>/dev/null | head -1 || true)
+  sample_sub=$(_dns_get_subdomains 2>/dev/null | head -1 || true)
   [[ -n "$sample_sub" ]] && sample_domain="${sample_sub}.${domain}"
 
   echo ""
@@ -5161,7 +5199,8 @@ _dns_update_now() {
     namecheap)  _dns_update_namecheap  "$_ip" ;;
     *)          error "Unknown provider: ${DNS_PROVIDER}" ;;
   esac
-  _dns_verify_propagation
+  # Pass the already-fetched IP so _dns_verify_propagation skips its own fetch.
+  _dns_verify_propagation "$_ip"
 }
 
 _dns_show_subdomains() {

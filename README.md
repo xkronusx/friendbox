@@ -242,7 +242,7 @@ Port 8080 is bound to all interfaces — the dashboard is reachable from the hos
 
 ---
 
-### Step 6 — Set service credentials *(required for VPN, AMP, Mumble, WireGuard Easy)*
+### Step 6 — Set service credentials *(required for VPN, AMP, Mumble, WireGuard Easy, Doplarr)*
 **`sudo friendbox` → option 5**
 
 Only shows options for services you have selected.
@@ -253,31 +253,14 @@ Only shows options for services you have selected.
 | **AMP** | Admin username and password |
 | **Mumble** | Superuser password |
 | **Jellyfin** | Hardware acceleration method (VA-API / NVENC / None) + full diagnostic tool |
+| **Doplarr** | Discord bot token, Overseerr API key (required), Radarr and Sonarr API keys (optional) |
+| **WireGuard Easy** | Web UI password (stored as a bcrypt hash — plaintext is never saved) |
 
 > **VPN LAN CIDR note:** The default value includes your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet assigned to `medianet` (detected automatically from the live network). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik to reverse-proxy the VPN container while the tunnel is active. If your home network uses a different subnet (e.g. `192.168.0.0/24`), update the first entry accordingly.
 
-**WireGuard Easy setup:**
+> **WireGuard Easy note:** The password wizard generates a bcrypt hash using `htpasswd` (part of `apache2-utils`, installed automatically if missing) and saves it as `WGEASY_PASSWORD_HASH` in `.env`. The plaintext password is never stored.
 
-WireGuard Easy requires a bcrypt password hash set in `.env` as `WGEASY_PASSWORD_HASH`. Generate one with:
-```bash
-echo -n 'yourpassword' | npx bcrypt-cli
-```
-Then add the result to `/opt/friendbox/.env`:
-```
-WGEASY_PASSWORD_HASH=$2b$10$...
-```
-The web UI is available at `https://wg.yourdomain.com` or `http://IP:51821`.
-
-**Doplarr setup:**
-
-Doplarr requires Discord and API credentials set in `.env`:
-```
-DOPLARR_DISCORD_TOKEN=your_discord_bot_token
-DOPLARR_OVERSEERR_API=your_overseerr_api_key
-DOPLARR_RADARR_API=your_radarr_api_key     # optional
-DOPLARR_SONARR_API=your_sonarr_api_key     # optional
-```
-Doplarr connects to Overseerr, Sonarr, and Radarr by container name on the internal `medianet` network.
+> **Doplarr note:** Doplarr connects to Overseerr, Sonarr, and Radarr by container name on the internal `medianet` network. API keys are found in each service's web UI under Settings → General → API Key.
 
 **UniFi setup:**
 
@@ -405,7 +388,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 2 | Select containers | Toggle which services to deploy. |
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
 | 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery, root redirect target. |
-| 5 | Service credentials & hardware acceleration | VPN, AMP, Mumble credentials + Jellyfin hardware acceleration setup and diagnostics. Only shows options for selected services. |
+| 5 | Service credentials & hardware acceleration | VPN, AMP, Mumble, Doplarr, WireGuard Easy credentials + Jellyfin hardware acceleration setup and diagnostics. Only shows options for selected services. |
 | 6 | DNS record manager | Cloudflare / DuckDNS / GoDaddy / Namecheap. A records + SRV records (Cloudflare). |
 | 7 | MergerFS storage manager | Pool setup, disk management, drive details, ownership fix. |
 

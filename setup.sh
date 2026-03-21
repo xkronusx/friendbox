@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.6.1"
+FRIENDBOX_VERSION="1.7.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -597,6 +597,11 @@ auto_update() {
     if [[ "$compose_changed" == "true" ]]; then
       printf 'docker-compose.yml\n' > "${INSTALL_DIR}/.update_notice"
       _own "${INSTALL_DIR}/.update_notice"
+      # Regenerate redeploy.sh even on compose-only updates — the heredoc
+      # in the running script is authoritative and may have diverged from disk.
+      if [[ -f "${INSTALL_DIR}/scripts/redeploy.sh" ]]; then
+        generate_redeploy_sh 2>/dev/null || true
+      fi
     fi
     return 0
   fi
@@ -2122,7 +2127,11 @@ _traefik_validate() {
 
   # ── 14. Let's Encrypt rate limit check (crt.sh CT logs) ───────────────────
   # LE limit: 5 duplicate certs per registered domain per rolling 7 days.
-  if [[ -n "${DOMAIN:-}" && "${DOMAIN:-}" != "example.com" ]]; then
+  # Skipped when ACME_STAGING=true — rate limits only apply to the production CA.
+  if [[ "${ACME_STAGING:-false}" == "true" ]]; then
+    echo ""
+    echo -e "  ${DIM}[SKIP] LE rate limit check — not applicable when using staging CA${RESET}"
+  elif [[ -n "${DOMAIN:-}" && "${DOMAIN:-}" != "example.com" ]]; then
     echo ""
     echo -e "  ${DIM}── Let's Encrypt rate limit check ─────────────────${RESET}"
     local _le_resp
@@ -2905,7 +2914,8 @@ _traefik_provider_cloudflare() {
   fi
 
   sed -i '/^CF_API_EMAIL=/d;/^CF_DNS_API_TOKEN=/d' "$ENV_FILE" 2>/dev/null || true
-  printf 'CF_API_EMAIL=%s\nCF_DNS_API_TOKEN=%s\n' "$cf_email" "$cf_token" >> "$ENV_FILE"
+  # Single-quote values — API tokens can contain $ which bash expands on source.
+  printf "CF_API_EMAIL='%s'\nCF_DNS_API_TOKEN='%s'\n" "$cf_email" "$cf_token" >> "$ENV_FILE"
   success "Cloudflare credentials saved."
 }
 
@@ -2930,7 +2940,8 @@ _traefik_provider_duckdns() {
   fi
 
   sed -i '/^DUCKDNS_TOKEN=/d' "$ENV_FILE" 2>/dev/null || true
-  echo "DUCKDNS_TOKEN=${duck_token}" >> "$ENV_FILE"
+  # Single-quote value — token could contain special characters.
+  printf "DUCKDNS_TOKEN='%s'\n" "$duck_token" >> "$ENV_FILE"
   success "DuckDNS credentials saved."
 }
 
@@ -2960,7 +2971,8 @@ _traefik_provider_godaddy() {
   fi
 
   sed -i '/^GODADDY_API_KEY=/d;/^GODADDY_API_SECRET=/d' "$ENV_FILE" 2>/dev/null || true
-  printf 'GODADDY_API_KEY=%s\nGODDADDY_API_SECRET=%s\n' "$gd_key" "$gd_secret" >> "$ENV_FILE"
+  # Single-quote values — API secrets can contain $ which bash expands on source.
+  printf "GODADDY_API_KEY='%s'\nGODDADDY_API_SECRET='%s'\n" "$gd_key" "$gd_secret" >> "$ENV_FILE"
   success "GoDaddy credentials saved."
 }
 
@@ -3011,8 +3023,9 @@ _traefik_provider_namecheap() {
   fi
 
   sed -i '/^NAMECHEAP_API_USER=/d;/^NAMECHEAP_API_KEY=/d;/^NAMECHEAP_API_IP=/d' "$ENV_FILE" 2>/dev/null || true
-  printf 'NAMECHEAP_API_USER=%s\nNAMECHEAP_API_KEY=%s\n' "$nc_user" "$nc_key" >> "$ENV_FILE"
-  [[ -n "$nc_ip" ]] && printf 'NAMECHEAP_API_IP=%s\n' "$nc_ip" >> "$ENV_FILE"
+  # Single-quote values — API keys can contain $ which bash expands on source.
+  printf "NAMECHEAP_API_USER='%s'\nNAMECHEAP_API_KEY='%s'\n" "$nc_user" "$nc_key" >> "$ENV_FILE"
+  [[ -n "$nc_ip" ]] && printf "NAMECHEAP_API_IP='%s'\n" "$nc_ip" >> "$ENV_FILE"
   success "Namecheap credentials saved."
 }
 
@@ -3524,7 +3537,7 @@ backup_config() {
     # Restart containers before returning so we don't leave them stopped on failure
     if [[ "$_was_running" == "true" ]]; then
       info "Restarting containers..."
-      compose_selected start 2>/dev/null || true
+      compose_selected up -d 2>/dev/null || true
     fi
     return 1
   fi
@@ -3564,16 +3577,18 @@ backup_config() {
     # Restart containers even on failure so we don't leave them stopped
     if [[ "$_was_running" == "true" ]]; then
       info "Restarting containers..."
-      compose_selected start 2>/dev/null || true
+      compose_selected up -d 2>/dev/null || true
     fi
     return 1
   fi
 
-  # Restart containers that were stopped for the backup
+  # Restart containers that were stopped for the backup.
+  # Use up -d rather than start — start silently skips containers that were
+  # in an error or restart-loop state before the backup, leaving them stopped.
   if [[ "$_was_running" == "true" ]]; then
     echo ""
     info "Restarting containers..."
-    compose_selected start 2>/dev/null || true
+    compose_selected up -d 2>/dev/null || true
     success "Containers restarted."
   fi
 }
@@ -4804,19 +4819,21 @@ _dns_save() {
   # Use printf "%s" for each value so special characters ($, \, spaces) in
   # credentials are written literally and not expanded or truncated.
   # A double-quoted heredoc would expand $VAR sequences inside API keys.
+  # Single-quote all values so special characters (e.g. $ in API keys/secrets)
+  # are written literally and not expanded when .dns_config is sourced by bash.
   {
-    printf 'DNS_PROVIDER=%s\n'        "$DNS_PROVIDER"
-    printf 'DNS_DOMAIN=%s\n'          "$DNS_DOMAIN"
-    printf 'DNS_CF_EMAIL=%s\n'        "$DNS_CF_EMAIL"
-    printf 'DNS_CF_API_KEY=%s\n'      "$DNS_CF_API_KEY"
-    printf 'DNS_CF_ZONE_ID=%s\n'      "$DNS_CF_ZONE_ID"
-    printf 'DNS_DUCKDNS_TOKEN=%s\n'   "$DNS_DUCKDNS_TOKEN"
-    printf 'DNS_DUCKDNS_SUBDOMAIN=%s\n' "$DNS_DUCKDNS_SUBDOMAIN"
-    printf 'DNS_GODADDY_KEY=%s\n'     "$DNS_GODADDY_KEY"
-    printf 'DNS_GODADDY_SECRET=%s\n'  "$DNS_GODADDY_SECRET"
-    printf 'DNS_NAMECHEAP_USER=%s\n'  "$DNS_NAMECHEAP_USER"
-    printf 'DNS_NAMECHEAP_API_KEY=%s\n' "$DNS_NAMECHEAP_API_KEY"
-    printf 'DNS_NAMECHEAP_SOURCE_IP=%s\n' "$DNS_NAMECHEAP_SOURCE_IP"
+    printf "DNS_PROVIDER='%s'\n"          "$DNS_PROVIDER"
+    printf "DNS_DOMAIN='%s'\n"            "$DNS_DOMAIN"
+    printf "DNS_CF_EMAIL='%s'\n"          "$DNS_CF_EMAIL"
+    printf "DNS_CF_API_KEY='%s'\n"        "$DNS_CF_API_KEY"
+    printf "DNS_CF_ZONE_ID='%s'\n"        "$DNS_CF_ZONE_ID"
+    printf "DNS_DUCKDNS_TOKEN='%s'\n"     "$DNS_DUCKDNS_TOKEN"
+    printf "DNS_DUCKDNS_SUBDOMAIN='%s'\n" "$DNS_DUCKDNS_SUBDOMAIN"
+    printf "DNS_GODADDY_KEY='%s'\n"       "$DNS_GODADDY_KEY"
+    printf "DNS_GODADDY_SECRET='%s'\n"    "$DNS_GODADDY_SECRET"
+    printf "DNS_NAMECHEAP_USER='%s'\n"    "$DNS_NAMECHEAP_USER"
+    printf "DNS_NAMECHEAP_API_KEY='%s'\n" "$DNS_NAMECHEAP_API_KEY"
+    printf "DNS_NAMECHEAP_SOURCE_IP='%s'\n" "$DNS_NAMECHEAP_SOURCE_IP"
   } > "$DNS_STATE_FILE"
   _own "$DNS_STATE_FILE"
   chmod 600 "$DNS_STATE_FILE"

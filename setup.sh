@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.8.2"
+FRIENDBOX_VERSION="1.8.3"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -278,6 +278,12 @@ VPN_CONTAINERS=(qbittorrentvpn delugevpn)
 
 # ── Load / save selected containers ──────────────────────────────────────────
 load_selected() {
+  # Guard: if SELECTED is already populated in this shell session, skip the
+  # disk read. get_profile_args calls load_selected on every compose_selected
+  # invocation — without this guard, sequential compose calls (pull + up -d)
+  # each re-read .selected_containers unnecessarily.
+  # save_selected wipes SELECTED before rewriting, which invalidates the cache.
+  [[ "${#SELECTED[@]}" -gt 0 ]] && return 0
   declare -gA SELECTED=()
   if [[ -f "$SELECTED_FILE" ]]; then
     local line
@@ -532,13 +538,20 @@ auto_update() {
   echo -e "${CYAN}[INFO]${RESET}  Checking for updates..."
   _ensure_install_dir
 
-  local failed=0
+  # Download both files in parallel — they are independent, so there is no
+  # reason to wait for the first before starting the second. Halves the
+  # worst-case download time from ~20s to ~10s on slow connections.
+  local script_pid compose_pid script_rc=0 compose_rc=0
   curl -fsSL --max-time 10 "${REPO_URL}/setup.sh" \
-      -o "/usr/local/bin/friendbox.new" 2>/dev/null || failed=$((failed+1))
+      -o "/usr/local/bin/friendbox.new" 2>/dev/null &
+  script_pid=$!
   curl -fsSL --max-time 10 "${REPO_URL}/docker-compose.yml" \
-      -o "${COMPOSE_FILE}.new"   2>/dev/null || failed=$((failed+1))
+      -o "${COMPOSE_FILE}.new" 2>/dev/null &
+  compose_pid=$!
+  wait "$script_pid"  || script_rc=$?
+  wait "$compose_pid" || compose_rc=$?
 
-  if [[ $failed -gt 0 ]]; then
+  if [[ $script_rc -ne 0 || $compose_rc -ne 0 ]]; then
     echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub - running with local files."
     rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
     return 0
@@ -4705,27 +4718,27 @@ HDEOF
   if [[ ${#DISK_MODES[@]} -gt 0 ]]; then
     _mergerfs_provision_branches
   else
-    local subdir
-    for subdir in movies tv; do
-      mkdir -p "${media}/${subdir}"
-      chown "${uid}:${gid}" "${media}/${subdir}"
-    done
-    # Create downloads if any download client OR any arr that uses it is selected
+    # Collect all media subdirs, create them all, then chown once with -R.
+    # Individual chown calls per directory are redundant — a single
+    # chown -R on $media covers the entire tree in one syscall.
+    local _need_downloads=false _need_incomplete=false
     local _dl_client
     for _dl_client in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr; do
-      if [[ -n "${SELECTED[$_dl_client]+_}" ]]; then
-        mkdir -p "${media}/downloads"
-        chown "${uid}:${gid}" "${media}/downloads"
-        chmod 775 "${media}/downloads"
-        break
-      fi
+      [[ -n "${SELECTED[$_dl_client]+_}" ]] && { _need_downloads=true; break; }
     done
-    # DelugeVPN uses /data/incomplete for in-progress downloads
-    if [[ -n "${SELECTED[delugevpn]+_}" ]]; then
-      mkdir -p "${media}/downloads/incomplete"
-      chown "${uid}:${gid}" "${media}/downloads/incomplete"
-      chmod 775 "${media}/downloads/incomplete"
-    fi
+    [[ -n "${SELECTED[delugevpn]+_}" ]] && _need_incomplete=true
+
+    mkdir -p "${media}/movies" "${media}/tv"
+    [[ "$_need_downloads"   == "true" ]] && mkdir -p "${media}/downloads"
+    [[ "$_need_incomplete"  == "true" ]] && mkdir -p "${media}/downloads/incomplete"
+
+    # One recursive chown covers the entire media tree
+    chown -R "${uid}:${gid}" "${media}"
+
+    # downloads dirs need group-write so containers running as different UIDs
+    # (e.g. binhex VPN containers) can write completed downloads there.
+    [[ "$_need_downloads"  == "true" ]] && chmod 775 "${media}/downloads"
+    [[ "$_need_incomplete" == "true" ]] && chmod 775 "${media}/downloads/incomplete"
   fi
 
   # Per-selected-container config dirs
@@ -5690,8 +5703,13 @@ configure_dns() {
   echo -e "  ${DIM}Detecting public IP...${RESET}"
   _dns_cached_ip=$(_dns_get_public_ip 2>/dev/null) || _dns_cached_ip="unknown"
 
+  # Load DNS credentials once before the loop. Sub-functions (_dns_configure_*)
+  # call _dns_save when they write new credentials, and they call _dns_load
+  # themselves at the top. Re-calling _dns_load on every loop iteration is
+  # redundant — it re-sources the same file that was just written.
+  _dns_load
+
   while true; do
-    _dns_load
     clear
     echo -e "${BOLD}${CYAN}"
     echo "╔══════════════════════════════════════════════════════════╗"

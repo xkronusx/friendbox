@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.3.0"
+FRIENDBOX_VERSION="1.4.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -271,17 +271,6 @@ declare -A CONTAINER_CATEGORY=(
   [unifi]="── Network & Security"
   [teamspeak6]="── Voice / Communication"
   [ampmc]="── Game Servers"
-)
-
-declare -A CONTAINER_ALWAYS=(
-  [traefik]=false   [portainer]=false
-  [plex]=false      [jellyfin]=false
-  [sonarr]=false    [radarr]=false    [prowlarr]=false  [bazarr]=false
-  [qbittorrent]=false [qbittorrentvpn]=false [delugevpn]=false [nzbget]=false
-  [overseerr]=false [ombi]=false      [jellyseerr]=false
-  [teamspeak6]=false [mumble]=false
-  [ampmc]=false
-  [netbootxyz]=false
 )
 
 # ── VPN containers (referenced by service credential menu) ────────────────────

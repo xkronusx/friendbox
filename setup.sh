@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.7.3"
+FRIENDBOX_VERSION="1.8.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1458,12 +1458,23 @@ configure_env() {
   [[ -f "$ENV_FILE" ]]   && source "$ENV_FILE"   2>/dev/null || true
   [[ -f "$STATE_FILE" ]] && source "$STATE_FILE" 2>/dev/null || true
 
-  read -rp "Your domain (e.g. example.com) [${DOMAIN:-}]: " input
-  DOMAIN="${input:-${DOMAIN:-example.com}}"
+  read -rp "Your domain (e.g. yourdomain.com) [${DOMAIN:-}]: " input
+  DOMAIN="${input:-${DOMAIN:-}}"
   DOMAIN="${DOMAIN//[[:space:]]/}"    # strip any accidental whitespace
+  if [[ -z "$DOMAIN" || "$DOMAIN" == "example.com" ]]; then
+    warn "Domain is not set or still set to example.com."
+    warn "Traefik will fail to obtain certificates until a real domain is configured."
+    warn "Re-run option 3 (Configure .env) to set it before deploying."
+    DOMAIN="${DOMAIN:-example.com}"
+  fi
   read -rp "ACME/Let's Encrypt email [${ACME_EMAIL:-}]: " input
-  ACME_EMAIL="${input:-${ACME_EMAIL:-admin@example.com}}"
+  ACME_EMAIL="${input:-${ACME_EMAIL:-}}"
   ACME_EMAIL="${ACME_EMAIL//[[:space:]]/}"  # strip any accidental whitespace
+  if [[ -z "$ACME_EMAIL" || "$ACME_EMAIL" == *"example.com"* ]]; then
+    warn "ACME email is not set or still uses example.com."
+    warn "Let's Encrypt requires a real email address for certificate issuance."
+    ACME_EMAIL="${ACME_EMAIL:-admin@example.com}"
+  fi
   read -rp "Config root path [${CONFIG_ROOT:-/opt/friendbox/config}]: " input
   CONFIG_ROOT="${input:-${CONFIG_ROOT:-/opt/friendbox/config}}"
   read -rp "Media root path [${MEDIA_ROOT:-/mnt/media}]: " input
@@ -3398,9 +3409,11 @@ _creds_configure_wgeasy() {
   printf "WGEASY_INIT_PORT='%s'\n"     "$wg_port" >> "$ENV_FILE"
 
   success "WireGuard Easy unattended init configured."
-  warn "INIT_PASSWORD is stored in plaintext in .env — remove it after first deploy"
-  warn "by running this wizard again and disabling unattended init."
-  info "Redeploy WireGuard Easy (option 12) to apply."
+  warn "INIT_PASSWORD is stored in plaintext in .env and should be removed once"
+  warn "WireGuard Easy has completed its first-start setup (i.e. the web UI loads"
+  warn "and you can log in). To remove it: run option 5 → WireGuard Easy → disable"
+  warn "unattended init. This clears all INIT_* vars from .env."
+  info "Redeploy WireGuard Easy (option 12) to apply the initial configuration."
 }
 
 generate_redeploy_sh() {
@@ -6127,7 +6140,19 @@ full_reset() {
 
 view_logs() {
   echo ""
-  read -rp "Container name (leave blank for all active): " svc
+  # Show running containers so the user knows what names are valid
+  local _running
+  _running=$(compose_selected ps --format '{{.Name}}' 2>/dev/null | sort)
+  if [[ -n "$_running" ]]; then
+    echo -e "  ${BOLD}Running containers:${RESET}"
+    while IFS= read -r _c; do
+      echo "    • ${_c}"
+    done <<< "$_running"
+  else
+    warn "No active containers found — has Friendbox been deployed yet?"
+  fi
+  echo ""
+  read -rp "Container name (leave blank for all): " svc
   echo ""
   echo "  1) Follow live logs (Ctrl+C to stop)"
   echo "  2) Dump last 200 lines and return to menu"
@@ -6216,7 +6241,7 @@ main_menu() {
     read -rp "Select option: " opt
 
     # ── Gate operations-section items when not installed ─────────────────────
-    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|17)$ ]]; then
+    if ! is_installed && [[ "$opt" =~ ^(10|11|12|13|14|15|16|17)$ ]]; then
       echo ""
       warn "Friendbox has not been installed yet."
       warn "Run option 1 (Full Install) first, then use the operations menu."

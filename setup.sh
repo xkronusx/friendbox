@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.9.1"
+FRIENDBOX_VERSION="1.9.2"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1762,10 +1762,11 @@ PYEOF
     tls_block=""
     # Restore per-router certresolver labels + remove any wildcard labels
     # left by a prior DuckDNS or Cloudflare config.
-    python3 - "$COMPOSE_FILE" "$DOMAIN" << 'PYEOF'
+    python3 - "$COMPOSE_FILE" "$DOMAIN" "$TRAEFIK_CERT_RESOLVER" << 'PYEOF'
 import re, sys
-path   = sys.argv[1]
-domain = sys.argv[2]
+path      = sys.argv[1]
+domain    = sys.argv[2]
+certres   = sys.argv[3]   # e.g. "letsencrypt"
 with open(path) as f:
     content = f.read()
 
@@ -1777,15 +1778,17 @@ for wildcard_label in [
 ]:
     content = content.replace(wildcard_label, '')
 
-# Add certresolver to all routers that have tls=true but no certresolver
+# Add certresolver to all routers that have tls=true but no certresolver.
+# certres is passed as argv[3] — the heredoc is single-quoted so bash
+# variables are not expanded inside it; we use a Python variable instead.
 routers = re.findall(r'traefik\.http\.routers\.([^.]+)\.tls=true', content)
 for router in routers:
-    certresolver_label = f'traefik.http.routers.{router}.tls.certresolver=${TRAEFIK_CERT_RESOLVER}'
-    tls_label = f'traefik.http.routers.{router}.tls=true'
+    certresolver_label = 'traefik.http.routers.' + router + '.tls.certresolver=' + certres
+    tls_label = 'traefik.http.routers.' + router + '.tls=true'
     if certresolver_label not in content:
         content = content.replace(
-            f'- "{tls_label}"',
-            f'- "{tls_label}"\n      - "{certresolver_label}"'
+            '- "' + tls_label + '"',
+            '- "' + tls_label + '"\n      - "' + certresolver_label + '"'
         )
 with open(path, 'w') as f:
     f.write(content)

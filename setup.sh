@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.4.0"
+FRIENDBOX_VERSION="1.5.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -546,6 +546,17 @@ auto_update() {
     fi
   fi
 
+  # Skip re-exec if the downloaded version is identical to the running version.
+  # Avoids an unnecessary process restart and update notice on every launch
+  # when the repo hasn't changed since the last update.
+  local new_ver
+  new_ver=$(grep '^FRIENDBOX_VERSION=' /usr/local/bin/friendbox.new 2>/dev/null \
+    | cut -d= -f2 | tr -d '"' || echo "unknown")
+  if [[ -n "$new_ver" && "$new_ver" != "unknown" && "$new_ver" == "$FRIENDBOX_VERSION" ]]; then
+    rm -f /usr/local/bin/friendbox.new "${COMPOSE_FILE}.new"
+    return 0
+  fi
+
   mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
   _own "${COMPOSE_FILE}"
 
@@ -566,9 +577,7 @@ auto_update() {
   fi
 
   printf 'docker-compose.yml\n/usr/local/bin/friendbox\n' > "${INSTALL_DIR}/.update_notice"
-  # Append the new version so the menu shows which version was just pulled
-  local new_ver
-  new_ver=$(grep '^FRIENDBOX_VERSION=' /usr/local/bin/friendbox.new 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "unknown")
+  # new_ver already set above — append it so the menu shows which version was just pulled
   [[ -n "$new_ver" && "$new_ver" != "unknown" ]] && printf 'Version: %s\n' "$new_ver" >> "${INSTALL_DIR}/.update_notice"
   _own "${INSTALL_DIR}/.update_notice"
 
@@ -3027,6 +3036,21 @@ _creds_show_status() {
     echo -e "  ${BOLD}Mumble superuser password :${RESET} ${MUMBLE_SUPERUSER_PASSWORD:+[set]}"
     echo ""
   fi
+
+  # Doplarr
+  if [[ -n "${SELECTED[doplarr]+_}" ]]; then
+    echo -e "  ${BOLD}Doplarr Discord token  :${RESET} ${DOPLARR_DISCORD_TOKEN:+[set]}"
+    echo -e "  ${BOLD}Doplarr Overseerr API  :${RESET} ${DOPLARR_OVERSEERR_API:+[set]}"
+    echo -e "  ${BOLD}Doplarr Radarr API     :${RESET} ${DOPLARR_RADARR_API:+[set]}"
+    echo -e "  ${BOLD}Doplarr Sonarr API     :${RESET} ${DOPLARR_SONARR_API:+[set]}"
+    echo ""
+  fi
+
+  # WireGuard Easy
+  if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
+    echo -e "  ${BOLD}WG-Easy password hash  :${RESET} ${WGEASY_PASSWORD_HASH:+[set]}"
+    echo ""
+  fi
 }
 
 configure_service_credentials() {
@@ -3077,9 +3101,21 @@ configure_service_credentials() {
       opt_num=$((opt_num + 1))
     fi
 
+    if [[ -n "${SELECTED[doplarr]+_}" ]]; then
+      echo "  ${opt_num}) Configure Doplarr credentials (Discord + API tokens)"
+      CRED_OPTS[$opt_num]="doplarr"
+      opt_num=$((opt_num + 1))
+    fi
+
+    if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
+      echo "  ${opt_num}) Configure WireGuard Easy password"
+      CRED_OPTS[$opt_num]="wgeasy"
+      opt_num=$((opt_num + 1))
+    fi
+
     if [[ $opt_num -eq 1 ]]; then
       echo -e "  ${DIM}No services requiring configuration are currently selected.${RESET}"
-      echo -e "  ${DIM}Select VPN containers, AMP, Mumble, or Jellyfin first (option 2).${RESET}"
+      echo -e "  ${DIM}Select VPN containers, AMP, Mumble, Jellyfin, Doplarr, or WireGuard Easy first (option 2).${RESET}"
     fi
 
     echo "  ${opt_num}) Back to main menu"
@@ -3097,6 +3133,8 @@ configure_service_credentials() {
       mumble)           _creds_configure_mumble || true; pause ;;
       jellyfin_hw_setup) _jellyfin_hw_setup             ;;   # has its own loop+return
       jellyfin_hw_check) _jellyfin_hw_check     || true; pause ;;
+      doplarr)          _creds_configure_doplarr || true; pause ;;
+      wgeasy)           _creds_configure_wgeasy  || true; pause ;;
       back)             return ;;
     esac
   done
@@ -3178,6 +3216,111 @@ _creds_configure_mumble() {
   sed -i '/^MUMBLE_SUPERUSER_PASSWORD=/d' "$ENV_FILE" 2>/dev/null || true
   echo "MUMBLE_SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD}" >> "$ENV_FILE"
   success "Mumble password saved."
+}
+
+_creds_configure_doplarr() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}Doplarr — Discord Bot Credentials${RESET}"
+  echo -e "${DIM}Doplarr connects Discord to Overseerr, Radarr, and Sonarr for media requests.${RESET}"
+  echo -e "${DIM}  Discord token  : discord.com/developers → Your App → Bot → Token${RESET}"
+  echo -e "${DIM}  Overseerr API  : Overseerr web UI → Settings → General → API Key${RESET}"
+  echo -e "${DIM}  Radarr API     : Radarr web UI → Settings → General → API Key${RESET}"
+  echo -e "${DIM}  Sonarr API     : Sonarr web UI → Settings → General → API Key${RESET}"
+  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
+
+  read -srp "Discord bot token (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DOPLARR_DISCORD_TOKEN="$input"
+  elif [[ -z "${DOPLARR_DISCORD_TOKEN:-}" || "${DOPLARR_DISCORD_TOKEN:-}" == "changeme" ]]; then
+    warn "Discord token is required — Doplarr will not start without it."
+    return 1
+  else
+    info "Discord token unchanged."
+  fi
+
+  read -srp "Overseerr API key (press Enter to keep existing): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DOPLARR_OVERSEERR_API="$input"
+  elif [[ -z "${DOPLARR_OVERSEERR_API:-}" || "${DOPLARR_OVERSEERR_API:-}" == "changeme" ]]; then
+    warn "Overseerr API key is required."
+    return 1
+  else
+    info "Overseerr API key unchanged."
+  fi
+
+  echo -e "  ${DIM}Radarr and Sonarr API keys are optional — leave blank to skip.${RESET}"
+  echo ""
+  read -srp "Radarr API key (press Enter to keep existing / skip): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DOPLARR_RADARR_API="$input"
+  else
+    DOPLARR_RADARR_API="${DOPLARR_RADARR_API:-}"
+    info "Radarr API key unchanged."
+  fi
+
+  read -srp "Sonarr API key (press Enter to keep existing / skip): " input; echo ""
+  if [[ -n "$input" ]]; then
+    DOPLARR_SONARR_API="$input"
+  else
+    DOPLARR_SONARR_API="${DOPLARR_SONARR_API:-}"
+    info "Sonarr API key unchanged."
+  fi
+
+  sed -i '/^DOPLARR_DISCORD_TOKEN=/d;/^DOPLARR_OVERSEERR_API=/d' "$ENV_FILE" 2>/dev/null || true
+  sed -i '/^DOPLARR_RADARR_API=/d;/^DOPLARR_SONARR_API=/d'       "$ENV_FILE" 2>/dev/null || true
+  printf 'DOPLARR_DISCORD_TOKEN=%s
+DOPLARR_OVERSEERR_API=%s
+'     "$DOPLARR_DISCORD_TOKEN" "$DOPLARR_OVERSEERR_API" >> "$ENV_FILE"
+  printf 'DOPLARR_RADARR_API=%s
+DOPLARR_SONARR_API=%s
+'     "$DOPLARR_RADARR_API" "$DOPLARR_SONARR_API" >> "$ENV_FILE"
+  success "Doplarr credentials saved."
+  info "Redeploy Doplarr (option 12) to apply changes."
+}
+
+_creds_configure_wgeasy() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}WireGuard Easy — Web UI Password${RESET}"
+  echo -e "${DIM}Sets the password for the WG-Easy web interface at https://wg.${DOMAIN:-yourdomain.com}${RESET}"
+  echo -e "${DIM}The password is stored as a bcrypt hash — the plaintext is never saved.${RESET}"
+  echo ""
+
+  if ! command -v htpasswd &>/dev/null; then
+    warn "htpasswd not found. Installing apache2-utils..."
+    apt-get install -y apache2-utils || { error "Could not install apache2-utils."; return 1; }
+  fi
+
+  local wg_pass
+  echo -n "WireGuard Easy web UI password (press Enter to keep existing): "
+  read -rs wg_pass; echo ""
+
+  if [[ -z "$wg_pass" ]]; then
+    if [[ -n "${WGEASY_PASSWORD_HASH:-}" ]]; then
+      info "Password unchanged."
+      return 0
+    else
+      warn "No password set — WG-Easy will be accessible without authentication."
+      warn "Set a password before exposing WireGuard Easy to the internet."
+      return 1
+    fi
+  fi
+
+  # WG-Easy expects a bcrypt hash in PASSWORD_HASH env var.
+  # htpasswd -nbB generates "user:hash" — we strip the "user:" prefix.
+  local new_hash
+  new_hash=$(htpasswd -nbB wgeasy "$wg_pass" 2>/dev/null | cut -d: -f2)
+  if [[ -z "$new_hash" ]]; then
+    error "Failed to generate bcrypt hash."; return 1
+  fi
+
+  sed -i '/^WGEASY_PASSWORD_HASH=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'WGEASY_PASSWORD_HASH=%s
+' "$new_hash" >> "$ENV_FILE"
+  success "WireGuard Easy password hash saved."
+  info "Redeploy WireGuard Easy (option 12) to apply changes."
 }
 
 generate_redeploy_sh() {
@@ -4753,10 +4896,13 @@ _dns_configure_cloudflare() {
 }
 
 _dns_update_cloudflare() {
+  # Optional first arg: pre-fetched public IP (avoids a redundant detection call
+  # when invoked from _dns_update_now, which already fetched the IP once).
+  local ip="${1:-}"
   _dns_load
   [[ -z "$DNS_CF_API_KEY" || -z "$DNS_CF_ZONE_ID" || -z "$DNS_DOMAIN" ]] \
     && { error "Cloudflare not fully configured."; return 1; }
-  local ip; ip=$(_dns_get_public_ip) || return 1
+  [[ -z "$ip" ]] && { ip=$(_dns_get_public_ip) || return 1; }
   info "Public IP: ${ip}"
 
   local subdomains=()
@@ -4818,10 +4964,11 @@ _dns_configure_duckdns() {
 }
 
 _dns_update_duckdns() {
+  local ip="${1:-}"
   _dns_load
   [[ -z "$DNS_DUCKDNS_TOKEN" || -z "$DNS_DUCKDNS_SUBDOMAIN" ]] \
     && { error "DuckDNS not fully configured."; return 1; }
-  local ip; ip=$(_dns_get_public_ip) || return 1
+  [[ -z "$ip" ]] && { ip=$(_dns_get_public_ip) || return 1; }
   info "Public IP: ${ip}"
   local result
   result=$(curl -fsSL --max-time 10 \
@@ -4861,10 +5008,11 @@ _dns_configure_godaddy() {
 }
 
 _dns_update_godaddy() {
+  local ip="${1:-}"
   _dns_load
   [[ -z "$DNS_GODADDY_KEY" || -z "$DNS_GODADDY_SECRET" || -z "$DNS_DOMAIN" ]] \
     && { error "GoDaddy not fully configured."; return 1; }
-  local ip; ip=$(_dns_get_public_ip) || return 1
+  [[ -z "$ip" ]] && { ip=$(_dns_get_public_ip) || return 1; }
   info "Public IP: ${ip}"
   local subdomains=()
   while IFS= read -r sub; do subdomains+=("$sub"); done < <(_dns_get_subdomains)
@@ -4919,10 +5067,11 @@ _dns_configure_namecheap() {
 }
 
 _dns_update_namecheap() {
+  local ip="${1:-}"
   _dns_load
   [[ -z "$DNS_NAMECHEAP_API_KEY" || -z "$DNS_DOMAIN" ]] \
     && { error "Namecheap not fully configured."; return 1; }
-  local ip; ip=$(_dns_get_public_ip) || return 1
+  [[ -z "$ip" ]] && { ip=$(_dns_get_public_ip) || return 1; }
   info "Public IP: ${ip}"
   local tld="${DNS_DOMAIN##*.}"
   local sld="${DNS_DOMAIN%.*}"
@@ -4960,33 +5109,56 @@ _dns_verify_propagation() {
   command -v dig &>/dev/null \
     || { info "dig not found — skipping propagation check (install dnsutils to enable)."; return 0; }
 
+  # Also check a representative subdomain — subdomains propagate independently
+  # of the root, so a passing root check doesn't guarantee subdomains are live.
+  # Pick the first subdomain from the managed list as the sample check target.
+  local sample_sub sample_domain=""
+  sample_sub=$(load_selected 2>/dev/null; _dns_get_subdomains 2>/dev/null | head -1 || true)
+  [[ -n "$sample_sub" ]] && sample_domain="${sample_sub}.${domain}"
+
   echo ""
-  info "Verifying DNS propagation for ${domain} via 1.1.1.1..."
-  local attempt resolved
+  info "Verifying DNS propagation via 1.1.1.1..."
+  local attempt resolved sub_resolved
   for attempt in 1 2 3; do
     resolved=$(dig +short "${domain}" A @1.1.1.1 2>/dev/null | head -1)
-    if [[ "$resolved" == "$expected_ip" ]]; then
+    [[ -n "$sample_domain" ]] &&       sub_resolved=$(dig +short "${sample_domain}" A @1.1.1.1 2>/dev/null | head -1)
+
+    local root_ok=false sub_ok=false
+    [[ "$resolved" == "$expected_ip" ]] && root_ok=true
+    [[ -z "$sample_domain" || "$sub_resolved" == "$expected_ip" ]] && sub_ok=true
+
+    if [[ "$root_ok" == "true" && "$sub_ok" == "true" ]]; then
       success "DNS propagated ✔  ${domain} → ${resolved}"
+      [[ -n "$sample_domain" ]] &&         success "DNS propagated ✔  ${sample_domain} → ${sub_resolved}"
       return 0
     fi
+
     if [[ $attempt -lt 3 ]]; then
-      info "  Not yet visible (got '${resolved:-no record}') — waiting 10s... (${attempt}/3)"
+      [[ "$root_ok" == "false" ]] &&         info "  ${domain}: not yet visible (got '${resolved:-no record}') — waiting 10s... (${attempt}/3)"
+      [[ -n "$sample_domain" && "$sub_ok" == "false" ]] &&         info "  ${sample_domain}: not yet visible (got '${sub_resolved:-no record}')"
       sleep 10
     fi
   done
-  warn "DNS not yet visible at 1.1.1.1 after 3 checks."
-  warn "  Expected: ${expected_ip}  Got: ${resolved:-no record}"
+  warn "DNS not fully propagated at 1.1.1.1 after 3 checks."
+  [[ "$root_ok" == "false" ]] &&     warn "  ${domain}: expected ${expected_ip}, got '${resolved:-no record}'"
+  [[ -n "$sample_domain" && "$sub_ok" == "false" ]] &&     warn "  ${sample_domain}: expected ${expected_ip}, got '${sub_resolved:-no record}'"
   warn "  Propagation can take a few minutes — Traefik will retry cert issuance automatically."
 }
 
 _dns_update_now() {
   _dns_load
   [[ -z "$DNS_PROVIDER" ]] && { error "No DNS provider configured."; return 1; }
+  # Fetch the public IP once here and pass it to the provider function.
+  # Each provider would otherwise make up to 3 sequential curl calls independently
+  # (up to 15s). Fetching once avoids the redundant detection when called from
+  # the interactive menu where the IP is already known from session startup.
+  local _ip
+  _ip=$(_dns_get_public_ip) || return 1
   case "$DNS_PROVIDER" in
-    cloudflare) _dns_update_cloudflare ;;
-    duckdns)    _dns_update_duckdns    ;;
-    godaddy)    _dns_update_godaddy    ;;
-    namecheap)  _dns_update_namecheap  ;;
+    cloudflare) _dns_update_cloudflare "$_ip" ;;
+    duckdns)    _dns_update_duckdns    "$_ip" ;;
+    godaddy)    _dns_update_godaddy    "$_ip" ;;
+    namecheap)  _dns_update_namecheap  "$_ip" ;;
     *)          error "Unknown provider: ${DNS_PROVIDER}" ;;
   esac
   _dns_verify_propagation
@@ -5626,9 +5798,15 @@ print_urls() {
 }
 
 show_status() {
-  info "Container status:"
-  compose_selected ps 2>/dev/null \
-    || docker ps --filter "network=medianet" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+  echo ""
+  echo -e "${BOLD}Container Status${RESET}"
+  echo "──────────────────────────────────────────────────────────────"
+  # Use a consistent format so output is readable regardless of terminal width.
+  # Falls back to plain docker ps if compose isn't available (e.g. before first install).
+  if ! compose_selected ps --format "table {{.Name}}\t{{.Status}}\t{{.Image}}" 2>/dev/null; then
+    docker ps --filter "network=medianet"       --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" 2>/dev/null       || warn "No containers found on medianet — has Friendbox been installed yet?"
+  fi
+  echo "──────────────────────────────────────────────────────────────"
 }
 
 redeploy_menu() {
@@ -5830,6 +6008,7 @@ full_reset() {
   local sf
   for sf in "$ENV_FILE" "$STATE_FILE" "$SELECTED_FILE" "$MERGERFS_MODES_FILE" \
             "$MERGERFS_POOL_FILE" "$DNS_STATE_FILE" "$INSTALL_FLAG" \
+            "${INSTALL_DIR}/.update_notice" \
             "${INSTALL_DIR}/docker-compose.yml" "${INSTALL_DIR}/scripts/redeploy.sh"; do
     [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
   done
@@ -5870,8 +6049,12 @@ view_logs() {
     else compose_selected logs --tail=200 "$svc" 2>/dev/null; fi
   else
     info "Following logs — press Ctrl+C to stop and return to the menu."
+    # Trap SIGINT (Ctrl+C) so it returns cleanly to the menu instead of
+    # killing the entire friendbox session.
+    trap 'echo ""; info "Log follow stopped."' INT
     if [[ -z "$svc" ]]; then compose_selected logs --tail=100 -f
     else compose_selected logs --tail=100 -f "$svc"; fi
+    trap - INT
   fi
 }
 
@@ -5931,7 +6114,7 @@ main_menu() {
     echo "  10) Show container status"
     echo "  11) View service URLs"
     echo "  12) Redeploy containers"
-    echo "  13) Update stack (pull latest images)"
+    echo "  13) Update stack (sync from GitHub + pull latest images)"
     echo "  14) View logs"
     echo "  15) Check port conflicts"
     echo "  16) Backup & Restore"

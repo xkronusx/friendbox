@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.9.5"
+FRIENDBOX_VERSION="1.9.6"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -5848,14 +5848,13 @@ full_install() {
   fi
 
   info "Starting selected containers..."
-  # Pull images first with the interactive progress bar (compose pull never hangs
-  # because it does not watch container states — it just downloads and returns).
+  # Pull images first, then start containers. Splitting these into two commands
+  # prevents a hang that occurred in earlier versions where compose up -d would
+  # block in its bar renderer if a container (e.g. DelugeVPN without credentials)
+  # crashed immediately after "Started". With images already local, compose up -d
+  # completes before the container has time to crash, so the bar closes cleanly.
   compose_selected pull
-  # Start containers in plain mode. COMPOSE_PROGRESS=plain avoids the convergence
-  # loop that hangs when a container enters a crash-restart cycle (e.g. DelugeVPN
-  # without VPN credentials). Plain mode streams each event and returns as soon
-  # as all containers reach "Started", regardless of subsequent health state.
-  COMPOSE_PROGRESS=plain compose_selected up -d
+  compose_selected up -d
   echo ""
   success "✅ Friendbox is up!" 
   mark_installed

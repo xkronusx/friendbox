@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.7.0"
+FRIENDBOX_VERSION="1.7.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1687,21 +1687,22 @@ with open(path) as f:
     content = f.read()
 tls_label     = 'traefik.http.routers.dashboard.tls=true'
 certres_label = 'traefik.http.routers.dashboard.tls.certresolver=letsencrypt'
-domain_main   = f'traefik.http.routers.dashboard.tls.domains[0].main={domain}'
-domain_sans   = f'traefik.http.routers.dashboard.tls.domains[0].sans=*.{domain}'
+domain_main   = 'traefik.http.routers.dashboard.tls.domains[0].main=' + domain
+domain_sans   = 'traefik.http.routers.dashboard.tls.domains[0].sans=*.' + domain
 if tls_label in content and certres_label not in content:
-    content = content.replace(
-        f'- "{tls_label}"',
-        f'- "{tls_label}"
-      - "{certres_label}"
-      - "{domain_main}"
-      - "{domain_sans}"'
+    old_str = '- "' + tls_label + '"'
+    new_str = (
+        '- "' + tls_label + '"\n'
+        '      - "' + certres_label + '"\n'
+        '      - "' + domain_main + '"\n'
+        '      - "' + domain_sans + '"'
     )
+    content = content.replace(old_str, new_str, 1)
     with open(path, 'w') as f:
         f.write(content)
-    print(f"Wildcard cert labels injected onto dashboard router ({domain}).")
+    print('Wildcard cert labels injected onto dashboard router (' + domain + ').')
 else:
-    print("Wildcard labels already present or tls=true not found.")
+    print('Wildcard labels already present or tls=true not found.')
 PYEOF
     info "${provider}: wildcard cert labels injected onto dashboard router."
   else

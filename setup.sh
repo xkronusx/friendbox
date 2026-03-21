@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.9.2"
+FRIENDBOX_VERSION="1.9.3"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -5828,8 +5828,31 @@ full_install() {
   # ── Port conflict check ───────────────────────────────────────────────────────
   check_port_conflicts --interactive || return 1
 
+  # ── VPN credential pre-flight check ──────────────────────────────────────────
+  # DelugeVPN and qBittorrentVPN crash-loop immediately on first start when VPN
+  # credentials are missing. Warn clearly so the user knows what to fix after.
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  local _vpn_warn=false
+  local _vk
+  for _vk in "${VPN_CONTAINERS[@]}"; do
+    if [[ -n "${SELECTED[$_vk]+_}" && -z "${VPN_PASS:-}" ]]; then
+      _vpn_warn=true; break
+    fi
+  done
+  if [[ "$_vpn_warn" == "true" ]]; then
+    echo ""
+    warn "VPN container(s) selected but VPN credentials are not configured."
+    warn "The VPN container will start but immediately crash-loop until"
+    warn "credentials are set via option 5 (Service credentials) and it is redeployed."
+    echo ""
+  fi
+
   info "Starting selected containers..."
-  compose_selected up -d
+  # COMPOSE_PROGRESS=plain prevents the interactive TTY progress tracker
+  # from hanging when a container enters a crash-restart loop on first start
+  # (e.g. DelugeVPN without VPN credentials). Plain mode streams each line
+  # and returns as soon as all containers are started, regardless of health.
+  COMPOSE_PROGRESS=plain compose_selected up -d
   echo ""
   success "✅ Friendbox is up!" 
   mark_installed

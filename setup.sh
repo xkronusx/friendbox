@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.8.0"
+FRIENDBOX_VERSION="1.8.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -6139,25 +6139,45 @@ full_reset() {
 
 
 view_logs() {
+  load_selected
+  # Build a numbered list of currently selected containers (matches the
+  # redeploy single-container picker pattern for consistency).
+  local _svc_keys=() _i _k
+  for _k in "${CONTAINER_ORDER[@]}"; do
+    [[ -n "${SELECTED[$_k]+_}" ]] && _svc_keys+=("$_k")
+  done
+
   echo ""
-  # Show running containers so the user knows what names are valid
-  local _running
-  _running=$(compose_selected ps --format '{{.Name}}' 2>/dev/null | sort)
-  if [[ -n "$_running" ]]; then
-    echo -e "  ${BOLD}Running containers:${RESET}"
-    while IFS= read -r _c; do
-      echo "    • ${_c}"
-    done <<< "$_running"
-  else
-    warn "No active containers found — has Friendbox been deployed yet?"
+  if [[ ${#_svc_keys[@]} -eq 0 ]]; then
+    warn "No containers are currently selected — has Friendbox been deployed yet?"
+    return
   fi
+
+  echo -e "${BOLD}View Logs${RESET}"
   echo ""
-  read -rp "Container name (leave blank for all): " svc
+  # Option 0 = all containers; options 1-N = individual containers
+  printf "  %2d) %s\n" 0 "All active containers"
+  for _i in "${!_svc_keys[@]}"; do
+    printf "  %2d) %s\n" "$((_i+1))" "${CONTAINER_NAMES[${_svc_keys[$_i]}]}"
+  done
+  echo ""
+  read -rp "  Container [0]: " _sel
+  _sel="${_sel:-0}"
+
+  local svc=""
+  if [[ "$_sel" == "0" ]]; then
+    svc=""
+  elif [[ "$_sel" =~ ^[0-9]+$ ]] && (( _sel >= 1 && _sel <= ${#_svc_keys[@]} )); then
+    svc="${_svc_keys[$((_sel-1))]}"
+  else
+    warn "Invalid selection."; return
+  fi
+
   echo ""
   echo "  1) Follow live logs (Ctrl+C to stop)"
   echo "  2) Dump last 200 lines and return to menu"
   echo ""
-  read -rp "  Choice [1]: " log_choice
+  read -rp "  Mode [1]: " log_choice
   log_choice="${log_choice:-1}"
   echo ""
   if [[ "$log_choice" == "2" ]]; then

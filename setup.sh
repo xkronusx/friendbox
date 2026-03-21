@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.9.4"
+FRIENDBOX_VERSION="1.9.5"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -5848,14 +5848,14 @@ full_install() {
   fi
 
   info "Starting selected containers..."
-  # COMPOSE_PROGRESS=plain prevents the interactive TTY progress tracker
-  # from hanging when a container enters a crash-restart loop on first start
-  # (e.g. DelugeVPN without VPN credentials). Plain mode streams each line
-  # and returns as soon as all containers are started, regardless of health.
-  # --quiet-pull suppresses the per-layer download progress lines (the thousands
-  # of "Downloading 12.3MB" lines) so only the clean "Container X Started"
-  # summary lines are shown.
-  COMPOSE_PROGRESS=plain compose_selected up -d --quiet-pull
+  # Pull images first with the interactive progress bar (compose pull never hangs
+  # because it does not watch container states — it just downloads and returns).
+  compose_selected pull
+  # Start containers in plain mode. COMPOSE_PROGRESS=plain avoids the convergence
+  # loop that hangs when a container enters a crash-restart cycle (e.g. DelugeVPN
+  # without VPN credentials). Plain mode streams each event and returns as soon
+  # as all containers reach "Started", regardless of subsequent health state.
+  COMPOSE_PROGRESS=plain compose_selected up -d
   echo ""
   success "✅ Friendbox is up!" 
   mark_installed

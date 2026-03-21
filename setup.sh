@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="1.9.3"
+FRIENDBOX_VERSION="1.9.4"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -5852,7 +5852,10 @@ full_install() {
   # from hanging when a container enters a crash-restart loop on first start
   # (e.g. DelugeVPN without VPN credentials). Plain mode streams each line
   # and returns as soon as all containers are started, regardless of health.
-  COMPOSE_PROGRESS=plain compose_selected up -d
+  # --quiet-pull suppresses the per-layer download progress lines (the thousands
+  # of "Downloading 12.3MB" lines) so only the clean "Container X Started"
+  # summary lines are shown.
+  COMPOSE_PROGRESS=plain compose_selected up -d --quiet-pull
   echo ""
   success "✅ Friendbox is up!" 
   mark_installed

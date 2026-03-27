@@ -384,11 +384,14 @@ services:
       - "traefik.http.routers.ombi.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.ombi.loadbalancer.server.port=3579"
 
-  # ── Overseerr — media request & discovery manager ───────────────────────────
-  overseerr:
-    image: lscr.io/linuxserver/overseerr:latest
-    container_name: overseerr
-    profiles: [overseerr]
+  # ── Seerr — media request & discovery manager (Jellyfin, Plex, Emby) ─────────
+  # Replaces both Overseerr and Jellyseerr. Existing Overseerr/Jellyseerr data is
+  # automatically migrated on first start — just point the volume at your old config dir.
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    profiles: [seerr]
+    init: true
     restart: unless-stopped
     stop_grace_period: 10s
     security_opt:
@@ -401,21 +404,26 @@ services:
     networks:
       - medianet
     environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
       - TZ=${TZ}
+      - LOG_LEVEL=info
     volumes:
-      - ${CONFIG_ROOT}/overseerr:/config
+      - ${CONFIG_ROOT}/seerr:/app/config
     ports:
       - "5055:5055"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/status || exit 1
+      start_period: 20s
+      timeout: 3s
+      interval: 15s
+      retries: 3
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"
-      - "traefik.http.routers.overseerr.rule=Host(`overseerr.${DOMAIN}`)"
-      - "traefik.http.routers.overseerr.entrypoints=websecure"
-      - "traefik.http.routers.overseerr.tls=true"
-      - "traefik.http.routers.overseerr.middlewares=secHeaders@file,compress@file"
-      - "traefik.http.services.overseerr.loadbalancer.server.port=5055"
+      - "traefik.http.routers.seerr.rule=Host(`seerr.${DOMAIN}`)"
+      - "traefik.http.routers.seerr.entrypoints=websecure"
+      - "traefik.http.routers.seerr.tls=true"
+      - "traefik.http.routers.seerr.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.seerr.loadbalancer.server.port=5055"
 
   # ── NZBGet — Usenet download client ────────────────────────────────────────
   nzbget:
@@ -703,36 +711,6 @@ services:
       - "64738:64738"
       - "64738:64738/udp"
 
-  # ── Jellyseerr — Jellyfin-native media request manager ─────────────────────
-  jellyseerr:
-    image: fallenbagel/jellyseerr:latest
-    container_name: jellyseerr
-    profiles: [jellyseerr]
-    restart: unless-stopped
-    stop_grace_period: 10s
-    security_opt:
-      - no-new-privileges:true
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    networks:
-      - medianet
-    environment:
-      - TZ=${TZ}
-    volumes:
-      - ${CONFIG_ROOT}/jellyseerr:/app/config
-    ports:
-      - "5056:5055"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=medianet"
-      - "traefik.http.routers.jellyseerr.rule=Host(`jellyseerr.${DOMAIN}`)"
-      - "traefik.http.routers.jellyseerr.entrypoints=websecure"
-      - "traefik.http.routers.jellyseerr.tls=true"
-      - "traefik.http.routers.jellyseerr.middlewares=secHeaders@file,compress@file"
-      - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
 
   # ── AMP (AMP-MC) — game server management panel ────────────────────────────
   ampmc:
@@ -885,7 +863,7 @@ services:
       - /var/log:/var/log:ro
       - /run/docker.sock:/run/docker.sock:ro
 
-  # ── Doplarr — Discord bot for Overseerr/Radarr/Sonarr requests ───────────────
+  # ── Doplarr — Discord bot for Seerr/Radarr/Sonarr requests ─────────────────────
   doplarr:
     image: lscr.io/linuxserver/doplarr:latest
     container_name: doplarr
@@ -906,7 +884,7 @@ services:
       - PGID=${PGID}
       - TZ=${TZ}
       - DISCORD__TOKEN=${DOPLARR_DISCORD_TOKEN:-changeme}
-      - OVERSEERR__URL=http://overseerr:5055
+      - OVERSEERR__URL=http://seerr:5055
       - OVERSEERR__API=${DOPLARR_OVERSEERR_API:-changeme}
       - RADARR__URL=http://radarr:7878
       - RADARR__API=${DOPLARR_RADARR_API:-}

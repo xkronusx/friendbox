@@ -2,7 +2,7 @@
 
 A fully automated, menu-driven Docker media server stack for Ubuntu 24.04 LTS.
 
-**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Overseerr · Ombi · Jellyseerr · Home Assistant · Heimdall · Homarr · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
+**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · Homarr · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
 ---
 
@@ -139,14 +139,14 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `qbittorrentvpn` | qBittorrent with built-in VPN kill switch |
 | `delugevpn` | Deluge with built-in VPN kill switch |
 | `nzbget` | Usenet download client |
-| `overseerr` | Media request manager (Plex) |
+| `seerr` | Media request & discovery manager (Jellyfin, Plex, Emby) |
 | `ombi` | Media request manager for Plex, Emby, and Jellyfin |
-| `jellyseerr` | Media request manager (Jellyfin) |
+
 | `homeassistant` | Home automation platform — uses host networking for device discovery |
 | `heimdall` | Simple application dashboard |
 | `homarr` | Modern application dashboard (pinned 0.16.1) |
 | `filezilla` | FTP/SFTP client with browser-based GUI |
-| `doplarr` | Discord bot for Overseerr/Sonarr/Radarr media requests |
+| `doplarr` | Discord bot for Seerr/Sonarr/Radarr media requests |
 | `unifi` | Ubiquiti UniFi network controller (includes MongoDB sidecar) |
 | `actual` | Local-first personal finance and budgeting |
 | `wgeasy` | Self-hosted WireGuard VPN server — inbound remote access to your network (not a client VPN for download traffic) |
@@ -253,14 +253,14 @@ Only shows options for services you have selected.
 | **AMP** | Admin username and password |
 | **Mumble** | Superuser password |
 | **Jellyfin** | Hardware acceleration method (VA-API / NVENC / None) + full diagnostic tool |
-| **Doplarr** | Discord bot token, Overseerr API key (required), Radarr and Sonarr API keys (optional) |
+| **Doplarr** | Discord bot token, Seerr API key (required), Radarr and Sonarr API keys (optional) |
 | **WireGuard Easy** | Optional unattended first-start setup (username, password, host, port). If skipped, a setup wizard runs on first visit to the web UI. |
 
 > **VPN LAN CIDR note:** The default value includes your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet assigned to `medianet` (detected automatically from the live network). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik to reverse-proxy the VPN container while the tunnel is active. If your home network uses a different subnet (e.g. `192.168.0.0/24`), update the first entry accordingly.
 
 > **WireGuard Easy note:** WireGuard Easy v15 stores all configuration (users, password, host, VPN settings) in its internal database, not in environment variables. The option 5 wizard lets you optionally pre-configure the first-start setup so the container deploys without requiring a manual visit to the setup wizard. If you skip the wizard, visit `https://wg.yourdomain.com` (or `http://IP:51821`) after first deploy to complete setup. The `INIT_PASSWORD` stored in `.env` is plaintext and only used once — run the wizard again after first deploy to disable unattended init and remove it.
 
-> **Doplarr note:** Doplarr connects to Overseerr, Sonarr, and Radarr by container name on the internal `medianet` network. API keys are found in each service's web UI under Settings → General → API Key.
+> **Doplarr note:** Doplarr connects to Seerr, Sonarr, and Radarr by container name on the internal `medianet` network. API keys are found in each service's web UI under Settings → General → API Key.
 
 **UniFi setup:**
 
@@ -320,9 +320,9 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | qBittorrentVPN | `https://qbtvpn.yourdomain.com` (`http://IP:8181` direct) | Same default credentials — **change immediately** |
 | DelugeVPN | `https://deluge.yourdomain.com` (`http://IP:8112` direct) | Default password: `deluge` — **change immediately**. Pre-allocation is disabled by default (MergerFS incompatibility) — verify in Preferences → Downloads → *Allocate disk space before downloading* is unchecked |
 | NZBGet | `https://nzbget.yourdomain.com` (`http://IP:6789` direct) | Default: `nzbget` / `tegbzn6789` — **change immediately** |
-| Overseerr | `https://overseerr.yourdomain.com` | Sign in with Plex account |
+| Seerr | `https://seerr.yourdomain.com` | Sign in with Jellyfin, Plex, or Emby account |
 | Ombi | `https://ombi.yourdomain.com` (`http://IP:3579` direct) | Create admin account on first visit |
-| Jellyseerr | `https://jellyseerr.yourdomain.com` (`http://IP:5056` direct) | Sign in with Jellyfin account |
+
 | Home Assistant | `http://IP:8123` (host network — not routable via Traefik) | Create admin account on first visit |
 | Heimdall | `https://heimdall.yourdomain.com` (`http://IP:8091` direct) | No auth by default — add apps from the dashboard |
 | Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | No auth by default — configure from the dashboard |
@@ -355,15 +355,15 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | qBittorrentVPN | `http://qbittorrentvpn:8080` |
 | DelugeVPN | `http://delugevpn:8112` |
 | NZBGet | `http://nzbget:6789` |
-| Overseerr | `http://overseerr:5055` |
+| Seerr | `http://seerr:5055` |
 | Ombi | `http://ombi:3579` |
-| Jellyseerr | `http://jellyseerr:5055` |
+
 | Homarr | `http://homarr:7575` |
 | Heimdall | `http://heimdall:80` |
 | UniFi | `https://unifi:8443` |
 | Actual Budget | `http://actual:5006` |
 
-> Note: Jellyseerr's **internal** port is `5055`. The host binding is `5056` (to avoid clashing with Overseerr when both are running), but container-to-container traffic always uses the internal port.
+
 
 > Note: Home Assistant and Fail2ban use host networking and are not reachable by container name from other containers. Access Home Assistant via `http://HOST_IP:8123`.
 
@@ -373,8 +373,8 @@ All containers share the `medianet` Docker bridge and communicate by container n
 3. Sonarr → Settings → Apps → connect Prowlarr at `http://prowlarr:9696`
 4. Sonarr → Settings → Media Management → tick **Use Hardlinks instead of Copy** (prevents file duplication on import)
 5. Radarr → repeat the same steps as Sonarr
-6. Overseerr / Jellyseerr → connect to Plex or Jellyfin, then Sonarr and Radarr
-7. Doplarr → configure via Discord slash commands, pointing to Overseerr at `http://overseerr:5055`
+6. Seerr → connect to Plex, Jellyfin, or Emby, then Sonarr and Radarr
+7. Doplarr → configure via Discord slash commands, pointing to Seerr at `http://seerr:5055`
 
 ---
 
@@ -557,7 +557,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Home Assistant and Fail2ban use host networking — they bypass the `medianet` bridge entirely and bind directly to the host network stack
 - All inter-container traffic uses the `medianet` bridge — containers communicate with each other by name rather than host IP
 - qBittorrent binds host port `8082` (not 8080) to avoid conflicting with Traefik's API on port 8080
-- Jellyseerr binds host port `5056` (not 5055) to avoid conflicting with Overseerr when both are selected
+
 - UniFi binds host port `8880` for device inform (not 8080) to avoid conflicting with Traefik
 - TeamSpeak 6 WebAuth port `10080` is commented out by default — enable manually only if needed and with appropriate firewall rules
 

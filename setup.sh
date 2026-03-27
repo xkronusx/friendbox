@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.0.0"
+FRIENDBOX_VERSION="2.1.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -190,7 +190,7 @@ CONTAINER_ORDER=(
   plex jellyfin
   sonarr radarr prowlarr bazarr
   qbittorrent qbittorrentvpn delugevpn nzbget
-  overseerr ombi jellyseerr doplarr
+  seerr ombi doplarr
   heimdall homarr
   homeassistant actual
   unifi wgeasy fail2ban filezilla netbootxyz
@@ -211,9 +211,9 @@ declare -A CONTAINER_NAMES=(
   [qbittorrentvpn]="qBittorrentVPN"
   [delugevpn]="DelugeVPN"
   [nzbget]="NZBGet"
-  [overseerr]="Overseerr"
+  [seerr]="Seerr"
   [ombi]="Ombi"
-  [jellyseerr]="Jellyseerr"
+
   [teamspeak6]="TeamSpeak 6"
   [mumble]="Mumble Server"
   [ampmc]="AMP (Game Server Panel)"
@@ -242,9 +242,9 @@ declare -A CONTAINER_DESC=(
   [qbittorrentvpn]="Torrent client — routed through VPN (binhex)"
   [delugevpn]="Deluge torrent client — routed through VPN (binhex)"
   [nzbget]="Usenet download client"
-  [overseerr]="Media request & discovery manager"
+  [seerr]="Media request & discovery manager (Jellyfin, Plex, Emby)"
   [ombi]="Media request manager for Plex, Emby, and Jellyfin"
-  [jellyseerr]="Jellyfin-native media request manager"
+
   [teamspeak6]="TeamSpeak 6 voice server"
   [mumble]="Open-source Mumble voice server"
   [ampmc]="Game server management panel (Minecraft etc.)"
@@ -253,7 +253,7 @@ declare -A CONTAINER_DESC=(
   [filezilla]="FTP/SFTP client with browser-based GUI"
   [heimdall]="Simple application dashboard"
   [fail2ban]="Log-based intrusion prevention — bans abusive IPs"
-  [doplarr]="Discord bot for media requests via Overseerr/Sonarr/Radarr"
+  [doplarr]="Discord bot for media requests via Seerr/Sonarr/Radarr"
   [unifi]="Ubiquiti UniFi network controller"
   [actual]="Local-first personal finance / budgeting"
   [homarr]="Modern application dashboard (pinned 0.16.1)"
@@ -265,7 +265,7 @@ declare -A CONTAINER_CATEGORY=(
   [plex]="── Media Servers"
   [sonarr]="── Library Management"
   [qbittorrent]="── Download Clients"
-  [overseerr]="── Request Managers"
+  [seerr]="── Request Managers"
   [heimdall]="── Dashboards"
   [homeassistant]="── Home Automation & Finance"
   [unifi]="── Network & Security"
@@ -403,11 +403,11 @@ select_containers() {
     info "VPN client container(s) selected — use menu option 5 (Service credentials) to set provider credentials (username, password, LAN CIDR) before deploying."
   fi
   # Reminder if Doplarr selected — it requires a Discord bot token and at least
-  # one API key (Overseerr) to function. Without them it starts but ignores all
+  # one API key (Seerr) to function. Without them it starts but ignores all
   # Discord commands with no useful error in the logs.
   if [[ -n "${SELECTED[doplarr]+_}" ]]; then
     echo ""
-    info "Doplarr selected — use menu option 5 (Service credentials) to set the Discord bot token and Overseerr API key before deploying."
+    info "Doplarr selected — use menu option 5 (Service credentials) to set the Discord bot token and Seerr API key before deploying."
   fi
   echo ""
   success "Selection saved."
@@ -431,18 +431,18 @@ select_containers() {
     _env_set_inline USE_TRAEFIK "$_use_traefik"
 
     # Set ROOT_REDIRECT_HOST and ROOT_REDIRECT_PORT — which container serves https://DOMAIN.
-    # Priority: portainer > heimdall > homarr > jellyfin > plex > overseerr > sonarr > first selected.
+    # Priority: portainer > heimdall > homarr > jellyfin > plex > seerr > sonarr > first selected.
     # Maps container key → [container_name, internal_port]
     declare -A _RNAME=([portainer]=portainer [heimdall]=heimdall [homarr]=homarr
-      [jellyfin]=jellyfin [plex]=plex [overseerr]=overseerr [sonarr]=sonarr)
+      [jellyfin]=jellyfin [plex]=plex [seerr]=seerr [sonarr]=sonarr)
     declare -A _RPORT=([portainer]=9000 [heimdall]=80 [homarr]=7575
-      [jellyfin]=8096 [plex]=32400 [overseerr]=5055 [sonarr]=8989)
+      [jellyfin]=8096 [plex]=32400 [seerr]=5055 [sonarr]=8989)
     declare -A _RNAME_ALL=(
       [traefik]=traefik     [portainer]=portainer [plex]=plex
       [jellyfin]=jellyfin   [sonarr]=sonarr       [radarr]=radarr
       [prowlarr]=prowlarr   [bazarr]=bazarr       [qbittorrent]=qbittorrent
       [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
-      [overseerr]=overseerr [ombi]=ombi           [jellyseerr]=jellyseerr
+      [seerr]=seerr [ombi]=ombi
       [heimdall]=heimdall   [homarr]=homarr       [filezilla]=filezilla
       [unifi]=unifi         [actual]=actual       [wgeasy]=wgeasy
       [ampmc]=ampmc         [netbootxyz]=netbootxyz)
@@ -451,13 +451,13 @@ select_containers() {
       [jellyfin]=8096    [sonarr]=8989     [radarr]=7878
       [prowlarr]=9696    [bazarr]=6767     [qbittorrent]=8080
       [qbittorrentvpn]=8080 [delugevpn]=8112 [nzbget]=6789
-      [overseerr]=5055   [ombi]=3579      [jellyseerr]=5055
+      [seerr]=5055   [ombi]=3579
       [heimdall]=80      [homarr]=7575    [filezilla]=3000
       [unifi]=8443       [actual]=5006    [wgeasy]=51821
       [ampmc]=8080       [netbootxyz]=3000)
     local _redir_name="" _redir_port=""
     local _redir_set=false
-    for _cand in portainer heimdall homarr jellyfin plex overseerr sonarr; do
+    for _cand in portainer heimdall homarr jellyfin plex seerr sonarr; do
       if [[ -n "${SELECTED[$_cand]+_}" ]]; then
         _redir_name="${_RNAME[$_cand]}"
         _redir_port="${_RPORT[$_cand]}"
@@ -2608,7 +2608,7 @@ _traefik_set_redirect() {
     [jellyfin]=jellyfin       [sonarr]=sonarr           [radarr]=radarr
     [prowlarr]=prowlarr       [bazarr]=bazarr           [qbittorrent]=qbittorrent
     [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
-    [overseerr]=overseerr     [ombi]=ombi               [jellyseerr]=jellyseerr
+    [seerr]=seerr     [ombi]=ombi
     [heimdall]=heimdall       [homarr]=homarr           [filezilla]=filezilla
     [unifi]=unifi             [actual]=actual           [wgeasy]=wgeasy
     [ampmc]=ampmc             [netbootxyz]=netbootxyz
@@ -2618,7 +2618,7 @@ _traefik_set_redirect() {
     [jellyfin]=8096           [sonarr]=8989             [radarr]=7878
     [prowlarr]=9696           [bazarr]=6767             [qbittorrent]=8080
     [qbittorrentvpn]=8080     [delugevpn]=8112          [nzbget]=6789
-    [overseerr]=5055          [ombi]=3579               [jellyseerr]=5055
+    [seerr]=5055          [ombi]=3579
     [heimdall]=80             [homarr]=7575             [filezilla]=3000
     [unifi]=8443              [actual]=5006             [wgeasy]=51821
     [ampmc]=8080              [netbootxyz]=3000
@@ -3139,7 +3139,7 @@ _creds_show_status() {
   # Doplarr
   if [[ -n "${SELECTED[doplarr]+_}" ]]; then
     echo -e "  ${BOLD}Doplarr Discord token  :${RESET} ${DOPLARR_DISCORD_TOKEN:+[set]}"
-    echo -e "  ${BOLD}Doplarr Overseerr API  :${RESET} ${DOPLARR_OVERSEERR_API:+[set]}"
+    echo -e "  ${BOLD}Doplarr Seerr API      :${RESET} ${DOPLARR_OVERSEERR_API:+[set]}"
     echo -e "  ${BOLD}Doplarr Radarr API     :${RESET} ${DOPLARR_RADARR_API:+[set]}"
     echo -e "  ${BOLD}Doplarr Sonarr API     :${RESET} ${DOPLARR_SONARR_API:+[set]}"
     echo ""
@@ -3335,9 +3335,9 @@ _creds_configure_doplarr() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   echo ""
   echo -e "${BOLD}Doplarr — Discord Bot Credentials${RESET}"
-  echo -e "${DIM}Doplarr connects Discord to Overseerr, Radarr, and Sonarr for media requests.${RESET}"
+  echo -e "${DIM}Doplarr connects Discord to Seerr, Radarr, and Sonarr for media requests.${RESET}"
   echo -e "${DIM}  Discord token  : discord.com/developers → Your App → Bot → Token${RESET}"
-  echo -e "${DIM}  Overseerr API  : Overseerr web UI → Settings → General → API Key${RESET}"
+  echo -e "${DIM}  Seerr API      : Seerr web UI → Settings → General → API Key${RESET}"
   echo -e "${DIM}  Radarr API     : Radarr web UI → Settings → General → API Key${RESET}"
   echo -e "${DIM}  Sonarr API     : Sonarr web UI → Settings → General → API Key${RESET}"
   echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
@@ -3353,14 +3353,14 @@ _creds_configure_doplarr() {
     info "Discord token unchanged."
   fi
 
-  read -srp "Overseerr API key (press Enter to keep existing): " input; echo ""
+  read -srp "Seerr API key (press Enter to keep existing): " input; echo ""
   if [[ -n "$input" ]]; then
     DOPLARR_OVERSEERR_API="$input"
   elif [[ -z "${DOPLARR_OVERSEERR_API:-}" || "${DOPLARR_OVERSEERR_API:-}" == "changeme" ]]; then
-    warn "Overseerr API key is required."
+    warn "Seerr API key is required."
     return 1
   else
-    info "Overseerr API key unchanged."
+    info "Seerr API key unchanged."
   fi
 
   echo -e "  ${DIM}Radarr and Sonarr API keys are optional — leave blank to skip.${RESET}"
@@ -3867,9 +3867,9 @@ check_port_conflicts() {
     [qbittorrentvpn]="8181/tcp:qBittorrentVPN"
     [delugevpn]="8112/tcp:DelugeVPN 58846/tcp:Deluge-daemon"
     [nzbget]="6789/tcp:NZBGet"
-    [overseerr]="5055/tcp:Overseerr"
+    [seerr]="5055/tcp:Seerr"
     [ombi]="3579/tcp:Ombi"
-    [jellyseerr]="5056/tcp:Jellyseerr"
+
     [ampmc]="8085/tcp:AMP 25565/tcp:Minecraft"
     [netbootxyz]="69/udp:TFTP 3000/tcp:NetbootXYZ 8083/tcp:NetbootXYZ-assets"
     [mumble]="64738/tcp:Mumble-TCP 64738/udp:Mumble-UDP"
@@ -4751,8 +4751,8 @@ HDEOF
     [prowlarr]="prowlarr"       [bazarr]="bazarr"
     [qbittorrent]="qbittorrent" [qbittorrentvpn]="qbittorrentvpn"
     [delugevpn]="delugevpn"     [nzbget]="nzbget"
-    [overseerr]="overseerr"     [ombi]="ombi"
-    [jellyseerr]="jellyseerr"   [teamspeak6]="teamspeak6"
+    [seerr]="seerr"     [ombi]="ombi"
+    [teamspeak6]="teamspeak6"
     [mumble]="mumble"           [ampmc]="ampmc"
     [netbootxyz]="netbootxyz"
     [homeassistant]="homeassistant" [filezilla]="filezilla"
@@ -4778,6 +4778,32 @@ HDEOF
       mkdir -p "$_udb"
       chown -R "${uid}:${gid}" "$_udb"
       success "  ${_udb}  [${uid}:${gid}] (unifi-db)"
+    fi
+    # Seerr migration — auto-copy Overseerr or Jellyseerr config on first run.
+    # Seerr migrates data automatically on first start, but it needs the data
+    # to be present at its config path. If the seerr dir is empty/new and an
+    # old config exists, copy it in so the migration runs on first container start.
+    if [[ "$key" == "seerr" ]]; then
+      local _seerr_cfg="${cfg}/seerr"
+      local _migrated=false
+      # Only migrate if seerr config dir is empty (fresh install)
+      if [[ -z "$(ls -A "$_seerr_cfg" 2>/dev/null)" ]]; then
+        for _src_name in overseerr jellyseerr; do
+          local _src_cfg="${cfg}/${_src_name}"
+          if [[ -d "$_src_cfg" && -n "$(ls -A "$_src_cfg" 2>/dev/null)" ]]; then
+            info "  Migrating ${_src_name} config to seerr..."
+            cp -a "${_src_cfg}/." "${_seerr_cfg}/"
+            chown -R "${uid}:${gid}" "${_seerr_cfg}"
+            success "  Copied ${_src_name} → seerr config. Seerr will migrate data on first start."
+            info "  Old ${_src_name} config preserved at ${_src_cfg} — remove manually once verified."
+            _migrated=true
+            break
+          fi
+        done
+        if [[ "$_migrated" == "false" ]]; then
+          info "  No existing Overseerr/Jellyseerr config found — fresh Seerr install."
+        fi
+      fi
     fi
   done
 
@@ -4948,8 +4974,8 @@ _dns_get_subdomains() {
     [prowlarr]="prowlarr"     [bazarr]="bazarr"
     [qbittorrent]="qbt"       [qbittorrentvpn]="qbtvpn"
     [delugevpn]="deluge"      [nzbget]="nzbget"
-    [overseerr]="overseerr"   [ombi]="ombi"
-    [jellyseerr]="jellyseerr" [teamspeak6]="ts6"
+    [seerr]="seerr"   [ombi]="ombi"
+    [teamspeak6]="ts6"
     [mumble]="mumble"         [ampmc]="amp"
     [netbootxyz]="netboot"    [filezilla]="filezilla"
     [heimdall]="heimdall"     [homarr]="homarr"
@@ -5929,8 +5955,8 @@ print_urls() {
       [prowlarr]="https://prowlarr.${d}"     [bazarr]="https://bazarr.${d}"
       [qbittorrent]="https://qbt.${d}"       [qbittorrentvpn]="https://qbtvpn.${d}"
       [delugevpn]="https://deluge.${d}"      [nzbget]="https://nzbget.${d}"
-      [overseerr]="https://overseerr.${d}"   [ombi]="https://ombi.${d}"
-      [jellyseerr]="https://jellyseerr.${d}" [teamspeak6]="ts6.${d}:9987 (UDP)"
+      [seerr]="https://seerr.${d}"   [ombi]="https://ombi.${d}"
+      [teamspeak6]="ts6.${d}:9987 (UDP)"
       [mumble]="mumble.${d}:64738"           [ampmc]="https://amp.${d}"
       [netbootxyz]="https://netboot.${d}"
       [homeassistant]="https://ha.${d}"         [filezilla]="https://filezilla.${d}"
@@ -5954,9 +5980,9 @@ print_urls() {
       [qbittorrentvpn]="http://${host_ip}:8181"
       [delugevpn]="http://${host_ip}:8112"
       [nzbget]="http://${host_ip}:6789"
-      [overseerr]="http://${host_ip}:5055"
+      [seerr]="http://${host_ip}:5055"
       [ombi]="http://${host_ip}:3579"
-      [jellyseerr]="http://${host_ip}:5056"
+
       [teamspeak6]="${host_ip}:9987 (UDP voice)"
       [mumble]="${host_ip}:64738"
       [ampmc]="http://${host_ip}:8085"

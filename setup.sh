@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.1.2"
+FRIENDBOX_VERSION="2.1.3"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1656,6 +1656,8 @@ _traefik_write_config() {
       # Without this, secondary validators hit resolvers that haven't
       # propagated the _acme-challenge record yet → 403 "Incorrect TXT record".
       # 30 seconds is sufficient for Cloudflare's typically fast propagation.
+      # propagation.delayBeforeChecks is the Traefik v3 field name.
+      # The old flat delayBeforeChecks field was removed in v3 and crashes Traefik.
       resolvers_block="  letsencrypt:
     acme:
       email: ${email}
@@ -1663,7 +1665,8 @@ _traefik_write_config() {
       caServer: ${ca_server}
       dnsChallenge:
         provider: cloudflare
-        delayBeforeChecks: 30s
+        propagation:
+          delayBeforeChecks: 30s
         resolvers:
           - \"1.1.1.1:53\"
           - \"1.0.0.1:53\"

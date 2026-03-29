@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.1.4"
+FRIENDBOX_VERSION="2.1.5"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1735,12 +1735,14 @@ _traefik_write_config() {
   # Workaround: inject tls.certresolver and tls.domains labels onto the dashboard
   # router. Traefik issues the wildcard cert for that router; all other routers
   # with tls=true and no certresolver inherit the wildcard cert automatically.
-  if [[ "$provider" == "duckdns" || "$provider" == "cloudflare" ]]; then
-    # Both DuckDNS and Cloudflare use DNS-01 challenge and support wildcard certs.
-    # Request ONE *.domain cert on the dashboard router; all other routers inherit it.
-    # This avoids requesting 25+ individual certs and eliminates rate limit risk.
-    # DuckDNS: entrypoint-level wildcard is broken in Traefik v3 (issue #12109) — router label is the fix.
-    # Cloudflare: same router-label approach for consistency and to stay under 50 certs/week.
+  if [[ "$provider" == "duckdns" ]]; then
+    # DuckDNS only: inject wildcard cert labels onto the dashboard router.
+    # DuckDNS cannot set _acme-challenge TXT records on sub-subdomains, so
+    # per-router individual certs are impossible. The wildcard-on-one-router
+    # approach is the only option for DuckDNS.
+    # Cloudflare does NOT use this path — it uses per-router certresolver labels
+    # (same as GoDaddy/Namecheap). Traefik deduplicates cert requests so the
+    # wildcard is issued once and reused for all routers automatically.
     sed -i '/traefik\.http\.routers\.[^.]*\.tls\.certresolver=/d' "$COMPOSE_FILE"
     python3 - "$COMPOSE_FILE" "$DOMAIN" << 'PYEOF'
 import re, sys
@@ -1767,11 +1769,11 @@ if tls_label in content and certres_label not in content:
 else:
     print('Wildcard labels already present or tls=true not found.')
 PYEOF
-    info "${provider}: wildcard cert labels injected onto dashboard router."
+    info "DuckDNS: wildcard cert labels injected onto dashboard router."
   else
     tls_block=""
     # Restore per-router certresolver labels + remove any wildcard labels
-    # left by a prior DuckDNS or Cloudflare config.
+    # left by a prior DuckDNS config or a misconfigured Cloudflare setup.
     python3 - "$COMPOSE_FILE" "$DOMAIN" "$TRAEFIK_CERT_RESOLVER" << 'PYEOF'
 import re, sys
 path      = sys.argv[1]

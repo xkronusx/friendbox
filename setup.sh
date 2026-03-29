@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.1.1"
+FRIENDBOX_VERSION="2.1.2"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1651,6 +1651,11 @@ _traefik_write_config() {
   local resolvers_block
   case "$provider" in
     cloudflare)
+      # delayBeforeChecks: wait for the TXT record to propagate to all of
+      # Let's Encrypt's secondary validation servers before they poll.
+      # Without this, secondary validators hit resolvers that haven't
+      # propagated the _acme-challenge record yet → 403 "Incorrect TXT record".
+      # 30 seconds is sufficient for Cloudflare's typically fast propagation.
       resolvers_block="  letsencrypt:
     acme:
       email: ${email}
@@ -1658,9 +1663,11 @@ _traefik_write_config() {
       caServer: ${ca_server}
       dnsChallenge:
         provider: cloudflare
+        delayBeforeChecks: 30s
         resolvers:
           - \"1.1.1.1:53\"
-          - \"1.0.0.1:53\""
+          - \"1.0.0.1:53\"
+          - \"8.8.8.8:53\""
       ;;
     duckdns)
       # DuckDNS can only set TXT records on the root domain, not sub-subdomains.

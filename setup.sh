@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.1.0"
+FRIENDBOX_VERSION="2.1.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1929,12 +1929,14 @@ _traefik_show_status() {
   # Per-provider credential summary
   case "${TRAEFIK_ACME_PROVIDER:-}" in
     cloudflare)
-      if [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
-        echo -e "  ${BOLD}CF API token  :${RESET} [set]"
+      echo -e "  ${BOLD}CF email      :${RESET} ${CF_API_EMAIL:-not set}"
+      if [[ -n "${CF_API_KEY:-}" ]]; then
+        echo -e "  ${BOLD}CF auth       :${RESET} Global API Key [set]"
+      elif [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+        echo -e "  ${BOLD}CF auth       :${RESET} Scoped API Token [set]"
       else
-        echo -e "  ${BOLD}CF API token  :${RESET} not set"
+        echo -e "  ${BOLD}CF auth       :${RESET} ${RED}not set — configure via option 3${RESET}"
       fi
-      echo -e "  ${BOLD}CF API email  :${RESET} ${CF_API_EMAIL:-not set}"
       ;;
     duckdns)
       if [[ -n "${DUCKDNS_TOKEN:-}" ]]; then
@@ -2036,12 +2038,16 @@ _traefik_validate() {
   # ── 6. Provider credentials present ──────────────────────────────────────────
   case "$provider" in
     cloudflare)
-      [[ -n "${CF_DNS_API_TOKEN:-}" ]] \
-        && _chk "Cloudflare API token" 1 \
-        || _chk "Cloudflare API token" 0 "set via option 3"
       [[ -n "${CF_API_EMAIL:-}" ]] \
         && _chk "Cloudflare email" 1 "${CF_API_EMAIL}" \
         || _chk "Cloudflare email" 0 "set via option 3"
+      if [[ -n "${CF_API_KEY:-}" ]]; then
+        _chk "Cloudflare auth method" 1 "Global API Key"
+      elif [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+        _chk "Cloudflare auth method" 1 "Scoped API Token"
+      else
+        _chk "Cloudflare auth method" 0 "no token or key set — configure via option 3"
+      fi
       ;;
     duckdns)
       [[ -n "${DUCKDNS_TOKEN:-}" ]] \
@@ -2141,16 +2147,38 @@ _traefik_validate() {
     fi
   fi
 
-  # ── 12. Cloudflare token reachability test ───────────────────────────────────
-  if [[ "${provider:-}" == "cloudflare" && -n "${CF_DNS_API_TOKEN:-}" ]]; then
-    local cf_resp
-    cf_resp=$(curl -fsSL --max-time 5 \
-      -H "Authorization: Bearer ${CF_DNS_API_TOKEN}" \
-      "https://api.cloudflare.com/client/v4/user/tokens/verify" 2>/dev/null)
-    if echo "$cf_resp" | grep -q '"success":true'; then
-      _chk "Cloudflare token valid (API verify)" 1
+  # ── 12. Cloudflare credential reachability test ─────────────────────────────
+  # Two auth methods are supported:
+  #   Scoped API Token: CF_DNS_API_TOKEN — verified via /user/tokens/verify (Bearer)
+  #   Global API Key:   CF_API_KEY + CF_API_EMAIL — verified via /user (X-Auth-Key)
+  # The /user/tokens/verify endpoint rejects Global API Keys (they are not Bearer
+  # tokens), which was the cause of the "token rejected" false failure.
+  if [[ "${provider:-}" == "cloudflare" ]]; then
+    if [[ -n "${CF_API_KEY:-}" && -n "${CF_API_EMAIL:-}" ]]; then
+      # Global API Key path — verify via /user endpoint
+      local cf_resp
+      cf_resp=$(curl -fsSL --max-time 5 \
+        -H "X-Auth-Email: ${CF_API_EMAIL}" \
+        -H "X-Auth-Key: ${CF_API_KEY}" \
+        "https://api.cloudflare.com/client/v4/user" 2>/dev/null)
+      if echo "$cf_resp" | grep -q '"success":true'; then
+        _chk "Cloudflare credentials valid (Global API Key)" 1
+      else
+        _chk "Cloudflare credentials valid (Global API Key)" 0 "key rejected or unreachable"
+      fi
+    elif [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+      # Scoped API Token path — verify via /user/tokens/verify endpoint
+      local cf_resp
+      cf_resp=$(curl -fsSL --max-time 5 \
+        -H "Authorization: Bearer ${CF_DNS_API_TOKEN}" \
+        "https://api.cloudflare.com/client/v4/user/tokens/verify" 2>/dev/null)
+      if echo "$cf_resp" | grep -q '"success":true'; then
+        _chk "Cloudflare credentials valid (Scoped Token)" 1
+      else
+        _chk "Cloudflare credentials valid (Scoped Token)" 0 "token rejected or unreachable"
+      fi
     else
-      _chk "Cloudflare token valid (API verify)" 0 "token rejected or unreachable"
+      _chk "Cloudflare credentials" 0 "neither CF_DNS_API_TOKEN nor CF_API_KEY is set"
     fi
   fi
 
@@ -2948,32 +2976,71 @@ _traefik_provider_cloudflare() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   echo ""
   echo -e "${BOLD}Cloudflare DNS Challenge Credentials${RESET}"
-  echo -e "${DIM}  Create a scoped API token at: dash.cloudflare.com → My Profile → API Tokens${RESET}"
-  echo -e "${DIM}  Required permissions: Zone / DNS / Edit  +  Zone / Zone / Read${RESET}"
-  echo -e "${DIM}  Press Enter to keep the value shown in [brackets].${RESET}"
+  echo ""
+  echo -e "  Cloudflare supports two authentication methods:"
+  echo -e "  ${BOLD}1) Scoped API Token${RESET} ${DIM}(recommended — least privilege)${RESET}"
+  echo -e "  ${DIM}     dash.cloudflare.com → My Profile → API Tokens → Create Token${RESET}"
+  echo -e "  ${DIM}     Required permissions: Zone / DNS / Edit  +  Zone / Zone / Read${RESET}"
+  echo -e "  ${DIM}     Only email + token needed; no API key.${RESET}"
+  echo ""
+  echo -e "  ${BOLD}2) Global API Key${RESET} ${DIM}(simpler — full account access)${RESET}"
+  echo -e "  ${DIM}     dash.cloudflare.com → My Profile → API Tokens → Global API Key${RESET}"
+  echo -e "  ${DIM}     Requires email + Global API Key (not a scoped token).${RESET}"
   echo ""
 
-  echo -n "Cloudflare account email [${CF_API_EMAIL:-}]: "
+  # Detect existing auth method to show the right default
+  local _existing_method=1
+  [[ -n "${CF_API_KEY:-}" ]] && _existing_method=2
+
+  echo -e "  ${DIM}Press Enter to keep existing values.${RESET}"
+  echo ""
+
+  read -rp "  Auth method [1=Scoped Token / 2=Global API Key] (${_existing_method}): " _method_input
+  local _method="${_method_input:-${_existing_method}}"
+
+  echo ""
+  echo -n "  Cloudflare account email [${CF_API_EMAIL:-}]: "
   read -r input
   local cf_email="${input:-${CF_API_EMAIL:-}}"
   [[ -z "$cf_email" ]] && { warn "Email required."; return 1; }
 
-  echo -n "Cloudflare API token (press Enter to keep existing): "
-  read -rs input; echo ""
-  local cf_token
-  if [[ -n "$input" ]]; then
-    cf_token="$input"
-  elif [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
-    cf_token="$CF_DNS_API_TOKEN"
-    info "API token unchanged."
-  else
-    warn "API token is required."; return 1
-  fi
+  # Clear all CF credential vars from .env before writing new ones
+  sed -i '/^CF_API_EMAIL=/d;/^CF_DNS_API_TOKEN=/d;/^CF_API_KEY=/d' "$ENV_FILE" 2>/dev/null || true
+  printf "CF_API_EMAIL='%s'\n" "$cf_email" >> "$ENV_FILE"
 
-  sed -i '/^CF_API_EMAIL=/d;/^CF_DNS_API_TOKEN=/d' "$ENV_FILE" 2>/dev/null || true
-  # Single-quote values — API tokens can contain $ which bash expands on source.
-  printf "CF_API_EMAIL='%s'\nCF_DNS_API_TOKEN='%s'\n" "$cf_email" "$cf_token" >> "$ENV_FILE"
-  success "Cloudflare credentials saved."
+  if [[ "$_method" == "2" ]]; then
+    # ── Global API Key ─────────────────────────────────────────────────────────
+    echo -n "  Global API Key (press Enter to keep existing): "
+    read -rs input; echo ""
+    local cf_key
+    if [[ -n "$input" ]]; then
+      cf_key="$input"
+    elif [[ -n "${CF_API_KEY:-}" ]]; then
+      cf_key="$CF_API_KEY"
+      info "  Global API Key unchanged."
+    else
+      warn "  Global API Key is required."; return 1
+    fi
+    printf "CF_API_KEY='%s'\n" "$cf_key" >> "$ENV_FILE"
+    success "Cloudflare credentials saved (Global API Key method)."
+    info "  Traefik will authenticate using CF_API_EMAIL + CF_API_KEY."
+  else
+    # ── Scoped API Token ────────────────────────────────────────────────────────
+    echo -n "  Scoped API Token (press Enter to keep existing): "
+    read -rs input; echo ""
+    local cf_token
+    if [[ -n "$input" ]]; then
+      cf_token="$input"
+    elif [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+      cf_token="$CF_DNS_API_TOKEN"
+      info "  API token unchanged."
+    else
+      warn "  Scoped API token is required."; return 1
+    fi
+    printf "CF_DNS_API_TOKEN='%s'\n" "$cf_token" >> "$ENV_FILE"
+    success "Cloudflare credentials saved (Scoped API Token method)."
+    info "  Traefik will authenticate using CF_DNS_API_TOKEN."
+  fi
 }
 
 _traefik_provider_duckdns() {

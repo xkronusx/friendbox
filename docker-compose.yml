@@ -47,6 +47,7 @@ services:
       # DNS challenge provider credentials — only the active provider's vars are used
       - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN:-}
       - CF_API_EMAIL=${CF_API_EMAIL:-}
+      - CF_API_KEY=${CF_API_KEY:-}
       - DUCKDNS_TOKEN=${DUCKDNS_TOKEN:-}
       - GODADDY_API_KEY=${GODADDY_API_KEY:-}
       - GODADDY_API_SECRET=${GODADDY_API_SECRET:-}

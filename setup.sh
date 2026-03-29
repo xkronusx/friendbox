@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.1.3"
+FRIENDBOX_VERSION="2.1.4"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -919,7 +919,7 @@ _mergerfs_write_fstab() {
   # mergerfs v2 fstab format — uid/gid ensures pool mount reports correct
   # ownership to Docker containers running as PUID.
   local uid="${PUID:-1000}" gid="${PGID:-1000}"
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=auto,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=0,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=0,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
   success "fstab updated."
 }
 
@@ -1018,7 +1018,7 @@ _mergerfs_remount() {
   # uid/gid: pool mount reports correct ownership to Docker containers as PUID.
   local mount_out
   mount_out=$(mergerfs \
-    -o allow_other,use_ino,uid=${uid},gid=${gid},cache.files=auto,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=0,moveonenospc=true,fsname=mergerpool \
+    -o allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=0,moveonenospc=true,fsname=mergerpool \
     "${branch_list}" "${pool_path}" 2>&1)
   local mount_rc=$?
   if [[ $mount_rc -eq 0 ]]; then

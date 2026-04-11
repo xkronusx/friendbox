@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.2.0"
+FRIENDBOX_VERSION="2.2.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -188,7 +188,7 @@ check_os() {
 CONTAINER_ORDER=(
   traefik portainer
   plex jellyfin
-  sonarr radarr prowlarr bazarr
+  sonarr radarr prowlarr bazarr lidarr
   qbittorrent qbittorrentvpn delugevpn nzbget
   seerr ombi doplarr
   heimdall homarr
@@ -207,6 +207,7 @@ declare -A CONTAINER_NAMES=(
   [radarr]="Radarr"
   [prowlarr]="Prowlarr (nightly)"
   [bazarr]="Bazarr"
+  [lidarr]="Lidarr"
   [qbittorrent]="qBittorrent"
   [qbittorrentvpn]="qBittorrentVPN"
   [delugevpn]="DelugeVPN"
@@ -236,8 +237,9 @@ declare -A CONTAINER_DESC=(
   [jellyfin]="Open-source media server (jellyfin/jellyfin)"
   [sonarr]="TV show library manager"
   [radarr]="Movie library manager"
-  [prowlarr]="Indexer manager for Sonarr/Radarr"
+  [prowlarr]="Indexer manager for Sonarr/Radarr/Lidarr"
   [bazarr]="Automatic subtitle downloader"
+  [lidarr]="Music library manager"
   [qbittorrent]="Torrent client — no VPN"
   [qbittorrentvpn]="Torrent client — routed through VPN (binhex)"
   [delugevpn]="Deluge torrent client — routed through VPN (binhex)"
@@ -256,7 +258,7 @@ declare -A CONTAINER_DESC=(
   [doplarr]="Discord bot for media requests via Seerr/Sonarr/Radarr"
   [unifi]="Ubiquiti UniFi network controller"
   [actual]="Local-first personal finance / budgeting"
-  [homarr]="Modern application dashboard (homarr-labs)"
+  [homarr]="Modern application dashboard (pinned 0.16.1)"
   [wgeasy]="Self-hosted WireGuard VPN server (inbound — for remote access to your network)"
 )
 
@@ -405,10 +407,6 @@ select_containers() {
   # Reminder if Doplarr selected — it requires a Discord bot token and at least
   # one API key (Seerr) to function. Without them it starts but ignores all
   # Discord commands with no useful error in the logs.
-  if [[ -n "${SELECTED[homarr]+_}" ]]; then
-    echo ""
-    info "Homarr selected — use menu option 5 (Service credentials) to generate the required encryption key before deploying."
-  fi
   if [[ -n "${SELECTED[doplarr]+_}" ]]; then
     echo ""
     info "Doplarr selected — use menu option 5 (Service credentials) to set the Discord bot token and Seerr API key before deploying."
@@ -444,7 +442,8 @@ select_containers() {
     declare -A _RNAME_ALL=(
       [traefik]=traefik     [portainer]=portainer [plex]=plex
       [jellyfin]=jellyfin   [sonarr]=sonarr       [radarr]=radarr
-      [prowlarr]=prowlarr   [bazarr]=bazarr       [qbittorrent]=qbittorrent
+      [prowlarr]=prowlarr   [bazarr]=bazarr       [lidarr]=lidarr
+      [qbittorrent]=qbittorrent
       [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
       [seerr]=seerr [ombi]=ombi
       [heimdall]=heimdall   [homarr]=homarr       [filezilla]=filezilla
@@ -453,7 +452,8 @@ select_containers() {
     declare -A _RPORT_ALL=(
       [traefik]=8080     [portainer]=9000  [plex]=32400
       [jellyfin]=8096    [sonarr]=8989     [radarr]=7878
-      [prowlarr]=9696    [bazarr]=6767     [qbittorrent]=8080
+      [prowlarr]=9696    [bazarr]=6767     [lidarr]=8686
+      [qbittorrent]=8080
       [qbittorrentvpn]=8080 [delugevpn]=8112 [nzbget]=6789
       [seerr]=5055   [ombi]=3579
       [heimdall]=80      [homarr]=7575    [filezilla]=3000
@@ -942,9 +942,11 @@ _mergerfs_provision_branches() {
 
   load_selected
   local subdirs=("movies" "tv")
+  # Include music dir when Lidarr is selected
+  [[ -n "${SELECTED[lidarr]+_}" ]] && subdirs+=("music")
   # Include downloads if any download client OR any arr that uses it is selected
   local _dl
-  for _dl in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr; do
+  for _dl in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr lidarr; do
     if [[ -n "${SELECTED[$_dl]+_}" ]]; then
       subdirs+=("downloads")
       break
@@ -2650,7 +2652,8 @@ _traefik_set_redirect() {
   declare -A _NAME=(
     [traefik]=traefik         [portainer]=portainer     [plex]=plex
     [jellyfin]=jellyfin       [sonarr]=sonarr           [radarr]=radarr
-    [prowlarr]=prowlarr       [bazarr]=bazarr           [qbittorrent]=qbittorrent
+    [prowlarr]=prowlarr       [bazarr]=bazarr           [lidarr]=lidarr
+    [qbittorrent]=qbittorrent
     [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
     [seerr]=seerr     [ombi]=ombi
     [heimdall]=heimdall       [homarr]=homarr           [filezilla]=filezilla
@@ -2660,7 +2663,8 @@ _traefik_set_redirect() {
   declare -A _PORT=(
     [traefik]=8080            [portainer]=9000          [plex]=32400
     [jellyfin]=8096           [sonarr]=8989             [radarr]=7878
-    [prowlarr]=9696           [bazarr]=6767             [qbittorrent]=8080
+    [prowlarr]=9696           [bazarr]=6767             [lidarr]=8686
+    [qbittorrent]=8080
     [qbittorrentvpn]=8080     [delugevpn]=8112          [nzbget]=6789
     [seerr]=5055          [ombi]=3579
     [heimdall]=80             [homarr]=7575             [filezilla]=3000
@@ -3228,16 +3232,6 @@ _creds_show_status() {
     echo ""
   fi
 
-  # Homarr
-  if [[ -n "${SELECTED[homarr]+_}" ]]; then
-    if [[ -n "${HOMARR_SECRET_KEY:-}" ]]; then
-      echo -e "  ${BOLD}Homarr encryption key :${RESET} ${GREEN}[set]${RESET}"
-    else
-      echo -e "  ${BOLD}Homarr encryption key :${RESET} ${RED}not set — run option 5 → Homarr${RESET}"
-    fi
-    echo ""
-  fi
-
   # WireGuard Easy
   if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
     local _wg_init="${WGEASY_INIT_ENABLED:-false}"
@@ -3251,51 +3245,6 @@ _creds_show_status() {
     fi
     echo ""
   fi
-}
-
-_creds_configure_homarr() {
-  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
-  echo ""
-  echo -e "${BOLD}Homarr Encryption Key${RESET}"
-  echo ""
-  echo -e "  ${DIM}Homarr v1+ requires a SECRET_ENCRYPTION_KEY — a 64-character hex string${RESET}"
-  echo -e "  ${DIM}used to encrypt credentials stored in the dashboard database.${RESET}"
-  echo -e "  ${DIM}The container will not start without it.${RESET}"
-  echo ""
-
-  if [[ -n "${HOMARR_SECRET_KEY:-}" ]]; then
-    echo -e "  ${GREEN}✔ Encryption key is already set.${RESET}"
-    echo ""
-    read -rp "  Regenerate a new key? [y/N] " _regen
-    if [[ ! "${_regen:-n}" =~ ^[Yy]$ ]]; then
-      info "Key unchanged."
-      return 0
-    fi
-    warn "Regenerating the key will make existing Homarr credentials unreadable."
-    read -rp "  Continue? [y/N] " _confirm
-    [[ "${_confirm:-n}" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
-  fi
-
-  # Generate a 64-char hex key (openssl rand -hex 32 = 32 bytes = 64 hex chars)
-  local _key
-  if command -v openssl &>/dev/null; then
-    _key=$(openssl rand -hex 32 2>/dev/null)
-  else
-    # Fallback: read from /dev/urandom
-    _key=$(cat /dev/urandom | tr -dc "a-f0-9" | head -c 64)
-  fi
-
-  if [[ -z "$_key" || ${#_key} -ne 64 ]]; then
-    warn "Could not generate a key automatically."
-    echo -e "  ${DIM}Generate one manually: openssl rand -hex 32${RESET}"
-    read -rp "  Paste 64-char hex key: " _key
-    [[ ${#_key} -ne 64 ]] && { warn "Key must be exactly 64 characters. Aborted."; return 1; }
-  fi
-
-  sed -i "/^HOMARR_SECRET_KEY=/d" "$ENV_FILE" 2>/dev/null || true
-  printf "HOMARR_SECRET_KEY='%s'\n" "$_key" >> "$ENV_FILE"
-  success "Homarr encryption key saved to .env."
-  info "Redeploy Homarr (option 12) to apply the key."
 }
 
 configure_service_credentials() {
@@ -3352,12 +3301,6 @@ configure_service_credentials() {
       opt_num=$((opt_num + 1))
     fi
 
-    if [[ -n "${SELECTED[homarr]+_}" ]]; then
-      echo "  ${opt_num}) Homarr — generate encryption key"
-      CRED_OPTS[$opt_num]="homarr"
-      opt_num=$((opt_num + 1))
-    fi
-
     if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
       echo "  ${opt_num}) Configure WireGuard Easy first-start setup"
       CRED_OPTS[$opt_num]="wgeasy"
@@ -3366,7 +3309,7 @@ configure_service_credentials() {
 
     if [[ $opt_num -eq 1 ]]; then
       echo -e "  ${DIM}No services requiring configuration are currently selected.${RESET}"
-      echo -e "  ${DIM}Select VPN containers, AMP, Mumble, Jellyfin, Homarr, Doplarr, or WireGuard Easy first (option 2).${RESET}"
+      echo -e "  ${DIM}Select VPN containers, AMP, Mumble, Jellyfin, Doplarr, or WireGuard Easy first (option 2).${RESET}"
       echo -e "  ${DIM}(WireGuard Easy v15 can also be configured via its web UI without using this wizard.)${RESET}"
     fi
 
@@ -3386,7 +3329,6 @@ configure_service_credentials() {
       jellyfin_hw_setup) _jellyfin_hw_setup             ;;   # has its own loop+return
       jellyfin_hw_check) _jellyfin_hw_check     || true; pause ;;
       doplarr)          _creds_configure_doplarr || true; pause ;;
-      homarr)           _creds_configure_homarr  || true; pause ;;
       wgeasy)           _creds_configure_wgeasy  || true; pause ;;
       back)             return ;;
     esac
@@ -4008,6 +3950,7 @@ check_port_conflicts() {
     [radarr]="7878/tcp:Radarr"
     [prowlarr]="9696/tcp:Prowlarr"
     [bazarr]="6767/tcp:Bazarr"
+    [lidarr]="8686/tcp:Lidarr"
     [qbittorrent]="8082/tcp:qBittorrent 6881/tcp:qBT-peer 6881/udp:qBT-peer-UDP"
     [qbittorrentvpn]="8181/tcp:qBittorrentVPN"
     [delugevpn]="8112/tcp:DelugeVPN 58846/tcp:Deluge-daemon"
@@ -4871,12 +4814,13 @@ HDEOF
     # chown -R on $media covers the entire tree in one syscall.
     local _need_downloads=false _need_incomplete=false
     local _dl_client
-    for _dl_client in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr; do
+    for _dl_client in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr lidarr; do
       [[ -n "${SELECTED[$_dl_client]+_}" ]] && { _need_downloads=true; break; }
     done
     [[ -n "${SELECTED[delugevpn]+_}" ]] && _need_incomplete=true
 
     mkdir -p "${media}/movies" "${media}/tv"
+    [[ -n "${SELECTED[lidarr]+_}" ]] && mkdir -p "${media}/music"
     [[ "$_need_downloads"   == "true" ]] && mkdir -p "${media}/downloads"
     [[ "$_need_incomplete"  == "true" ]] && mkdir -p "${media}/downloads/incomplete"
 
@@ -4894,6 +4838,7 @@ HDEOF
     [plex]="plex"               [jellyfin]="jellyfin"
     [sonarr]="sonarr"           [radarr]="radarr"
     [prowlarr]="prowlarr"       [bazarr]="bazarr"
+    [lidarr]="lidarr"
     [qbittorrent]="qbittorrent" [qbittorrentvpn]="qbittorrentvpn"
     [delugevpn]="delugevpn"     [nzbget]="nzbget"
     [seerr]="seerr"     [ombi]="ombi"
@@ -6103,6 +6048,7 @@ print_urls() {
       [plex]="https://plex.${d}"             [jellyfin]="https://jellyfin.${d}"
       [sonarr]="https://sonarr.${d}"         [radarr]="https://radarr.${d}"
       [prowlarr]="https://prowlarr.${d}"     [bazarr]="https://bazarr.${d}"
+      [lidarr]="https://lidarr.${d}"
       [qbittorrent]="https://qbt.${d}"       [qbittorrentvpn]="https://qbtvpn.${d}"
       [delugevpn]="https://deluge.${d}"      [nzbget]="https://nzbget.${d}"
       [seerr]="https://seerr.${d}"   [ombi]="https://ombi.${d}"
@@ -6123,6 +6069,7 @@ print_urls() {
       [plex]="http://${host_ip}:32400/web"
       [jellyfin]="http://${host_ip}:8096"
       [sonarr]="http://${host_ip}:8989"
+      [lidarr]="http://${host_ip}:8686"
       [radarr]="http://${host_ip}:7878"
       [prowlarr]="http://${host_ip}:9696"
       [bazarr]="http://${host_ip}:6767"

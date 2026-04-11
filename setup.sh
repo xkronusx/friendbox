@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.1.6"
+FRIENDBOX_VERSION="2.2.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -256,7 +256,7 @@ declare -A CONTAINER_DESC=(
   [doplarr]="Discord bot for media requests via Seerr/Sonarr/Radarr"
   [unifi]="Ubiquiti UniFi network controller"
   [actual]="Local-first personal finance / budgeting"
-  [homarr]="Modern application dashboard (pinned 0.16.1)"
+  [homarr]="Modern application dashboard (homarr-labs)"
   [wgeasy]="Self-hosted WireGuard VPN server (inbound — for remote access to your network)"
 )
 
@@ -405,6 +405,10 @@ select_containers() {
   # Reminder if Doplarr selected — it requires a Discord bot token and at least
   # one API key (Seerr) to function. Without them it starts but ignores all
   # Discord commands with no useful error in the logs.
+  if [[ -n "${SELECTED[homarr]+_}" ]]; then
+    echo ""
+    info "Homarr selected — use menu option 5 (Service credentials) to generate the required encryption key before deploying."
+  fi
   if [[ -n "${SELECTED[doplarr]+_}" ]]; then
     echo ""
     info "Doplarr selected — use menu option 5 (Service credentials) to set the Discord bot token and Seerr API key before deploying."
@@ -3224,6 +3228,16 @@ _creds_show_status() {
     echo ""
   fi
 
+  # Homarr
+  if [[ -n "${SELECTED[homarr]+_}" ]]; then
+    if [[ -n "${HOMARR_SECRET_KEY:-}" ]]; then
+      echo -e "  ${BOLD}Homarr encryption key :${RESET} ${GREEN}[set]${RESET}"
+    else
+      echo -e "  ${BOLD}Homarr encryption key :${RESET} ${RED}not set — run option 5 → Homarr${RESET}"
+    fi
+    echo ""
+  fi
+
   # WireGuard Easy
   if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
     local _wg_init="${WGEASY_INIT_ENABLED:-false}"
@@ -3237,6 +3251,51 @@ _creds_show_status() {
     fi
     echo ""
   fi
+}
+
+_creds_configure_homarr() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  echo ""
+  echo -e "${BOLD}Homarr Encryption Key${RESET}"
+  echo ""
+  echo -e "  ${DIM}Homarr v1+ requires a SECRET_ENCRYPTION_KEY — a 64-character hex string${RESET}"
+  echo -e "  ${DIM}used to encrypt credentials stored in the dashboard database.${RESET}"
+  echo -e "  ${DIM}The container will not start without it.${RESET}"
+  echo ""
+
+  if [[ -n "${HOMARR_SECRET_KEY:-}" ]]; then
+    echo -e "  ${GREEN}✔ Encryption key is already set.${RESET}"
+    echo ""
+    read -rp "  Regenerate a new key? [y/N] " _regen
+    if [[ ! "${_regen:-n}" =~ ^[Yy]$ ]]; then
+      info "Key unchanged."
+      return 0
+    fi
+    warn "Regenerating the key will make existing Homarr credentials unreadable."
+    read -rp "  Continue? [y/N] " _confirm
+    [[ "${_confirm:-n}" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
+  fi
+
+  # Generate a 64-char hex key (openssl rand -hex 32 = 32 bytes = 64 hex chars)
+  local _key
+  if command -v openssl &>/dev/null; then
+    _key=$(openssl rand -hex 32 2>/dev/null)
+  else
+    # Fallback: read from /dev/urandom
+    _key=$(cat /dev/urandom | tr -dc "a-f0-9" | head -c 64)
+  fi
+
+  if [[ -z "$_key" || ${#_key} -ne 64 ]]; then
+    warn "Could not generate a key automatically."
+    echo -e "  ${DIM}Generate one manually: openssl rand -hex 32${RESET}"
+    read -rp "  Paste 64-char hex key: " _key
+    [[ ${#_key} -ne 64 ]] && { warn "Key must be exactly 64 characters. Aborted."; return 1; }
+  fi
+
+  sed -i "/^HOMARR_SECRET_KEY=/d" "$ENV_FILE" 2>/dev/null || true
+  printf "HOMARR_SECRET_KEY='%s'\n" "$_key" >> "$ENV_FILE"
+  success "Homarr encryption key saved to .env."
+  info "Redeploy Homarr (option 12) to apply the key."
 }
 
 configure_service_credentials() {
@@ -3293,6 +3352,12 @@ configure_service_credentials() {
       opt_num=$((opt_num + 1))
     fi
 
+    if [[ -n "${SELECTED[homarr]+_}" ]]; then
+      echo "  ${opt_num}) Homarr — generate encryption key"
+      CRED_OPTS[$opt_num]="homarr"
+      opt_num=$((opt_num + 1))
+    fi
+
     if [[ -n "${SELECTED[wgeasy]+_}" ]]; then
       echo "  ${opt_num}) Configure WireGuard Easy first-start setup"
       CRED_OPTS[$opt_num]="wgeasy"
@@ -3301,7 +3366,7 @@ configure_service_credentials() {
 
     if [[ $opt_num -eq 1 ]]; then
       echo -e "  ${DIM}No services requiring configuration are currently selected.${RESET}"
-      echo -e "  ${DIM}Select VPN containers, AMP, Mumble, Jellyfin, Doplarr, or WireGuard Easy first (option 2).${RESET}"
+      echo -e "  ${DIM}Select VPN containers, AMP, Mumble, Jellyfin, Homarr, Doplarr, or WireGuard Easy first (option 2).${RESET}"
       echo -e "  ${DIM}(WireGuard Easy v15 can also be configured via its web UI without using this wizard.)${RESET}"
     fi
 
@@ -3321,6 +3386,7 @@ configure_service_credentials() {
       jellyfin_hw_setup) _jellyfin_hw_setup             ;;   # has its own loop+return
       jellyfin_hw_check) _jellyfin_hw_check     || true; pause ;;
       doplarr)          _creds_configure_doplarr || true; pause ;;
+      homarr)           _creds_configure_homarr  || true; pause ;;
       wgeasy)           _creds_configure_wgeasy  || true; pause ;;
       back)             return ;;
     esac

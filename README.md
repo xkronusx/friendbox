@@ -144,7 +144,7 @@ Toggle services with their number, press `d` when done. Your selection persists 
 
 | `homeassistant` | Home automation platform — uses host networking for device discovery |
 | `heimdall` | Simple application dashboard |
-| `homarr` | Modern application dashboard (pinned 0.16.1) |
+| `homarr` | Modern application dashboard (homarr-labs) |
 | `filezilla` | FTP/SFTP client with browser-based GUI |
 | `doplarr` | Discord bot for Seerr/Sonarr/Radarr media requests |
 | `unifi` | Ubiquiti UniFi network controller (includes MongoDB sidecar) |
@@ -325,7 +325,7 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 
 | Home Assistant | `http://IP:8123` (host network — not routable via Traefik) | Create admin account on first visit |
 | Heimdall | `https://heimdall.yourdomain.com` (`http://IP:8091` direct) | No auth by default — add apps from the dashboard |
-| Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | No auth by default — configure from the dashboard |
+| Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | Set up on first visit — requires encryption key (option 5) |
 | FileZilla | `https://filezilla.yourdomain.com` (`http://IP:3300` direct) | No auth by default — add site manager entries for your servers |
 | Doplarr | No web UI — Discord bot only | Invite bot to your server, use slash commands |
 | UniFi | `https://unifi.yourdomain.com` (`https://IP:8443` direct) | Create admin account on first visit. Inform port for devices: `IP:8880` |

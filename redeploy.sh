@@ -48,17 +48,45 @@ health_check() {
   printf "%-24s %-15s %-20s\n" "NAME" "STATUS" "HEALTH"
   echo "─────────────────────────────────────────────────────"
 
+  # Collect container names first
+  local names=()
   while IFS= read -r name; do
-    local status health
-    status=$(docker inspect --format='{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
-    health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$name" 2>/dev/null || echo "n/a")
-    case "$status" in
-      running)  col="${GREEN}" ;;
-      exited)   col="${RED}"   ;;
-      *)        col="${YELLOW}" ;;
-    esac
-    printf "${col}%-24s %-15s %-20s${RESET}\n" "$name" "$status" "$health"
+    [[ -n "$name" ]] && names+=("$name")
   done < <(compose ps --format '{{.Name}}' 2>/dev/null)
+
+  if [[ ${#names[@]} -gt 0 ]]; then
+    # Single docker inspect call for all containers — avoid N*2 subprocesses
+    local inspect_out
+    inspect_out=$(docker inspect "${names[@]}" 2>/dev/null)
+
+    local name
+    for name in "${names[@]}"; do
+      local status health col
+      status=$(printf '%s' "$inspect_out" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+name = sys.argv[1]
+c = next((x for x in data if x['Name'].lstrip('/') == name), None)
+print(c['State']['Status'] if c else 'not found')
+" "$name" 2>/dev/null || echo "not found")
+      health=$(printf '%s' "$inspect_out" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+name = sys.argv[1]
+c = next((x for x in data if x['Name'].lstrip('/') == name), None)
+if c and c['State'].get('Health'):
+    print(c['State']['Health']['Status'])
+else:
+    print('n/a')
+" "$name" 2>/dev/null || echo "n/a")
+      case "$status" in
+        running)  col="${GREEN}" ;;
+        exited)   col="${RED}"   ;;
+        *)        col="${YELLOW}" ;;
+      esac
+      printf "${col}%-24s %-15s %-20s${RESET}\n" "$name" "$status" "$health"
+    done
+  fi
 
   echo "─────────────────────────────────────────────────────"
 

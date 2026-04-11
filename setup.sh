@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.2.1"
+FRIENDBOX_VERSION="2.2.2"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -301,11 +301,12 @@ load_selected() {
 
 save_selected() {
   _ensure_install_dir
-  : > "$SELECTED_FILE"
   local key
-  for key in "${CONTAINER_ORDER[@]}"; do
-    [[ -n "${SELECTED[$key]+_}" ]] && echo "$key" >> "$SELECTED_FILE"
-  done
+  {
+    for key in "${CONTAINER_ORDER[@]}"; do
+      [[ -n "${SELECTED[$key]+_}" ]] && echo "$key"
+    done
+  } > "$SELECTED_FILE"
   _own "$SELECTED_FILE"
 }
 
@@ -496,11 +497,13 @@ get_profile_args() {
 }
 
 compose_selected() {
-  local profile_args=()
-  local line
-  while IFS= read -r line; do
-    [[ -n "$line" ]] && profile_args+=("$line")
-  done < <(get_profile_args)
+  # Build profile args directly from the already-loaded SELECTED array,
+  # avoiding a get_profile_args subshell + read-back loop on every Docker call.
+  load_selected
+  local profile_args=() key
+  for key in "${CONTAINER_ORDER[@]}"; do
+    [[ -n "${SELECTED[$key]+_}" ]] && profile_args+=(--profile "$key")
+  done
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
 }
 
@@ -854,11 +857,12 @@ _mergerfs_load_modes() {
 
 _mergerfs_save_modes() {
   _ensure_install_dir
-  : > "$MERGERFS_MODES_FILE"
   local path
-  for path in "${!DISK_MODES[@]}"; do
-    echo "${path}=${DISK_MODES[$path]}" >> "$MERGERFS_MODES_FILE"
-  done
+  {
+    for path in "${!DISK_MODES[@]}"; do
+      echo "${path}=${DISK_MODES[$path]}"
+    done
+  } > "$MERGERFS_MODES_FILE"
   _own "$MERGERFS_MODES_FILE"
 }
 
@@ -1065,8 +1069,8 @@ _mergerfs_show_status() {
       mode="${DISK_MODES[$path]}"
       size="n/a"; used="n/a"
       if [[ -d "$path" ]]; then
-        size=$(df -h "$path" 2>/dev/null | awk 'NR==2{print $2}') || size="n/a"
-        used=$(df -h "$path" 2>/dev/null | awk 'NR==2{print $5}') || used="n/a"
+        read -r size used _ < <(df -h "$path" 2>/dev/null | awk 'NR==2{print $2, $5}')
+        size="${size:-n/a}"; used="${used:-n/a}"
       fi
       case "$mode" in
         RW) col="${GREEN}" ;; RO) col="${YELLOW}" ;; NC) col="${CYAN}" ;; *) col="${RESET}" ;;
@@ -1270,10 +1274,11 @@ _mergerfs_show_pool_detail() {
     if mountpoint -q "$MERGERFS_POOL" 2>/dev/null; then
       echo -e "  ${BOLD}Pool mounted     :${RESET} ${GREEN}yes${RESET}"
       local pool_size pool_used pool_avail pool_pct
-      pool_size=$(df -h "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $2}') || pool_size="n/a"
-      pool_used=$(df -h "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $3}') || pool_used="n/a"
-      pool_avail=$(df -h "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $4}') || pool_avail="n/a"
-      pool_pct=$(df -h  "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $5}') || pool_pct="n/a"
+      read -r pool_size pool_used pool_avail pool_pct _ < <(
+        df -h "$MERGERFS_POOL" 2>/dev/null | awk 'NR==2{print $2, $3, $4, $5}'
+      )
+      pool_size="${pool_size:-n/a}"; pool_used="${pool_used:-n/a}"
+      pool_avail="${pool_avail:-n/a}"; pool_pct="${pool_pct:-n/a}"
       echo -e "  ${BOLD}Pool size        :${RESET} ${pool_size}  used: ${pool_used}  free: ${pool_avail}  (${pool_pct} full)"
     else
       echo -e "  ${BOLD}Pool mounted     :${RESET} ${YELLOW}no — run option 1 or reboot to mount${RESET}"
@@ -1303,9 +1308,10 @@ _mergerfs_show_pool_detail() {
         if [[ -n "$fmnt_dev" ]]; then
           mounted_marker=" ${GREEN}● ${fmnt_dev}${RESET}"
           # Only use df on confirmed-mounted paths for accurate per-drive stats
-          size=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $2}') || size="n/a"
-          used=$(df  -h "$path" 2>/dev/null | awk 'NR==2{print $3}') || used="n/a"
-          avail=$(df -h "$path" 2>/dev/null | awk 'NR==2{print $4}') || avail="n/a"
+          read -r size used avail _ < <(
+            df -h "$path" 2>/dev/null | awk 'NR==2{print $2, $3, $4}'
+          )
+          size="${size:-n/a}"; used="${used:-n/a}"; avail="${avail:-n/a}"
         else
           mounted_marker=" ${YELLOW}○ not mounted${RESET}"
           size="n/a"; used="n/a"; avail="n/a"
@@ -3603,17 +3609,45 @@ health_check() {
   printf "%-24s %-15s %-20s\n" "NAME" "STATUS" "HEALTH"
   echo "─────────────────────────────────────────────────────"
 
+  # Collect container names first
+  local names=()
   while IFS= read -r name; do
-    local status health
-    status=$(docker inspect --format='{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
-    health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$name" 2>/dev/null || echo "n/a")
-    case "$status" in
-      running)  col="${GREEN}" ;;
-      exited)   col="${RED}"   ;;
-      *)        col="${YELLOW}" ;;
-    esac
-    printf "${col}%-24s %-15s %-20s${RESET}\n" "$name" "$status" "$health"
-  done < <(compose ps --format '{{.Name}}' 2>/dev/null)
+    [[ -n "$name" ]] && names+=("$name")
+  done < <(compose_selected ps --format '{{.Name}}' 2>/dev/null)
+
+  if [[ ${#names[@]} -gt 0 ]]; then
+    # Single docker inspect call for all containers — avoid N*2 subprocesses
+    local inspect_out
+    inspect_out=$(docker inspect "${names[@]}" 2>/dev/null)
+
+    local name
+    for name in "${names[@]}"; do
+      local status health col
+      status=$(printf '%s' "$inspect_out" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+name = sys.argv[1]
+c = next((x for x in data if x['Name'].lstrip('/') == name), None)
+print(c['State']['Status'] if c else 'not found')
+" "$name" 2>/dev/null || echo "not found")
+      health=$(printf '%s' "$inspect_out" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+name = sys.argv[1]
+c = next((x for x in data if x['Name'].lstrip('/') == name), None)
+if c and c['State'].get('Health'):
+    print(c['State']['Health']['Status'])
+else:
+    print('n/a')
+" "$name" 2>/dev/null || echo "n/a")
+      case "$status" in
+        running)  col="${GREEN}" ;;
+        exited)   col="${RED}"   ;;
+        *)        col="${YELLOW}" ;;
+      esac
+      printf "${col}%-24s %-15s %-20s${RESET}\n" "$name" "$status" "$health"
+    done
+  fi
 
   echo "─────────────────────────────────────────────────────"
 
@@ -3974,6 +4008,10 @@ check_port_conflicts() {
   )
 
   local conflicts=0 key entry port proto label
+  # Snapshot ss output once per protocol — avoids 2 ss forks per port entry
+  local _ss_tcp _ss_udp
+  _ss_tcp=$(ss -tlnp 2>/dev/null)
+  _ss_udp=$(ss -ulnp 2>/dev/null)
   for key in "${CONTAINER_ORDER[@]}"; do
     [[ -z "${SELECTED[$key]+_}" ]] && continue
     [[ -z "${_PM[$key]+_}" ]] && continue
@@ -3981,14 +4019,12 @@ check_port_conflicts() {
       port="${entry%%/*}"
       proto="${entry##*/}"; proto="${proto%%:*}"
       label="${entry##*:}"
-      local ss_flag="-tlnp"; [[ "$proto" == "udp" ]] && ss_flag="-ulnp"
-      if ss $ss_flag 2>/dev/null | grep -q ":${port} "; then
-        local holder
-        holder=$(ss $ss_flag 2>/dev/null | awk "/:${port} /{print \$NF}" | head -1)
-        echo "$holder" | grep -qi "docker\|proxy" && continue
-        warn "Port ${port}/${proto} (${label}) is already in use by: ${holder:-unknown}"
-        conflicts=$((conflicts + 1))
-      fi
+      local ss_out; [[ "$proto" == "udp" ]] && ss_out="$_ss_udp" || ss_out="$_ss_tcp"
+      local holder; holder=$(printf '%s' "$ss_out" | awk "/:${port} /{print \$NF}" | head -1)
+      [[ -z "$holder" ]] && continue
+      printf '%s' "$holder" | grep -qi "docker\|proxy" && continue
+      warn "Port ${port}/${proto} (${label}) is already in use by: ${holder:-unknown}"
+      conflicts=$((conflicts + 1))
     done
   done
 
@@ -6477,9 +6513,12 @@ _tuning_show_current() {
   )
 
   local param val
+  # Fetch all parameters in a single sysctl call instead of one per param
+  local sysctl_out
+  sysctl_out=$(sysctl "${params[@]}" 2>/dev/null)
   for param in "${params[@]}"; do
-    val=$(sysctl -n "$param" 2>/dev/null || echo "n/a")
-    printf "    %-40s %s\n" "$param" "$val"
+    val=$(printf '%s' "$sysctl_out" | awk -F' = ' "/^${param} /{print \$2; exit}")
+    printf "    %-40s %s\n" "$param" "${val:-n/a}"
   done
 
   local thp

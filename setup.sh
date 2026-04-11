@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.2.3"
+FRIENDBOX_VERSION="2.2.4"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -5098,6 +5098,7 @@ _dns_get_subdomains() {
     [plex]="plex"             [jellyfin]="jellyfin"
     [sonarr]="sonarr"         [radarr]="radarr"
     [prowlarr]="prowlarr"     [bazarr]="bazarr"
+    [lidarr]="lidarr"
     [qbittorrent]="qbt"       [qbittorrentvpn]="qbtvpn"
     [delugevpn]="deluge"      [nzbget]="nzbget"
     [seerr]="seerr"   [ombi]="ombi"
@@ -5203,14 +5204,29 @@ _dns_update_cloudflare() {
   while IFS= read -r sub; do subdomains+=("$sub"); done < <(_dns_get_subdomains)
   subdomains+=("@")
 
+  # Fetch all existing A records for the zone in a single API call, then look
+  # up record IDs in memory — avoids one GET per subdomain (was ~2N curl calls,
+  # now N+1).
+  local existing_json
+  existing_json=$(curl -fsSL --max-time 15 \
+    -H "X-Auth-Email: ${DNS_CF_EMAIL}" -H "X-Auth-Key: ${DNS_CF_API_KEY}" \
+    -H "Content-Type: application/json" \
+    "https://api.cloudflare.com/client/v4/zones/${DNS_CF_ZONE_ID}/dns_records?type=A&per_page=100" \
+    2>/dev/null) || existing_json=""
+
   local updated=0 failed=0 sub name existing_id payload result
   for sub in "${subdomains[@]}"; do
     [[ "$sub" == "@" ]] && name="${DNS_DOMAIN}" || name="${sub}.${DNS_DOMAIN}"
-    existing_id=$(curl -fsSL --max-time 10 \
-      -H "X-Auth-Email: ${DNS_CF_EMAIL}" -H "X-Auth-Key: ${DNS_CF_API_KEY}" \
-      -H "Content-Type: application/json" \
-      "https://api.cloudflare.com/client/v4/zones/${DNS_CF_ZONE_ID}/dns_records?type=A&name=${name}" \
-      2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    # Extract the record ID for this name from the bulk response
+    existing_id=$(printf '%s' "$existing_json" \
+      | grep -o "\"id\":\"[^\"]*\"[^}]*\"name\":\"${name}\"" \
+      | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    # Also try the reverse field order that the CF API sometimes returns
+    if [[ -z "$existing_id" ]]; then
+      existing_id=$(printf '%s' "$existing_json" \
+        | grep -o "\"name\":\"${name}\"[^}]*\"id\":\"[^\"]*\"" \
+        | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    fi
     payload="{\"type\":\"A\",\"name\":\"${name}\",\"content\":\"${ip}\",\"ttl\":120,\"proxied\":false}"
     if [[ -n "$existing_id" ]]; then
       result=$(curl -fsSL --max-time 10 -X PUT \
@@ -5495,7 +5511,10 @@ source "${INSTALL_DIR}/.dns_config" 2>/dev/null || exit 0
 source "${INSTALL_DIR}/.env" 2>/dev/null || true
 [[ -z "$DNS_PROVIDER" ]] && exit 0
 
-IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null) || exit 1
+IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null) \
+  || IP=$(curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null) \
+  || IP=$(curl -fsSL --max-time 5 https://icanhazip.com 2>/dev/null) \
+  || exit 1
 CACHE_FILE="/tmp/.friendbox_dns_ip"
 LAST_IP=$(cat "$CACHE_FILE" 2>/dev/null || true)
 [[ "$IP" == "$LAST_IP" ]] && exit 0
@@ -5520,7 +5539,7 @@ case "$DNS_PROVIDER" in
     ;;
 esac
 # Only cache the IP on confirmed success — a failed update must retry next run
-"$_ok" && echo "$IP" > "$CACHE_FILE"
+[[ "$_ok" == "true" ]] && echo "$IP" > "$CACHE_FILE"
 CRONEOF
   chmod +x "$cron_script"
   local cron_file="/etc/cron.d/friendbox-dns"
@@ -6091,8 +6110,9 @@ print_urls() {
       [teamspeak6]="ts6.${d}:9987 (UDP)"
       [mumble]="mumble.${d}:64738"           [ampmc]="https://amp.${d}"
       [netbootxyz]="https://netboot.${d}"
-      [homeassistant]="https://ha.${d}"         [filezilla]="https://filezilla.${d}"
-      [heimdall]="https://heimdall.${d}"        [doplarr]="https://doplarr.${d}"
+      [homeassistant]="http://${host_ip}:8123  (host network — not routable via Traefik)"
+      [filezilla]="https://filezilla.${d}"
+      [heimdall]="https://heimdall.${d}"        [doplarr]="(no web UI — Discord bot only)"
       [unifi]="https://unifi.${d}"              [actual]="https://actual.${d}"
       [homarr]="https://homarr.${d}"            [wgeasy]="https://wg.${d}"
       [fail2ban]="(no web UI — host network)"

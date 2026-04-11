@@ -352,6 +352,41 @@ services:
       - "traefik.http.routers.bazarr.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
 
+  # ── Lidarr — music library manager ──────────────────────────────────────
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    profiles: [lidarr]
+    restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - medianet
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/lidarr:/config
+      - ${MEDIA_ROOT}/music:/data/media/music
+      - ${MEDIA_ROOT}/downloads:/data/downloads
+    ports:
+      - "8686:8686"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=medianet"
+      - "traefik.http.routers.lidarr.rule=Host(`lidarr.${DOMAIN}`)"
+      - "traefik.http.routers.lidarr.entrypoints=websecure"
+      - "traefik.http.routers.lidarr.tls=true"
+      - "traefik.http.routers.lidarr.middlewares=secHeaders@file,compress@file"
+      - "traefik.http.services.lidarr.loadbalancer.server.port=8686"
+
   # ── Ombi — media request manager ──────────────────────────────────────────
   ombi:
     image: lscr.io/linuxserver/ombi:latest
@@ -989,12 +1024,9 @@ services:
       - "traefik.http.routers.actual.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.actual.loadbalancer.server.port=5006"
 
-  # ── Homarr — modern application dashboard ──────────────────────────────────
-  # New Homarr (homarr-labs) requires a SECRET_ENCRYPTION_KEY — a 64-char hex
-  # string generated once and stored in .env. The container will not start
-  # without it. Generate via: openssl rand -hex 32
+  # ── Homarr — modern application dashboard (pinned 0.16.1) ───────────────────
   homarr:
-    image: ghcr.io/homarr-labs/homarr:latest
+    image: ghcr.io/ajnart/homarr:0.16.1
     container_name: homarr
     profiles: [homarr]
     restart: unless-stopped
@@ -1008,13 +1040,10 @@ services:
         max-file: "3"
     networks:
       - medianet
-    environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
-      - TZ=${TZ}
-      - SECRET_ENCRYPTION_KEY=${HOMARR_SECRET_KEY:-}
     volumes:
-      - ${CONFIG_ROOT}/homarr:/appdata
+      - ${CONFIG_ROOT}/homarr/configs:/app/data/configs
+      - ${CONFIG_ROOT}/homarr/icons:/app/public/icons
+      - ${CONFIG_ROOT}/homarr/data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "7575:7575"

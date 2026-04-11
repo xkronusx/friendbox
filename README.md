@@ -2,7 +2,7 @@
 
 A fully automated, menu-driven Docker media server stack for Ubuntu 24.04 LTS.
 
-**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · Homarr · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
+**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · Homarr · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
 ---
 
@@ -144,7 +144,7 @@ Toggle services with their number, press `d` when done. Your selection persists 
 
 | `homeassistant` | Home automation platform — uses host networking for device discovery |
 | `heimdall` | Simple application dashboard |
-| `homarr` | Modern application dashboard (homarr-labs) |
+| `homarr` | Modern application dashboard (pinned 0.16.1) |
 | `filezilla` | FTP/SFTP client with browser-based GUI |
 | `doplarr` | Discord bot for Seerr/Sonarr/Radarr media requests |
 | `unifi` | Ubiquiti UniFi network controller (includes MongoDB sidecar) |
@@ -315,6 +315,7 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Sonarr | `https://sonarr.yourdomain.com` | Add root folder `/data/media/tv`, connect Prowlarr + download client. **Enable hardlinks:** Settings → Media Management → tick *Use Hardlinks instead of Copy* |
 | Radarr | `https://radarr.yourdomain.com` | Add root folder `/data/media/movies`, connect Prowlarr + download client. **Enable hardlinks:** Settings → Media Management → tick *Use Hardlinks instead of Copy* |
 | Prowlarr | `https://prowlarr.yourdomain.com` | Add indexers, sync to Sonarr/Radarr |
+| Lidarr | `https://lidarr.yourdomain.com` (`http://IP:8686` direct) | No default credentials — set up auth in Settings → General |
 | Bazarr | `https://bazarr.yourdomain.com` | Connect Sonarr + Radarr, configure subtitle providers |
 | qBittorrent | `https://qbt.yourdomain.com` (`http://IP:8082` direct) | Default: `admin` / `adminadmin` — **change immediately** |
 | qBittorrentVPN | `https://qbtvpn.yourdomain.com` (`http://IP:8181` direct) | Same default credentials — **change immediately** |
@@ -325,7 +326,7 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 
 | Home Assistant | `http://IP:8123` (host network — not routable via Traefik) | Create admin account on first visit |
 | Heimdall | `https://heimdall.yourdomain.com` (`http://IP:8091` direct) | No auth by default — add apps from the dashboard |
-| Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | Set up on first visit — requires encryption key (option 5) |
+| Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | No auth by default — configure from the dashboard |
 | FileZilla | `https://filezilla.yourdomain.com` (`http://IP:3300` direct) | No auth by default — add site manager entries for your servers |
 | Doplarr | No web UI — Discord bot only | Invite bot to your server, use slash commands |
 | UniFi | `https://unifi.yourdomain.com` (`https://IP:8443` direct) | Create admin account on first visit. Inform port for devices: `IP:8880` |

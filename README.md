@@ -144,7 +144,7 @@ Toggle services with their number, press `d` when done. Your selection persists 
 
 | `homeassistant` | Home automation platform — uses host networking for device discovery |
 | `heimdall` | Simple application dashboard |
-| `homarr` | Modern application dashboard (pinned 0.16.1) |
+| `homarr` | Modern application dashboard |
 | `filezilla` | FTP/SFTP client with browser-based GUI |
 | `doplarr` | Discord bot for Seerr/Sonarr/Radarr media requests |
 | `unifi` | Ubiquiti UniFi network controller (includes MongoDB sidecar) |

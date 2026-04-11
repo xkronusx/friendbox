@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.2.2"
+FRIENDBOX_VERSION="2.2.3"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -258,7 +258,7 @@ declare -A CONTAINER_DESC=(
   [doplarr]="Discord bot for media requests via Seerr/Sonarr/Radarr"
   [unifi]="Ubiquiti UniFi network controller"
   [actual]="Local-first personal finance / budgeting"
-  [homarr]="Modern application dashboard (pinned 0.16.1)"
+  [homarr]="Modern application dashboard"
   [wgeasy]="Self-hosted WireGuard VPN server (inbound — for remote access to your network)"
 )
 

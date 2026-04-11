@@ -1024,9 +1024,9 @@ services:
       - "traefik.http.routers.actual.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.actual.loadbalancer.server.port=5006"
 
-  # ── Homarr — modern application dashboard (pinned 0.16.1) ───────────────────
+  # ── Homarr — modern application dashboard ────────────────────────────────────
   homarr:
-    image: ghcr.io/ajnart/homarr:0.16.1
+    image: ghcr.io/ajnart/homarr:latest
     container_name: homarr
     profiles: [homarr]
     restart: unless-stopped

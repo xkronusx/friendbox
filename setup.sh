@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.2.4"
+FRIENDBOX_VERSION="2.2.5"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -1419,7 +1419,9 @@ _mergerfs_clear_mountpoint() {
       1)
         echo ""
         info "Stopping all running Docker containers..."
-        docker stop $(docker ps -q 2>/dev/null) 2>/dev/null || true
+        local _running=()
+        mapfile -t _running < <(docker ps -q 2>/dev/null)
+        [[ ${#_running[@]} -gt 0 ]] && docker stop "${_running[@]}" 2>/dev/null || true
         sleep 2
         ;;
       2)
@@ -6263,42 +6265,72 @@ update_stack() {
   require_root
   sync_repo
 
-  # Snapshot digests before pull to detect what actually changed
+  # Build profile args directly from SELECTED — same pattern as compose_selected,
+  # avoids the get_profile_args subshell + read-back loop.
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
-  local _prof=(); local _l
-  while IFS= read -r _l; do [[ -n "$_l" ]] && _prof+=("$_l"); done \
-    < <(get_profile_args)
+  load_selected
+  local _prof=() _key
+  for _key in "${CONTAINER_ORDER[@]}"; do
+    [[ -n "${SELECTED[$_key]+_}" ]] && _prof+=(--profile "$_key")
+  done
 
-  declare -A _before=()
-  local _img
+  # Capture the image list once — it doesn't change between before and after.
+  local _images=()
   while IFS= read -r _img; do
-    [[ -z "$_img" ]] && continue
-    local _d; _d=$(docker inspect --format='{{index .RepoDigests 0}}' "$_img" 2>/dev/null || true)
-    _before[$_img]="${_d:-none}"
+    [[ -n "$_img" ]] && _images+=("$_img")
   done < <(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
     "${_prof[@]}" config --images 2>/dev/null)
+
+  # Snapshot digests before pull — single batch inspect call instead of one per image.
+  declare -A _before=()
+  if [[ ${#_images[@]} -gt 0 ]]; then
+    local _before_json _img
+    _before_json=$(docker inspect "${_images[@]}" 2>/dev/null || true)
+    for _img in "${_images[@]}"; do
+      local _d
+      _d=$(printf '%s' "$_before_json" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+name = sys.argv[1]
+c = next((x for x in data if name in (x.get('RepoTags') or []) + (x.get('RepoDigests') or [])), None)
+digests = c.get('RepoDigests', []) if c else []
+print(digests[0] if digests else 'none')
+" "$_img" 2>/dev/null || echo "none")
+      _before[$_img]="${_d}"
+    done
+  fi
 
   _jellyfin_fix_markers
   compose_selected pull
   compose_selected up -d
 
-  # Report changes
+  # Snapshot digests after pull — another single batch call.
   local _updated=0 _same=0
   echo ""
   echo -e "${BOLD}Image update summary:${RESET}"
-  while IFS= read -r _img; do
-    [[ -z "$_img" ]] && continue
-    local _nd; _nd=$(docker inspect --format='{{index .RepoDigests 0}}' "$_img" 2>/dev/null || true)
-    local _lbl="${_img##*/}"
-    if [[ "${_before[$_img]:-none}" != "${_nd:-none}" ]]; then
-      echo -e "  ${GREEN}↑ updated${RESET}   ${_lbl}"
-      _updated=$((_updated+1))
-    else
-      echo -e "  ${DIM}  current   ${_lbl}${RESET}"
-      _same=$((_same+1))
-    fi
-  done < <(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
-    "${_prof[@]}" config --images 2>/dev/null)
+  if [[ ${#_images[@]} -gt 0 ]]; then
+    local _after_json
+    _after_json=$(docker inspect "${_images[@]}" 2>/dev/null || true)
+    for _img in "${_images[@]}"; do
+      local _nd _lbl
+      _nd=$(printf '%s' "$_after_json" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+name = sys.argv[1]
+c = next((x for x in data if name in (x.get('RepoTags') or []) + (x.get('RepoDigests') or [])), None)
+digests = c.get('RepoDigests', []) if c else []
+print(digests[0] if digests else 'none')
+" "$_img" 2>/dev/null || echo "none")
+      _lbl="${_img##*/}"
+      if [[ "${_before[$_img]:-none}" != "${_nd}" ]]; then
+        echo -e "  ${GREEN}↑ updated${RESET}   ${_lbl}"
+        _updated=$((_updated+1))
+      else
+        echo -e "  ${DIM}  current   ${_lbl}${RESET}"
+        _same=$((_same+1))
+      fi
+    done
+  fi
   echo ""
   [[ $_updated -gt 0 ]] \
     && success "${_updated} image(s) updated, ${_same} already current." \

@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.1.5"
+FRIENDBOX_VERSION="2.1.6"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -5554,6 +5554,7 @@ _dns_srv_cloudflare() {
   # e.g.: _srv_upsert "_ts3" "_udp" 1 1 9987 "teamspeak.example.com"
   _srv_upsert() {
     local svc="$1" proto="$2" pri="$3" wt="$4" port="$5" target="$6"
+    # Full DNS record name: _ts3._udp.cooldog.club
     local record_name="${svc}.${proto}.${DNS_DOMAIN}"
 
     # Check for existing record by matching name
@@ -5568,9 +5569,13 @@ for r in data.get('result',[]):
         print(r['id']); break
 " 2>/dev/null || true)
 
+    # Modern Cloudflare API format (2024+):
+    # - "name" is a top-level field set to the full record name (_svc._proto.domain)
+    # - "data" contains only priority, weight, port, target
+    # - service, proto, and name are NOT inside data{} (deprecated, removed from API)
     local payload
-    payload=$(printf '{"type":"SRV","data":{"service":"%s","proto":"%s","name":"%s","priority":%d,"weight":%d,"port":%d,"target":"%s"}}' \
-      "$svc" "$proto" "$DNS_DOMAIN" "$pri" "$wt" "$port" "$target")
+    payload=$(printf '{"type":"SRV","name":"%s","data":{"priority":%d,"weight":%d,"port":%d,"target":"%s"}}' \
+      "$record_name" "$pri" "$wt" "$port" "$target")
 
     local result
     if [[ -n "$existing_id" ]]; then

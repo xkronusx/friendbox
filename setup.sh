@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.2.5"
+FRIENDBOX_VERSION="2.2.6"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -877,17 +877,116 @@ _mergerfs_save_pool() {
   _own "$MERGERFS_POOL_FILE"
 }
 
+# minfreespace for the pool. With category.create=ff, mergerfs fills the first
+# branch until its free space drops below this value, then moves on. If NO
+# branch has at least this much free space, every create fails with ENOSPC — so
+# the value is scaled to the smallest writable (RW) disk: 5%, clamped to 4G-50G.
+# Override with MERGERFS_MINFREESPACE=<size> (e.g. 100G) in /opt/friendbox/.env.
+_mergerfs_minfreespace() {
+  if [[ -n "${MERGERFS_MINFREESPACE:-}" ]]; then
+    echo "$MERGERFS_MINFREESPACE"
+    return 0
+  fi
+  local smallest=0 p sz want
+  for p in "${!DISK_MODES[@]}"; do
+    [[ "${DISK_MODES[$p]}" == "RW" && -d "$p" ]] || continue
+    sz=$(df -BG --output=size "$p" 2>/dev/null | awk 'NR==2{gsub(/[^0-9]/,"",$1); print $1}')
+    [[ "$sz" =~ ^[0-9]+$ ]] || continue
+    if [[ "$sz" -gt 0 ]] && { [[ "$smallest" -eq 0 ]] || [[ "$sz" -lt "$smallest" ]]; }; then
+      smallest="$sz"
+    fi
+  done
+  want=$(( smallest / 20 ))
+  if [[ "$want" -lt 4 ]];  then want=4;  fi
+  if [[ "$want" -gt 50 ]]; then want=50; fi
+  echo "${want}G"
+}
+
+# Keeps Docker from starting unless the pool is mounted. Without this, a slow or
+# failed pool mount at boot lets containers start against the bare /mnt/media
+# directory and write straight onto the OS disk. Opt out with
+# MERGERFS_DOCKER_GUARD=0 in /opt/friendbox/.env.
+_mergerfs_docker_guard() {
+  local pool_path="$1"
+  local dropin_dir="/etc/systemd/system/docker.service.d"
+  local dropin="${dropin_dir}/friendbox-mergerfs.conf"
+  command -v systemctl &>/dev/null || return 0
+
+  if [[ "${MERGERFS_DOCKER_GUARD:-1}" == "0" ]]; then
+    if [[ -f "$dropin" ]]; then
+      rm -f "$dropin"
+      rmdir "$dropin_dir" 2>/dev/null || true
+      info "Docker mount guard removed (MERGERFS_DOCKER_GUARD=0)."
+    fi
+    return 0
+  fi
+
+  local want
+  want=$(printf '%s\n' \
+    "# Managed by Friendbox. Docker will not start unless the MergerFS pool is mounted," \
+    "# so containers can never write into the empty mount point on the OS disk." \
+    "# Disable with MERGERFS_DOCKER_GUARD=0 in ${ENV_FILE}." \
+    "[Unit]" \
+    "RequiresMountsFor=${pool_path}")
+  if [[ "$(cat "$dropin" 2>/dev/null)" != "$want" ]]; then
+    mkdir -p "$dropin_dir"
+    printf '%s\n' "$want" > "$dropin"
+    success "Docker mount guard written: ${dropin}"
+  fi
+}
+
+# Running containers keep the bind mounts they were started with. After the pool
+# is (re)mounted they still point at the old mergerfs instance — or at the bare
+# directory underneath it — until restarted. Offer to restart the affected ones.
+_mergerfs_restart_pool_containers() {
+  local pool_path="${1%/}"
+  command -v docker &>/dev/null || return 0
+  local ids=() names=() id src hit
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    hit=0
+    while IFS= read -r src; do
+      if [[ "$src" == "$pool_path" || "$src" == "$pool_path/"* ]]; then hit=1; break; fi
+    done < <(docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$id" 2>/dev/null)
+    if [[ "$hit" -eq 1 ]]; then
+      ids+=("$id")
+      names+=("$(docker inspect -f '{{.Name}}' "$id" 2>/dev/null | sed 's|^/||')")
+    fi
+  done < <(docker ps -q 2>/dev/null)
+
+  [[ ${#ids[@]} -gt 0 ]] || return 0
+  echo ""
+  warn "These running containers still hold the previous mount of ${pool_path}:"
+  local n
+  for n in "${names[@]}"; do echo -e "    ${YELLOW}${n}${RESET}"; done
+  echo ""
+  read -rp "  Restart them now so they see the new mount? [Y/n] " yn
+  if [[ "$yn" =~ ^[Nn]$ ]]; then
+    warn "Not restarted — restart them (or run option 9, redeploy) before relying on the pool."
+    return 0
+  fi
+  if docker restart "${ids[@]}" >/dev/null 2>&1; then
+    success "Restarted ${#ids[@]} container(s)."
+  else
+    warn "Some containers could not be restarted — check: docker ps -a"
+  fi
+}
+
 _mergerfs_build_branch_list() {
   # For fstab: mergerfs v2 parses path=MODE in the source/device field.
   # RW/NC branches first, then RO. Format: /mnt/disk1=RW:/mnt/disk2=RO
+  # Paths are sorted (natural order: disk2 before disk10). With category.create=ff
+  # the branch order IS the fill order, and bash associative arrays have no
+  # defined iteration order — so without sorting it could change between mounts.
   local rw_parts=() ro_parts=() path
-  for path in "${!DISK_MODES[@]}"; do
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
     case "${DISK_MODES[$path]}" in
       RW) rw_parts+=("${path}=RW") ;;
       RO) ro_parts+=("${path}=RO") ;;
       NC) rw_parts+=("${path}=NC") ;;
     esac
-  done
+  done < <(printf '%s\n' "${!DISK_MODES[@]}" | sort -V)
   local all=()
   [[ ${#rw_parts[@]} -gt 0 ]] && all+=("${rw_parts[@]}")
   [[ ${#ro_parts[@]} -gt 0 ]] && all+=("${ro_parts[@]}")
@@ -897,6 +996,7 @@ _mergerfs_build_branch_list() {
 
 _mergerfs_write_fstab() {
   local pool_path="$1"
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   local branch_list
   branch_list=$(_mergerfs_build_branch_list)
 
@@ -921,14 +1021,48 @@ _mergerfs_write_fstab() {
     success "fuse.conf: created with user_allow_other."
   fi
 
-  # Remove any existing mergerfs entry for this pool
-  sed -i "\|${pool_path}.*fuse.mergerfs|d" /etc/fstab
+  # Keep a copy of fstab as it was before this change.
+  cp -a /etc/fstab /etc/fstab.friendbox.bak 2>/dev/null || true
 
-  # mergerfs v2 fstab format — uid/gid ensures pool mount reports correct
-  # ownership to Docker containers running as PUID.
+  # Remove any existing mergerfs entry for exactly this mount point
+  # (matches on the mount-point and fstype fields, not a loose substring).
+  local _tmp
+  _tmp=$(mktemp)
+  awk -v p="$pool_path" '!($1 !~ /^#/ && $2 == p && $3 == "fuse.mergerfs")' /etc/fstab > "$_tmp" \
+    && cat "$_tmp" > /etc/fstab
+  rm -f "$_tmp"
+
+  # mergerfs v2 fstab format — uid/gid makes the pool report ownership as PUID:PGID
+  # to Docker containers.
+  # minfreespace: see _mergerfs_minfreespace (0 would fill disks to 100%).
+  # statfs_ignore=ro: free space reported by the pool ignores RO and NC branches,
+  #   so Sonarr/Radarr/qBittorrent don't see space they can never write to.
+  # nofail + x-systemd.requires-mounts-for: fstab-only options. nofail keeps a
+  #   failed pool mount from blocking boot; requires-mounts-for makes systemd mount
+  #   every branch disk BEFORE the pool, so it is never built from empty directories.
   local uid="${PUID:-1000}" gid="${PGID:-1000}"
-  echo "${branch_list}  ${pool_path}  fuse.mergerfs  defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=0,moveonenospc=true,fsname=mergerpool  0  0" >> /etc/fstab
-  success "fstab updated."
+  local minfree
+  minfree=$(_mergerfs_minfreespace)
+  local opts="defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=${minfree},moveonenospc=true,statfs_ignore=ro,fsname=mergerpool,nofail"
+  local _bp
+  while IFS= read -r _bp; do
+    [[ -n "$_bp" ]] && opts+=",x-systemd.requires-mounts-for=${_bp}"
+  done < <(printf '%s\n' "${!DISK_MODES[@]}" | sort -V)
+  echo "${branch_list}  ${pool_path}  fuse.mergerfs  ${opts}  0  0" >> /etc/fstab
+
+  _mergerfs_docker_guard "$pool_path"
+  command -v systemctl &>/dev/null && systemctl daemon-reload 2>/dev/null || true
+  success "fstab updated (minfreespace=${minfree}; previous fstab saved to /etc/fstab.friendbox.bak)."
+}
+
+# Fix ownership on a branch without rewriting every inode. chown -R re-chowns
+# every file on the disk even when it is already correct, which is very slow on
+# multi-TB disks; this only touches entries whose owner/group actually differ.
+# -xdev stays on the branch's own filesystem; lost+found is skipped.
+_mergerfs_fix_owner() {
+  local dir="${1%/}" uid="$2" gid="$3"
+  find "$dir" -xdev -path "${dir}/lost+found" -prune -o \
+    \( ! -uid "$uid" -o ! -gid "$gid" \) -exec chown -h "${uid}:${gid}" {} + 2>/dev/null || true
 }
 
 _mergerfs_provision_branches() {
@@ -968,7 +1102,7 @@ _mergerfs_provision_branches() {
       # RO branch — only fix ownership on existing content, never create new dirs.
       # Creating subdirs on a RO branch would give mergerfs a writable-looking
       # directory entry and break RO semantics.
-      chown -R "${uid}:${gid}" "$_p" 2>/dev/null || true
+      _mergerfs_fix_owner "$_p" "$uid" "$gid"
       success "  ${_p}  [${uid}:${gid}] (RO — ownership fixed, no subdirs created)"
     else
       # RW/NC branch — create the standard subdirectory structure
@@ -976,7 +1110,7 @@ _mergerfs_provision_branches() {
       for sub in "${subdirs[@]}"; do
         mkdir -p "${_p}/${sub}"
       done
-      chown -R "${uid}:${gid}" "$_p" 2>/dev/null || true
+      _mergerfs_fix_owner "$_p" "$uid" "$gid"
       success "  ${_p}  [${uid}:${gid}] (${_mode} — subdirs created, ownership fixed)"
     fi
     created=$((created + 1))
@@ -990,7 +1124,8 @@ _mergerfs_remount() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
   local uid="${PUID:-1000}" gid="${PGID:-1000}"
 
-  # branch_list (with =MODE) is used by fstab; plain_paths for direct mount below
+  # branch_list (with =MODE) is only checked here; the actual mount below goes
+  # through the fstab entry that _mergerfs_write_fstab generates.
   local branch_list
   branch_list=$(_mergerfs_build_branch_list)
 
@@ -1024,13 +1159,10 @@ _mergerfs_remount() {
     }
   fi
 
-  # mergerfs v2 binary accepts path=MODE in the source argument (same as fstab).
-  # uid/gid: pool mount reports correct ownership to Docker containers as PUID.
-  local mount_out
-  mount_out=$(mergerfs \
-    -o allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=0,moveonenospc=true,fsname=mergerpool \
-    "${branch_list}" "${pool_path}" 2>&1)
-  local mount_rc=$?
+  # Mount through the fstab entry written above, so the live mount always uses
+  # exactly the options a reboot would use (one source of truth).
+  local mount_out mount_rc=0
+  mount_out=$(mount "$pool_path" 2>&1) || mount_rc=$?
   if [[ $mount_rc -eq 0 ]]; then
     success "Pool mounted at ${pool_path}."
   else
@@ -1043,6 +1175,9 @@ _mergerfs_remount() {
 
   # Fix ownership of pool root after mounting
   chown "${uid}:${gid}" "$pool_path" 2>/dev/null || true
+
+  # Running containers still hold the previous mount — offer to restart them.
+  _mergerfs_restart_pool_containers "$pool_path"
 }
 
 _mergerfs_show_status() {
@@ -1398,7 +1533,9 @@ _mergerfs_clear_mountpoint() {
   # ── Check for processes with open file handles ───────────────────────────────
   local open_procs=""
   if command -v lsof &>/dev/null; then
-    open_procs=$(lsof +D "$pool_path" 2>/dev/null | awk 'NR>1 {print $1, $2}' | sort -u)
+    # Naming the mount point lists open files on that filesystem. (lsof +D would
+    # recursively walk the entire pool — minutes on a large library.)
+    open_procs=$(timeout 30 lsof "$pool_path" 2>/dev/null | awk 'NR>1 {print $1, $2}' | sort -u)
   fi
 
   if [[ -n "$open_procs" ]]; then
@@ -1450,7 +1587,7 @@ _mergerfs_clear_mountpoint() {
       success "Pool detached (lazy unmount). Processes will finish with existing handles."
     else
       warn "Could not unmount ${pool_path}."
-      warn "Still in use — check with: lsof +D ${pool_path}"
+      warn "Still in use — check with: lsof ${pool_path}"
       return 1
     fi
   fi

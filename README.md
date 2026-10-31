@@ -71,7 +71,7 @@ If you have multiple physical drives to pool into a single path, set this up fir
 | `NC` | No-Create — existing files readable, no new files written here. Useful for an almost-full drive you want to drain gradually |
 | `RO` | Read-Only — no writes at all |
 
-MergerFS writes an `/etc/fstab` entry and mounts the pool live at `/mnt/media`. No reboot needed.
+MergerFS writes an `/etc/fstab` entry and mounts the pool live at `/mnt/media`. No reboot needed. The live mount is made from that same fstab entry, so it always uses exactly the options a reboot would. The previous fstab is saved to `/etc/fstab.friendbox.bak` each time Friendbox changes it.
 
 **If you skip MergerFS**, ensure your media root exists before continuing:
 ```bash
@@ -93,9 +93,28 @@ mkdir -p /mnt/media && chown 1000:1000 /mnt/media
 
 > **Drive details (option 5)** uses `findmnt` to detect whether a real filesystem is mounted at each drive path — not just whether the directory exists. It shows the device name (e.g. `● /dev/sdb1`) in green when mounted, `○ not mounted` in yellow when not, and `? path missing` in red when the directory is absent entirely.
 
-> **Subdirectory creation (option 7)** writes `movies/`, `tv/`, and `downloads/` (if any download client, Sonarr, or Radarr is selected) directly on each RW/NC branch disk. RO branches are never written to. Subdirs are never created through the mounted pool path.
+> **Subdirectory creation (option 7)** writes `movies/`, `tv/`, and `downloads/` (if any download client, Sonarr, or Radarr is selected) directly on each RW/NC branch disk. RO branches never get new directories (their file ownership is still corrected). Subdirs are never created through the mounted pool path.
 
-> **MergerFS and libtorrent:** Friendbox configures MergerFS with `auto_cache` and `sync_read` mount options, which are required for libtorrent-based clients (Deluge, qBittorrent) to write to the pool correctly. `auto_cache` enables the kernel page cache — without it, libtorrent's memory-mapped I/O returns "No such device". These options are applied automatically on every remount.
+> **MergerFS and libtorrent:** Friendbox mounts the pool with `cache.files=partial`, which lets libtorrent-based clients (Deluge, qBittorrent) use memory-mapped I/O on the pool. Without file caching, `mmap()` on a FUSE filesystem fails with "No such device". This is applied automatically on every remount.
+
+**MergerFS safety defaults** (set automatically):
+
+| Setting | What it does |
+|---|---|
+| `nofail` and `x-systemd.requires-mounts-for` (one per disk) | A missing or slow drive can't block boot, and the pool is only mounted after every one of its disks is, so it is never built from empty directories. |
+| Docker mount guard | A systemd drop-in (`/etc/systemd/system/docker.service.d/friendbox-mergerfs.conf`) stops Docker from starting unless the pool is mounted, so containers can never write into the empty mount point on your OS disk. If the pool fails to mount at boot, Docker stays down until you fix it. |
+| `minfreespace` | A disk counts as full once its free space drops below this value and new files go to the next RW disk. This stops disks being filled to 100%. If **every** RW disk is below it, writes fail with "No space left on device". |
+| `statfs_ignore=ro` | Free space reported by the pool ignores RO and NC disks, so Sonarr, Radarr and qBittorrent don't count space they can never write to. |
+| Disk order | Disks are ordered naturally (`disk2` before `disk10`), RW/NC first, then RO. New files go to the first RW disk with enough free space, so lower-numbered disks fill first. |
+
+Optional overrides in `/opt/friendbox/.env` (apply with option 7 → option 6):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MERGERFS_MINFREESPACE` | 5% of your smallest RW disk, clamped between `4G` and `50G` | Set a fixed size such as `100G`. Make it larger than the biggest single file you write; lower it if the pool reports no space while disks still have a little left. |
+| `MERGERFS_DOCKER_GUARD` | `1` | Set to `0` to remove the Docker drop-in and let Docker start without the pool. |
+
+> **After a remount:** running containers keep the mount they started with, so they don't see the new pool until restarted. Friendbox lists the running containers that use the pool and offers to restart them right after a successful mount.
 
 ---
 
@@ -141,7 +160,6 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `nzbget` | Usenet download client |
 | `seerr` | Media request & discovery manager (Jellyfin, Plex, Emby) |
 | `ombi` | Media request manager for Plex, Emby, and Jellyfin |
-
 | `homeassistant` | Home automation platform — uses host networking for device discovery |
 | `heimdall` | Simple application dashboard |
 | `homarr` | Modern application dashboard |
@@ -323,7 +341,6 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | NZBGet | `https://nzbget.yourdomain.com` (`http://IP:6789` direct) | Default: `nzbget` / `tegbzn6789` — **change immediately** |
 | Seerr | `https://seerr.yourdomain.com` | Sign in with Jellyfin, Plex, or Emby account |
 | Ombi | `https://ombi.yourdomain.com` (`http://IP:3579` direct) | Create admin account on first visit |
-
 | Home Assistant | `http://IP:8123` (host network — not routable via Traefik) | Create admin account on first visit |
 | Heimdall | `https://heimdall.yourdomain.com` (`http://IP:8091` direct) | No auth by default — add apps from the dashboard |
 | Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | No auth by default — configure from the dashboard |
@@ -358,7 +375,6 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | NZBGet | `http://nzbget:6789` |
 | Seerr | `http://seerr:5055` |
 | Ombi | `http://ombi:3579` |
-
 | Homarr | `http://homarr:7575` |
 | Heimdall | `http://heimdall:80` |
 | UniFi | `https://unifi:8443` |
@@ -540,6 +556,10 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 │   └── ...                           # One folder per container
 └── scripts/
     └── redeploy.sh                   # Standalone redeploy helper
+
+/etc/fstab.friendbox.bak              # fstab as it was before Friendbox's last MergerFS change
+/etc/systemd/system/docker.service.d/
+└── friendbox-mergerfs.conf           # Docker mount guard (requires the pool to be mounted)
 ```
 
 > `traefik.yml` is fully generated from your `.env` settings and ACME provider selection. Do not edit manually — it will be regenerated when you run option 4. Use option 4 to make changes.
@@ -592,15 +612,22 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - Run option 7 → option 7 to fix ownership and recreate subdirs only on RW/NC branches
 - Remount pool to apply current mode settings: option 7 → option 6
 
-**MergerFS pool not mounted after reboot**
+**MergerFS pool not mounted after reboot (or Docker not running)**
+- Docker will not start while the pool is unmounted (the mount guard). Check: `findmnt /mnt/media` and `systemctl status docker`
+- See why the mount failed: `journalctl -b -u mnt-media.mount` (the unit name follows your pool path)
 - Check fstab entry: `grep mergerfs /etc/fstab`
-- Manually remount: option 7 → option 6
-- Check individual drive mount status: option 7 → option 5
+- Check that every branch drive is mounted: option 7 → option 5
+- Manually remount: option 7 → option 6, then restart the containers when prompted
+- To let Docker start without the pool: set `MERGERFS_DOCKER_GUARD=0` in `/opt/friendbox/.env`, then option 7 → option 6
 
 **Download clients getting "No such device" errors on MergerFS**
-- This is caused by libtorrent's memory-mapped I/O (`mmap()`) on a FUSE filesystem. MergerFS requires `auto_cache` to be enabled for mmap to work — without it, every write attempt fails with ENXIO.
-- Fix: option 7 → option 6 (remount pool). The remount automatically applies the correct `auto_cache,sync_read` options and updates fstab.
+- This is caused by libtorrent's memory-mapped I/O (`mmap()`) on a FUSE filesystem. MergerFS needs file caching enabled (`cache.files=partial`) for mmap to work — without it, every write attempt fails with ENXIO.
+- Fix: option 7 → option 6 (remount pool). The remount applies the correct options and updates fstab. Accept the prompt to restart containers — a running client keeps the old mount until it is restarted.
 - For DelugeVPN specifically, ensure pre-allocation is disabled: Deluge web UI → Preferences → Downloads → uncheck *Allocate disk space before downloading*
+
+**"No space left on device" on the MergerFS pool while disks still show free space**
+- Every RW disk has less free space than `minfreespace` (see *MergerFS safety defaults* above), so none is eligible for new files. Free up space, add a disk, or set a smaller `MERGERFS_MINFREESPACE` in `/opt/friendbox/.env` and run option 7 → option 6.
+- Disks set to NC or RO never receive new files, however much space they have.
 
 **Containers running but ports unreachable (127.0.0.1:9000, LAN IP:port refused)**
 - This is most commonly Ubuntu's `ufw` firewall conflicting with Docker. ufw's default `FORWARD` policy is `DROP`, which blocks Docker's iptables DNAT rules even for connections on localhost.

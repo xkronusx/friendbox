@@ -31,7 +31,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.8.0"
+FRIENDBOX_VERSION="3.8.1"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -7506,7 +7506,7 @@ full_reset() {
             "$COMPOSE_OVERRIDE" "${INSTALL_DIR}/.media_on_os_disk_ok" "${INSTALL_DIR}/.media_paths_notice"; do
     [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
   done
-  rm -rf "${INSTALL_DIR}/.prev" "${INSTALL_DIR}"/.rollback.* "${INSTALL_DIR}/.log_opts_set" 2>/dev/null || true
+  rm -rf "${INSTALL_DIR}/.prev" "${INSTALL_DIR}"/.rollback.* "${INSTALL_DIR}/.log_opts_set" "${INSTALL_DIR}/.zswap_notice" 2>/dev/null || true
 
   # Remove system tuning files if they exist
   local _tune_conf="/etc/sysctl.d/99-friendbox.conf"
@@ -7723,6 +7723,7 @@ _tuning_show_current() {
     fi
   else
     printf "    %-40s %s used of %s total\n" "swap" "$swap_used" "$swap_total"
+    if _zswap_on; then printf "    %-40s %s\n" "zswap" "ON (compresses pages before any swap device, including zram)"; fi
     if _zram_active; then
       local _z
       _z=$(zramctl --noheadings --output NAME,ALGORITHM,DISKSIZE,DATA,COMPR 2>/dev/null | head -1)
@@ -7802,13 +7803,35 @@ _reapply_friendbox_sysctls() {
 }
 
 # True when something other than Friendbox already provides zram swap — leave it alone.
+# zram-generator only counts when it has a configuration (any of the places zram-generator.conf(5)
+# reads): the package being installed without a config creates no zram device, so backing off
+# there would leave the host with no compressed swap at all. _ZRAM_ROOT is a test hook.
 _zram_external() {
   [[ -f "$_ZRAM_UNIT" ]] && return 1
   swapon --show=NAME --noheadings 2>/dev/null | grep -q '^/dev/zram' && return 0
-  [[ -x /usr/lib/systemd/system-generators/zram-generator ]] && return 0
-  [[ -f /etc/systemd/zram-generator.conf ]] && return 0
+  local _f
+  for _f in "${_ZRAM_ROOT:-}"/etc/systemd/zram-generator.conf   "${_ZRAM_ROOT:-}"/run/systemd/zram-generator.conf \
+            "${_ZRAM_ROOT:-}"/usr/lib/systemd/zram-generator.conf \
+            "${_ZRAM_ROOT:-}"/etc/systemd/zram-generator.conf.d/*.conf \
+            "${_ZRAM_ROOT:-}"/run/systemd/zram-generator.conf.d/*.conf \
+            "${_ZRAM_ROOT:-}"/usr/lib/systemd/zram-generator.conf.d/*.conf; do
+    [[ -f "$_f" ]] && return 0
+  done
   systemctl is-enabled --quiet zramswap.service 2>/dev/null && return 0
   return 1
+}
+
+# True when the kernel's zswap is on. zswap compresses pages on their way to ANY swap device,
+# including zram, so the two together compress everything twice (and zram then stores
+# already-compressed data at a poor ratio).
+_zswap_on() {
+  local v
+  v=$(cat "${_ZRAM_ROOT:-}/sys/module/zswap/parameters/enabled" 2>/dev/null) || return 1
+  [[ "$v" =~ ^[YyTt1] ]]
+}
+# True when a swap device other than zram exists (Ubuntu Server's /swap.img, a swap partition).
+_backing_swap_exists() {
+  swapon --show=NAME --noheadings 2>/dev/null | grep -qv '^/dev/zram'
 }
 
 _zram_active() { swapon --show=NAME --noheadings 2>/dev/null | grep -q '^/dev/zram'; }
@@ -7897,7 +7920,26 @@ _zram_ensure() {
   [[ $EUID -eq 0 ]] || return 0
   if [[ -f "$ENV_FILE" ]] && grep -q '^ZRAM_ENABLED=0' "$ENV_FILE" 2>/dev/null; then return 0; fi
   _zram_external && return 0
-  command -v zramctl &>/dev/null || return 0
+  if ! command -v zramctl &>/dev/null; then
+    warn "zramctl (util-linux) not found — compressed swap skipped. Install it: sudo apt install util-linux"
+    return 0
+  fi
+
+  # zswap + zram would compress twice. If zswap is already compressing a real swap device, leave
+  # that setup alone (a notice, once). If the user explicitly asked for zram (menu 19 → 5 sets
+  # ZRAM_ENABLED=1), or there is no other swap for zswap to work with, create zram and say so.
+  if _zswap_on && ! _zram_active; then
+    if ! grep -q '^ZRAM_ENABLED=1' "$ENV_FILE" 2>/dev/null && _backing_swap_exists; then
+      if [[ ! -f "${INSTALL_DIR}/.zswap_notice" ]]; then
+        info "zswap is enabled and a disk swap exists, so Friendbox did not add zram (both would compress every page twice)."
+        info "To use zram instead: add zswap.enabled=0 to the kernel command line, then choose menu 19 → option 5."
+        touch "${INSTALL_DIR}/.zswap_notice" 2>/dev/null || true
+      fi
+      return 0
+    fi
+    warn "zswap is enabled; it will also compress pages headed for zram (double work, worse ratio)."
+    warn "Turn it off with the kernel option zswap.enabled=0 (or: echo 0 | sudo tee /sys/module/zswap/parameters/enabled)."
+  fi
 
   local changed=false
   if [[ ! -x "$_ZRAM_BIN" || ! -f "$_ZRAM_UNIT" ]] \

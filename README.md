@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.8.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.8.1**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -17,6 +17,20 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
 > Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It is built for Linux 7.0+, cgroup v2, Docker 29 and amd64: Full Install **warns** (it does not stop) if the kernel is older than 7.0, cgroup v2 is off, Docker is older than 29 or the architecture is not amd64. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.8.1
+
+Small fixes to the automatic zram swap. Ubuntu 26.04 does not enable zram by default, so Friendbox creates it (50% of RAM, capped at 16 GiB, `zstd`, priority above any disk swap, `vm.swappiness` 100 while active; turn it off with `ZRAM_ENABLED=0` in `.env` or menu 19 → 5).
+
+| Change | Details |
+|---|---|
+| **`zram-generator` only counts when it is configured** | Friendbox leaves an existing zram setup alone, but used to treat the mere presence of the `zram-generator` program as one. If the package was installed with no configuration it creates no zram device, so the host ended up with no compressed swap. Now it backs off only when a `zram-generator.conf` (or a `.conf.d` drop-in under `/etc`, `/run` or `/usr/lib`) exists, zram swap is already active, or `zramswap.service` is enabled. |
+| **Warning when `zramctl` is missing** | It used to skip zram silently. It now says so and gives the fix (`apt install util-linux`). |
+| **zswap awareness** | zswap compresses pages on their way to any swap device, including zram, so using both compresses everything twice. If zswap is on **and** a disk swap exists (for example Ubuntu Server's `/swap.img`), Friendbox does not add zram and prints a notice once. If zswap is on and there is no other swap, or you chose zram explicitly in menu 19 → 5, it creates zram and warns, with the way to turn zswap off (`zswap.enabled=0` on the kernel command line). The tuning menu's "show current values" lists zswap when it is on. |
+
+> **Testing status:** the detection logic was tested in a sandbox with stubbed `swapon`, `zramctl` and sysfs (generator without config, with a config, with a drop-in; `zramctl` missing; zswap on with disk swap, noticed once and then silent; zswap on with explicit opt-in; zswap on with no other swap; zswap off). Creating the zram device itself was not exercised, and nothing was run on an Ubuntu 26.04 host.
 
 ---
 

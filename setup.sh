@@ -3972,6 +3972,10 @@ _creds_configure_wgeasy() {
   info "Redeploy WireGuard Easy (option 12) to apply the initial configuration."
 }
 
+# NOTE: the heredoc below is the copy that actually gets INSTALLED (and regenerated on
+# every update). Keep it byte-identical to redeploy.sh in the repo — edits made only to
+# the standalone file never reach users. Verify with:
+#   awk '/<<.REDEPLOY.$/{f=1;next} /^REDEPLOY$/{f=0} f' setup.sh | cmp - redeploy.sh
 generate_redeploy_sh() {
   local dest="${INSTALL_DIR}/scripts/redeploy.sh"
   _ensure_install_dir
@@ -4020,6 +4024,53 @@ compose() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
 }
 
+# Kernel-level resource report (cgroup v2 + PSI — Ubuntu 26.04 is cgroup v2 only).
+#  • PSI: how long tasks stalled waiting for CPU / memory / IO over the last 10s.
+#    Sustained memory or IO pressure is the early warning before streams buffer.
+#  • OOM kills: per-container count from the container's own cgroup, so a download
+#    client being killed for memory is visible even though it auto-restarts.
+CGROUP_ROOT="${CGROUP_ROOT:-/sys/fs/cgroup}"
+PSI_ROOT="${PSI_ROOT:-/proc/pressure}"
+
+resource_report() {
+  local r line avg col shown=false
+  if [[ -r "${PSI_ROOT}/memory" ]]; then
+    echo ""
+    echo -e "${BOLD}Host pressure (PSI, 10s avg — % of time tasks were stalled)${RESET}"
+    for r in cpu memory io; do
+      [[ -r "${PSI_ROOT}/${r}" ]] || continue
+      line=$(grep '^some' "${PSI_ROOT}/${r}")
+      avg=${line#*avg10=}; avg=${avg%% *}
+      col="${GREEN}"
+      # whole-number compare: >=10% memory/io stall or >=50% cpu stall is notable
+      case "$r" in
+        cpu) (( ${avg%.*} >= 50 )) && col="${YELLOW}" ;;
+        *)   (( ${avg%.*} >= 10 )) && col="${YELLOW}" ;;
+      esac
+      printf "  ${col}%-8s %s%%${RESET}\\n" "$r" "$avg"
+    done
+  fi
+
+  [[ $# -gt 0 && -d "${CGROUP_ROOT}/system.slice" ]] || return 0
+  # Arguments are "name|containerId" pairs taken from health_check's single
+  # `docker inspect` call — no extra docker invocations here.
+  local pair name id ev kills
+  for pair in "$@"; do
+    name="${pair%%|*}"; id="${pair#*|}"
+    ev="${CGROUP_ROOT}/system.slice/docker-${id}.scope/memory.events"
+    [[ -r "$ev" ]] || continue
+    kills=$(awk '$1=="oom_kill"{print $2}' "$ev")
+    if [[ "${kills:-0}" -gt 0 ]]; then
+      if [[ "$shown" == "false" ]]; then
+        echo ""; warn "Containers killed by the kernel for running out of memory:"; shown=true
+      fi
+      echo "  • ${name}: ${kills} OOM kill(s) since it last started"
+    fi
+  done
+  [[ "$shown" == "true" ]] && echo -e "  ${DIM:-}Consider raising memory, adding swap, or lowering concurrent downloads.${RESET}"
+  return 0
+}
+
 health_check() {
   echo ""
   echo -e "${BOLD}Container Health Report${RESET}"
@@ -4031,43 +4082,28 @@ health_check() {
   local names=()
   while IFS= read -r name; do
     [[ -n "$name" ]] && names+=("$name")
-  done < <(compose_selected ps --format '{{.Name}}' 2>/dev/null)
+  done < <(compose ps --format '{{.Name}}' 2>/dev/null)
 
+  local pairs=()
   if [[ ${#names[@]} -gt 0 ]]; then
-    # Single docker inspect call for all containers — avoid N*2 subprocesses
-    local inspect_out
-    inspect_out=$(docker inspect "${names[@]}" 2>/dev/null)
-
-    local name
-    for name in "${names[@]}"; do
-      local status health col
-      status=$(printf '%s' "$inspect_out" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-name = sys.argv[1]
-c = next((x for x in data if x['Name'].lstrip('/') == name), None)
-print(c['State']['Status'] if c else 'not found')
-" "$name" 2>/dev/null || echo "not found")
-      health=$(printf '%s' "$inspect_out" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-name = sys.argv[1]
-c = next((x for x in data if x['Name'].lstrip('/') == name), None)
-if c and c['State'].get('Health'):
-    print(c['State']['Health']['Status'])
-else:
-    print('n/a')
-" "$name" 2>/dev/null || echo "n/a")
+    # ONE docker inspect call for every container, formatted with a Go template
+    # (no python, no per-container subprocesses): name|status|health|id
+    local name status health id col
+    while IFS='|' read -r name status health id; do
+      name="${name#/}"
       case "$status" in
         running)  col="${GREEN}" ;;
         exited)   col="${RED}"   ;;
         *)        col="${YELLOW}" ;;
       esac
       printf "${col}%-24s %-15s %-20s${RESET}\n" "$name" "$status" "$health"
-    done
+      pairs+=("${name}|${id}")
+    done < <(docker inspect --format '{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}|{{.Id}}' "${names[@]}" 2>/dev/null || true)
   fi
 
   echo "─────────────────────────────────────────────────────"
+
+  resource_report "${pairs[@]}"
 
   local bad
   bad=$(docker ps --filter "network=medianet" --filter "status=exited" --format "{{.Names}}" 2>/dev/null || true)

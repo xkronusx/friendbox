@@ -69,9 +69,11 @@ resource_report() {
   fi
 
   [[ $# -gt 0 && -d "${CGROUP_ROOT}/system.slice" ]] || return 0
-  local name id ev kills
-  for name in "$@"; do
-    id=$(docker inspect -f '{{.Id}}' "$name" 2>/dev/null) || continue
+  # Arguments are "name|containerId" pairs taken from health_check's single
+  # `docker inspect` call — no extra docker invocations here.
+  local pair name id ev kills
+  for pair in "$@"; do
+    name="${pair%%|*}"; id="${pair#*|}"
     ev="${CGROUP_ROOT}/system.slice/docker-${id}.scope/memory.events"
     [[ -r "$ev" ]] || continue
     kills=$(awk '$1=="oom_kill"{print $2}' "$ev")
@@ -99,43 +101,26 @@ health_check() {
     [[ -n "$name" ]] && names+=("$name")
   done < <(compose ps --format '{{.Name}}' 2>/dev/null)
 
+  local pairs=()
   if [[ ${#names[@]} -gt 0 ]]; then
-    # Single docker inspect call for all containers — avoid N*2 subprocesses
-    local inspect_out
-    inspect_out=$(docker inspect "${names[@]}" 2>/dev/null)
-
-    local name
-    for name in "${names[@]}"; do
-      local status health col
-      status=$(printf '%s' "$inspect_out" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-name = sys.argv[1]
-c = next((x for x in data if x['Name'].lstrip('/') == name), None)
-print(c['State']['Status'] if c else 'not found')
-" "$name" 2>/dev/null || echo "not found")
-      health=$(printf '%s' "$inspect_out" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-name = sys.argv[1]
-c = next((x for x in data if x['Name'].lstrip('/') == name), None)
-if c and c['State'].get('Health'):
-    print(c['State']['Health']['Status'])
-else:
-    print('n/a')
-" "$name" 2>/dev/null || echo "n/a")
+    # ONE docker inspect call for every container, formatted with a Go template
+    # (no python, no per-container subprocesses): name|status|health|id
+    local name status health id col
+    while IFS='|' read -r name status health id; do
+      name="${name#/}"
       case "$status" in
         running)  col="${GREEN}" ;;
         exited)   col="${RED}"   ;;
         *)        col="${YELLOW}" ;;
       esac
       printf "${col}%-24s %-15s %-20s${RESET}\n" "$name" "$status" "$health"
-    done
+      pairs+=("${name}|${id}")
+    done < <(docker inspect --format '{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}|{{.Id}}' "${names[@]}" 2>/dev/null || true)
   fi
 
   echo "─────────────────────────────────────────────────────"
 
-  resource_report "${names[@]}"
+  resource_report "${pairs[@]}"
 
   local bad
   bad=$(docker ps --filter "network=medianet" --filter "status=exited" --format "{{.Names}}" 2>/dev/null || true)

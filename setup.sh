@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.0.0"
+FRIENDBOX_VERSION="3.1.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -216,6 +216,15 @@ check_os() {
     warn "Kernel $(uname -r) is not using cgroup v2 — Docker resource priorities and the"
     warn "health report will not work. Remove 'systemd.unified_cgroup_hierarchy=0' from the"
     warn "kernel command line (/etc/default/grub) and reboot."
+  fi
+
+  # Friendbox 3.1 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
+  # directories, 1 GiB memory reservations for the media servers, zram swap at 50% of RAM).
+  local mem_kib
+  mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  if [[ "$mem_kib" =~ ^[0-9]+$ ]] && (( mem_kib > 0 && mem_kib < 15 * 1024 * 1024 )); then
+    warn "This system has $(awk -v k="$mem_kib" 'BEGIN{printf "%.1f", k/1048576}') GiB of RAM; Friendbox ${FRIENDBOX_VERSION} is sized for 16 GB or more."
+    warn "It will run, but expect memory pressure during transcodes and large unpacks."
   fi
   echo ""
 }
@@ -595,6 +604,9 @@ auto_update() {
   if [[ $script_rc -ne 0 || $compose_rc -ne 0 ]]; then
     echo -e "${YELLOW}[WARN]${RESET}  Could not reach GitHub - running with local files."
     rm -f "/usr/local/bin/friendbox.new" "${COMPOSE_FILE}.new"
+    # Back off instead of waiting up to 10s on every launch while offline: stamp the
+    # cache as if the last check was 50 minutes ago, so the next attempt is in ~10 min.
+    echo $(( $(date +%s 2>/dev/null || echo 0) - 3000 )) > "$_update_cache" 2>/dev/null || true
     return 0
   fi
 
@@ -1312,6 +1324,10 @@ _mergerfs_write_fstab() {
   _pt=$(_mergerfs_passthrough_opt)
   _MFS_PT_USED="$_pt"   # $(...) ran in a subshell — record the result here
   [[ -n "$_pt" ]] && opts+=",${_pt}"
+  # With passthrough there is no FUSE-side cache to de-duplicate, so dropping the backing
+  # file's page cache on every close only discards useful cache (measured: repeat reads
+  # ~2.3x slower). Keep it on for the non-passthrough (FUSE-cached) case.
+  [[ -n "$_pt" ]] && opts="${opts/dropcacheonclose=true/dropcacheonclose=false}"
   local _bp
   while IFS= read -r _bp; do
     [[ -n "$_bp" ]] && opts+=",x-systemd.requires-mounts-for=${_bp}"
@@ -3053,9 +3069,12 @@ _traefik_emergency_recover() {
   # creation time. Running containers keep their old labels until recreated.
   # Redeploying only Traefik would leave other containers with stale labels.
   if [[ "$traefik_state" != "missing" ]]; then
-    info "Redeploying all containers to apply updated labels..."
-    compose_selected up -d --force-recreate
-    success "All containers redeployed."
+    info "Redeploying containers whose labels changed..."
+    compose_selected up -d
+    # traefik.yml / acme.json are bind-mounted files: Compose cannot see their contents
+    # change, so Traefik itself must always be recreated to re-read them.
+    compose_selected up -d --force-recreate traefik
+    success "Containers with changed labels and Traefik were redeployed."
     echo ""
     info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
     info "Watch cert request: option 14 → traefik → follow live logs"
@@ -3288,9 +3307,10 @@ _traefik_toggle_staging() {
   local traefik_state
   traefik_state=$(docker inspect traefik --format '{{.State.Status}}' 2>/dev/null || echo "missing")
   if [[ "$traefik_state" == "running" || "$traefik_state" == "exited" ]]; then
-    info "Redeploying all containers to apply CA change..."
-    compose_selected up -d --force-recreate
-    success "All containers redeployed."
+    info "Redeploying containers whose labels changed (CA change)..."
+    compose_selected up -d
+    compose_selected up -d --force-recreate traefik   # re-read traefik.yml / cleared acme.json
+    success "Containers with changed labels and Traefik were redeployed."
   else
     info "Traefik is not running — start it with: sudo friendbox → option 12"
   fi
@@ -4134,9 +4154,11 @@ case "${1:-all}" in
   all)
     info "Pulling latest images..."
     compose pull
-    info "Recreating all active containers..."
-    compose up -d --force-recreate
-    success "All active containers redeployed." ;;
+    # Plain 'up -d' recreates only containers whose image or configuration changed, so
+    # unchanged containers (and their streams / VPN tunnels) keep running.
+    info "Recreating containers with a new image or changed configuration..."
+    compose up -d
+    success "Redeploy complete. (Force a full recreate with: docker compose up -d --force-recreate)" ;;
   *)
     svc="$1"
     info "Pulling image for ${svc}..."
@@ -4157,6 +4179,42 @@ REDEPLOY
 
 BACKUP_DIR="${INSTALL_DIR}/backups"
 
+# Regenerable data left out of backups (paths are relative to CONFIG_ROOT). Plex/Jellyfin
+# rebuild these on demand; leaving them out shortens the window the stack is stopped and
+# shrinks the archive. Plex Metadata/Media (posters, preview thumbnails) are NOT excluded —
+# they take days to rebuild.
+_BACKUP_EXCLUDES=(
+  "plex/Library/Application Support/Plex Media Server/Cache"
+  "plex/Library/Application Support/Plex Media Server/Logs"
+  "plex/Library/Application Support/Plex Media Server/Crash Reports"
+  "plex/Library/Application Support/Plex Media Server/Codecs"
+  "jellyfin-cache"
+  "jellyfin/log"
+  "jellyfin/data/transcodes"
+)
+
+# Archive extension: zstd when available (measured ~7x faster than gzip -6 on a mixed
+# config tree, at equal or smaller size), gzip as a fallback. Restore reads both.
+_backup_ext() {
+  if command -v zstd &>/dev/null || apt-get install -y zstd >/dev/null 2>&1; then
+    echo "tar.zst"
+  else
+    echo "tar.gz"
+  fi
+}
+
+# _backup_make_archive ARCHIVE CFG [STATE_FILE_REL...] — tar + compress the config tree
+# (stored relative to /). Compression is chosen from ARCHIVE's extension.
+_backup_make_archive() {
+  local archive="$1" cfg="$2"; shift 2
+  local base="${cfg#/}" excl=() p
+  excl+=(--exclude="${base}/traefik/acme.json")      # env-specific; regenerated on restore
+  for p in "${_BACKUP_EXCLUDES[@]}"; do excl+=(--exclude="${base}/${p}"); done
+  local comp=(-z)
+  [[ "$archive" == *.zst ]] && comp=(--use-compress-program="zstd -T0 -3 -q")
+  tar -c "${comp[@]}" -f "$archive" "${excl[@]}" -C / "$base" "$@" 2>/dev/null
+}
+
 backup_config() {
   require_root || return 1
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
@@ -4173,7 +4231,7 @@ backup_config() {
 
   local timestamp archive_name archive_path
   timestamp=$(date '+%Y%m%d_%H%M%S')
-  archive_name="friendbox_backup_${timestamp}.tar.gz"
+  archive_name="friendbox_backup_${timestamp}.$(_backup_ext)"
   archive_path="${BACKUP_DIR}/${archive_name}"
 
   echo ""
@@ -4216,13 +4274,8 @@ backup_config() {
     [[ -f "$sf" ]] && state_files+=("${sf#/}")
   done
 
-  # Exclude acme.json — it is env-specific and will be regenerated on restore.
-  # The tar is built relative to /, so the exclude path must match the full
-  # relative path within the archive (without leading slash).
-  local acme_rel="${cfg#/}/traefik/acme.json"
-  if tar -czf "$archive_path" \
-      --exclude="$acme_rel" \
-      -C / "${cfg#/}" "${state_files[@]}" 2>/dev/null; then
+  info "Excluding regenerable caches (Plex Cache/Logs/Codecs, Jellyfin cache) — see _BACKUP_EXCLUDES."
+  if _backup_make_archive "$archive_path" "$cfg" "${state_files[@]}"; then
     local size
     size=$(du -sh "$archive_path" 2>/dev/null | awk '{print $1}')
     chown root:root "$archive_path"
@@ -4231,7 +4284,7 @@ backup_config() {
     info "Location: ${archive_path}"
     # Keep only the 10 most recent
     local old
-    old=$(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null | tail -n +11)
+    old=$(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.* 2>/dev/null | tail -n +11)
     if [[ -n "$old" ]]; then
       local pruned=0
       while IFS= read -r o; do rm -f "$o"; pruned=$((pruned+1)); done <<< "$old"
@@ -4269,7 +4322,7 @@ restore_config() {
 
   local backups=() f
   while IFS= read -r f; do backups+=("$f"); done \
-    < <(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null)
+    < <(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.* 2>/dev/null)
 
   if [[ ${#backups[@]} -eq 0 ]]; then
     warn "No backups found in ${BACKUP_DIR}."
@@ -4283,7 +4336,7 @@ restore_config() {
   for f in "${backups[@]}"; do
     local size ts
     size=$(du -sh "$f" 2>/dev/null | awk '{print $1}')
-    ts=$(basename "$f" | sed 's/friendbox_backup_//;s/\.tar\.gz//' | sed 's/_/ /')
+    ts=$(basename "$f" | sed 's/friendbox_backup_//;s/\.tar\.[a-z0-9]*//' | sed 's/_/ /')
     printf "  %2d) %s  ${DIM}(%s)${RESET}\n" "$i" "$ts" "${size:-?}"
     i=$((i+1))
   done
@@ -4306,7 +4359,11 @@ restore_config() {
 
   echo ""
   info "Extracting archive..."
-  if tar -xzf "$chosen" -C / 2>/dev/null; then
+  # GNU tar auto-detects gzip and zstd; zstd must be present to read .tar.zst archives.
+  if [[ "$chosen" == *.zst ]] && ! command -v zstd &>/dev/null; then
+    apt-get install -y zstd >/dev/null 2>&1 || warn "Could not install zstd — cannot read ${chosen##*/}."
+  fi
+  if tar -xf "$chosen" -C / 2>/dev/null; then
     # Re-source .env so restored values are active for the steps below
     [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
     # acme.json must always be root:root 600 — recreate it fresh if absent
@@ -4333,6 +4390,8 @@ restore_config() {
     if [[ ! "${_rd_yn:-y}" =~ ^[Nn]$ ]]; then
       info "Redeploying containers..."
       _jellyfin_fix_markers
+      # Deliberately a FULL recreate: restore replaced config files under running
+      # containers, which Compose's change detection cannot see.
       compose_selected up -d --force-recreate
       success "Containers redeployed with restored config."
     else
@@ -4348,7 +4407,7 @@ _backup_list_delete() {
   echo ""
   local backups=() f
   while IFS= read -r f; do backups+=("$f"); done \
-    < <(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null)
+    < <(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.* 2>/dev/null)
 
   if [[ ${#backups[@]} -eq 0 ]]; then
     warn "No backups found in ${BACKUP_DIR}."; return
@@ -4362,7 +4421,7 @@ _backup_list_delete() {
   for f in "${backups[@]}"; do
     local size ts
     size=$(du -sh "$f" 2>/dev/null | awk '{print $1}')
-    ts=$(basename "$f" | sed 's/friendbox_backup_//;s/\.tar\.gz//' | sed 's/_/ /')
+    ts=$(basename "$f" | sed 's/friendbox_backup_//;s/\.tar\.[a-z0-9]*//' | sed 's/_/ /')
     printf "  %-4s %-22s %-8s\n" "${i})" "$ts" "${size:-?}"
     i=$((i+1))
   done
@@ -4392,11 +4451,11 @@ setup_backup() {
     echo "╚══════════════════════════════════════════════════════════╝"
     echo -e "${RESET}"
     local count newest
-    count=$(ls -1 "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null | wc -l) || count=0
-    newest=$(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.gz 2>/dev/null | head -1)
+    count=$(ls -1 "${BACKUP_DIR}"/friendbox_backup_*.tar.* 2>/dev/null | wc -l) || count=0
+    newest=$(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.* 2>/dev/null | head -1)
     if [[ "$count" -gt 0 && -n "$newest" ]]; then
       local newest_ts
-      newest_ts=$(basename "$newest" | sed 's/friendbox_backup_//;s/\.tar\.gz//' | sed 's/_/ /')
+      newest_ts=$(basename "$newest" | sed 's/friendbox_backup_//;s/\.tar\.[a-z0-9]*//' | sed 's/_/ /')
       echo -e "  ${BOLD}Backups stored :${RESET} ${count}  ${DIM}(max 10 kept)${RESET}"
       echo -e "  ${BOLD}Most recent    :${RESET} ${newest_ts}"
     else
@@ -4541,6 +4600,7 @@ ensure_acme() {
     info "Traefik not selected — skipping acme.json setup."
     return
   fi
+  _quic_buffers_ensure
   local acme_path="${INSTALL_DIR}/config/traefik/acme.json"
   mkdir -p "$(dirname "$acme_path")"
   [[ -f "$acme_path" ]] || touch "$acme_path"
@@ -5322,9 +5382,10 @@ HDEOF
   if [[ ${#DISK_MODES[@]} -gt 0 ]]; then
     _mergerfs_provision_branches
   else
-    # Collect all media subdirs, create them all, then chown once with -R.
-    # Individual chown calls per directory are redundant — a single
-    # chown -R on $media covers the entire tree in one syscall.
+    # Collect all media subdirs, create them all, then fix ownership once.
+    # Only inodes whose owner actually differs are touched (chown -R rewrites every
+    # inode, and with Rust coreutils on 26.04 is ~2x slower on large libraries), and
+    # -xdev keeps it from crossing into other mounts below $media.
     local _need_downloads=false _need_incomplete=false
     local _dl_client
     for _dl_client in qbittorrent qbittorrentvpn delugevpn nzbget sonarr radarr lidarr; do
@@ -5337,8 +5398,8 @@ HDEOF
     [[ "$_need_downloads"   == "true" ]] && mkdir -p "${media}/downloads"
     [[ "$_need_incomplete"  == "true" ]] && mkdir -p "${media}/downloads/incomplete"
 
-    # One recursive chown covers the entire media tree
-    chown -R "${uid}:${gid}" "${media}"
+    # Fix ownership across the media tree (mismatches only)
+    _mergerfs_fix_owner "${media}" "${uid}" "${gid}"
 
     # downloads dirs need group-write so containers running as different UIDs
     # (e.g. binhex VPN containers) can write completed downloads there.
@@ -6454,6 +6515,7 @@ full_install() {
 
   check_os
   check_deps
+  _zram_ensure
   sync_repo
   select_containers    # must run before configure_env so Plex/Traefik selections are known
   configure_env
@@ -6668,7 +6730,8 @@ redeploy_menu() {
     echo "  2) Redeploy a SINGLE container"
     echo "  3) Restart all active containers (no pull)"
     echo "  4) Change container selection then redeploy"
-    echo "  5) Back"
+    echo "  5) Force-recreate ALL containers (even unchanged — e.g. after editing a mounted config file)"
+    echo "  6) Back"
     echo ""
     read -rp "Choice: " choice
     case "$choice" in
@@ -6676,8 +6739,10 @@ redeploy_menu() {
         info "Pulling latest images and redeploying..."
         _jellyfin_fix_markers
         compose_selected pull
-        compose_selected up -d --force-recreate
-        success "All active containers redeployed."
+        # Plain 'up -d' recreates only containers whose image or configuration changed;
+        # everything else keeps running (no dropped streams, no VPN reconnects).
+        compose_selected up -d
+        success "Redeploy complete — containers with a new image or changed config were recreated."
         pause
         ;;
       2)
@@ -6741,7 +6806,18 @@ redeploy_menu() {
         success "Stack updated."
         pause
         ;;
-      5) return ;;
+      5)
+        warn "This restarts every active container, including running streams and VPN tunnels."
+        read -rp "  Continue? [y/N] " _fy
+        if [[ "$_fy" =~ ^[Yy]$ ]]; then
+          _jellyfin_fix_markers
+          compose_selected pull
+          compose_selected up -d --force-recreate
+          success "All active containers force-recreated."
+        fi
+        pause
+        ;;
+      6) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
@@ -6904,23 +6980,27 @@ full_reset() {
     # Restore the pre-tuning values immediately so the running session is clean
     _tuning_restore
   fi
+  _zram_disable
+  rm -f "$_QUIC_SYSCTL"
   # Remove max-concurrent-downloads from daemon.json if we set it
   local _daemon_json="/etc/docker/daemon.json"
   if [[ -f "$_daemon_json" ]] && grep -q '"max-concurrent-downloads"' "$_daemon_json" 2>/dev/null; then
-    python3 - "$_daemon_json" << 'DAEMONJSONEOF' 2>/dev/null || true
+    python3 - "$_daemon_json" "${INSTALL_DIR}/.userland_proxy_set" << 'DAEMONJSONEOF' 2>/dev/null || true
 import json, sys, os
 path = sys.argv[1]
 try:
     with open(path) as f: cfg = json.load(f)
 except Exception: cfg = {}
 cfg.pop("max-concurrent-downloads", None)
+if len(sys.argv) > 2 and os.path.exists(sys.argv[2]): cfg.pop("userland-proxy", None)
 if cfg:
     with open(path, "w") as f: json.dump(cfg, f, indent=2); f.write("\n")
 else:
     os.remove(path)
 DAEMONJSONEOF
-    systemctl reload docker 2>/dev/null || systemctl restart docker 2>/dev/null || true
-    info "  Removed max-concurrent-downloads from ${_daemon_json}"
+    rm -f "${INSTALL_DIR}/.userland_proxy_set"
+    systemctl reload docker 2>/dev/null || true
+    info "  Removed Friendbox settings from ${_daemon_json}"
   fi
   if [[ -f "$_tune_svc" ]]; then
     systemctl disable --now friendbox-thp.service 2>/dev/null || true
@@ -7017,6 +7097,7 @@ view_logs() {
 _SYSCTL_CONF="/etc/sysctl.d/99-friendbox.conf"
 _THP_SYSTEMD="/etc/systemd/system/friendbox-thp.service"
 _DOCKER_DAEMON="/etc/docker/daemon.json"
+_USERLAND_MARK="${INSTALL_DIR}/.userland_proxy_set"   # present only if Friendbox set userland-proxy
 
 _tuning_is_applied() {
   [[ -f "$_SYSCTL_CONF" ]]
@@ -7069,6 +7150,11 @@ _tuning_show_current() {
     _dl_val="3 (default — no daemon.json)"
   fi
   printf "    %-40s %s\n" "max-concurrent-downloads" "$_dl_val"
+  local _up_val="true (default)"
+  if [[ -f "$_DOCKER_DAEMON" ]]; then
+    _up_val=$(python3 -c "import json; d=json.load(open('$_DOCKER_DAEMON')); print(str(d.get('userland-proxy', True)).lower() + ('' if 'userland-proxy' in d else ' (default)'))" 2>/dev/null || echo "true (default)")
+  fi
+  printf "    %-40s %s\n" "userland-proxy" "$_up_val"
 
   # ── Swap ───────────────────────────────────────────────────────────────────
   echo ""
@@ -7080,15 +7166,211 @@ _tuning_show_current() {
   if [[ -z "$swap_total" || "$swap_total" == "0B" || "$swap_total" == "0" ]]; then
     printf "    %-40s %s\n" "swap" "none"
     echo ""
-    warn "No swap detected. Without swap, the OOM killer fires immediately"
-    warn "when RAM is exhausted. A swapfile provides emergency overflow:"
-    echo -e "  ${DIM}  sudo fallocate -l 4G /swapfile${RESET}"
-    echo -e "  ${DIM}  sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile${RESET}"
-    echo -e "  ${DIM}  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab${RESET}"
+    if grep -q '^ZRAM_ENABLED=0' "$ENV_FILE" 2>/dev/null; then
+      warn "No swap, and zram is disabled (ZRAM_ENABLED=0). Without swap the OOM killer fires"
+      warn "as soon as RAM is exhausted. Re-enable zram from this menu (option 5)."
+    else
+      info "No swap yet — Friendbox creates compressed-RAM (zram) swap automatically on its next launch."
+    fi
   else
     printf "    %-40s %s used of %s total\n" "swap" "$swap_used" "$swap_total"
+    if _zram_active; then
+      local _z
+      _z=$(zramctl --noheadings --output NAME,ALGORITHM,DISKSIZE,DATA,COMPR 2>/dev/null | head -1)
+      [[ -n "$_z" ]] && printf "    %-40s %s\n" "zram (name algo size data compressed)" "$_z"
+    fi
   fi
   echo ""
+}
+
+# =============================================================================
+#  QUIC receive buffers + zram swap (both applied automatically)
+# =============================================================================
+_QUIC_SYSCTL="/etc/sysctl.d/98-friendbox-quic.conf"
+_ZRAM_BIN="/usr/local/sbin/friendbox-zram"
+_ZRAM_UNIT="/etc/systemd/system/friendbox-zram.service"
+_ZRAM_SYSCTL="/etc/sysctl.d/98-friendbox-zram.conf"
+_ZRAM_VERSION=1        # bump when the installed script/unit content changes
+
+# Traefik serves HTTP/3 (UDP 443). quic-go wants a ~7 MiB UDP receive buffer; Linux caps it
+# at 208 KiB by default, which throttles high-bandwidth QUIC transfers (and logs "failed to
+# sufficiently increase receive buffer size"). This used to depend on the optional option-19
+# tuning. Only the RECEIVE side is raised — a larger send cap has no justification.
+_quic_buffers_ensure() {
+  [[ $EUID -eq 0 ]] || return 0
+  [[ -f "$SELECTED_FILE" ]] && grep -qx 'traefik' "$SELECTED_FILE" 2>/dev/null || return 0
+  local cur
+  cur=$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)
+  [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+  (( cur >= 7500000 )) && return 0          # already large enough (e.g. option 19 applied)
+  cat > "$_QUIC_SYSCTL" << 'QUICEOF'
+# Friendbox: UDP receive-buffer cap for Traefik's HTTP/3 (QUIC). Managed by friendbox.
+net.core.rmem_max = 7500000
+QUICEOF
+  if sysctl -q -p "$_QUIC_SYSCTL" 2>/dev/null; then
+    info "HTTP/3: raised the UDP receive-buffer cap to 7.5 MB (${_QUIC_SYSCTL}). Restart Traefik to use it."
+  fi
+  return 0
+}
+
+# Re-apply Friendbox's own small sysctl files (used after a tuning revert resets live values).
+_reapply_friendbox_sysctls() {
+  local f
+  for f in "$_QUIC_SYSCTL" "$_ZRAM_SYSCTL"; do
+    if [[ -f "$f" ]]; then sysctl -q -p "$f" 2>/dev/null || true; fi
+  done
+  return 0
+}
+
+# True when something other than Friendbox already provides zram swap — leave it alone.
+_zram_external() {
+  [[ -f "$_ZRAM_UNIT" ]] && return 1
+  swapon --show=NAME --noheadings 2>/dev/null | grep -q '^/dev/zram' && return 0
+  [[ -x /usr/lib/systemd/system-generators/zram-generator ]] && return 0
+  [[ -f /etc/systemd/zram-generator.conf ]] && return 0
+  systemctl is-enabled --quiet zramswap.service 2>/dev/null && return 0
+  return 1
+}
+
+_zram_active() { swapon --show=NAME --noheadings 2>/dev/null | grep -q '^/dev/zram'; }
+
+# With zram the swap is compressed RAM, so reclaiming anonymous pages is cheap: swappiness 10
+# (tuned for disk swap) would leave it almost unused. Keep option-19's value consistent.
+_zram_sync_swappiness() {
+  if [[ -f "$_SYSCTL_CONF" ]]; then
+    sed -i "s/^vm\.swappiness *=.*/vm.swappiness = $1/" "$_SYSCTL_CONF"
+  fi
+  sysctl -qw "vm.swappiness=$1" 2>/dev/null || true
+  return 0
+}
+
+_zram_write_files() {
+  cat > "$_ZRAM_BIN" << 'ZRAMBINEOF'
+#!/usr/bin/env bash
+# friendbox-zram — compressed-RAM swap (zram). Managed by Friendbox; do not edit.
+# friendbox-zram-version: 1
+set -u
+ENV_FILE="/opt/friendbox/.env"
+_cfg() { [[ -r "$ENV_FILE" ]] && grep -m1 "^$1=" "$ENV_FILE" | cut -d= -f2- | tr -d '"' || true; }
+PERCENT=$(_cfg ZRAM_SIZE_PERCENT)
+[[ "$PERCENT" =~ ^[0-9]+$ ]] && (( PERCENT >= 10 && PERCENT <= 100 )) || PERCENT=50
+MAX_MIB=$(_cfg ZRAM_MAX_MIB)
+[[ "$MAX_MIB" =~ ^[0-9]+$ ]] || MAX_MIB=16384
+PRIORITY=100            # above any disk swap (negative priorities), so zram is used first
+
+start() {
+  swapon --show=NAME --noheadings | grep -q '^/dev/zram' && exit 0
+  modprobe zram 2>/dev/null || true
+  local mem_kib size_mib dev
+  mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+  size_mib=$(( mem_kib * PERCENT / 100 / 1024 ))
+  (( size_mib > MAX_MIB )) && size_mib=$MAX_MIB
+  dev=$(zramctl --find --size "${size_mib}M" --algorithm zstd 2>/dev/null) \
+    || dev=$(zramctl --find --size "${size_mib}M" 2>/dev/null) \
+    || { echo "friendbox-zram: could not allocate a zram device" >&2; exit 1; }
+  mkswap -q "$dev" && swapon --discard --priority "$PRIORITY" "$dev"
+}
+
+stop() {
+  local d
+  for d in $(swapon --show=NAME --noheadings | grep '^/dev/zram'); do
+    swapoff "$d" && zramctl --reset "$d"
+  done
+}
+
+case "${1:-start}" in
+  start) start ;;
+  stop)  stop ;;
+  *)     echo "usage: $0 start|stop" >&2; exit 2 ;;
+esac
+ZRAMBINEOF
+  chmod 755 "$_ZRAM_BIN"
+  cat > "$_ZRAM_UNIT" << 'ZRAMUNITEOF'
+[Unit]
+Description=Friendbox zram swap (compressed RAM)
+DefaultDependencies=no
+After=systemd-modules-load.service local-fs.target
+Before=swap.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/friendbox-zram start
+ExecStop=/usr/local/sbin/friendbox-zram stop
+
+[Install]
+WantedBy=swap.target
+ZRAMUNITEOF
+  cat > "$_ZRAM_SYSCTL" << 'ZRAMSYSEOF'
+# Friendbox: swap tuning for zram (compressed-RAM swap). Managed by friendbox.
+# Swap is RAM-speed, so weigh reclaiming anonymous pages equally with dropping file cache.
+vm.swappiness = 100
+# Swap-in readahead is pointless when the swap device is RAM.
+vm.page-cluster = 0
+ZRAMSYSEOF
+}
+
+# Creates compressed-RAM swap (sized to 50% of RAM by default; ZRAM_SIZE_PERCENT / ZRAM_MAX_MIB
+# in .env override) and makes it persistent. Idempotent and non-fatal; skipped when
+# ZRAM_ENABLED=0 or when another zram setup already exists.
+_zram_ensure() {
+  [[ $EUID -eq 0 ]] || return 0
+  if [[ -f "$ENV_FILE" ]] && grep -q '^ZRAM_ENABLED=0' "$ENV_FILE" 2>/dev/null; then return 0; fi
+  _zram_external && return 0
+  command -v zramctl &>/dev/null || return 0
+
+  local changed=false
+  if [[ ! -x "$_ZRAM_BIN" || ! -f "$_ZRAM_UNIT" ]] \
+     || ! grep -q "^# friendbox-zram-version: ${_ZRAM_VERSION}$" "$_ZRAM_BIN" 2>/dev/null; then
+    _zram_write_files; changed=true
+  fi
+
+  if [[ ! -e /sys/class/zram-control/hot_add ]]; then
+    modprobe zram 2>/dev/null \
+      || { apt-get install -y "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 && modprobe zram 2>/dev/null; } \
+      || { warn "zram kernel module not available — skipping compressed swap."; return 0; }
+  fi
+
+  if [[ "$changed" == "true" ]]; then systemctl daemon-reload 2>/dev/null || true; fi
+  if ! _zram_active; then
+    systemctl enable --now friendbox-zram.service >/dev/null 2>&1 \
+      || "$_ZRAM_BIN" start 2>/dev/null \
+      || { warn "Could not start zram swap."; return 0; }
+    sysctl -q -p "$_ZRAM_SYSCTL" 2>/dev/null || true
+    _zram_sync_swappiness 100
+    if _zram_active; then
+      success "zram swap enabled: $(swapon --show=SIZE --noheadings 2>/dev/null | head -1 | tr -d ' ') of compressed RAM (disable: ZRAM_ENABLED=0 in .env or option 19)."
+    fi
+  elif [[ "$changed" == "true" ]]; then
+    systemctl enable friendbox-zram.service >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+_zram_disable() {
+  if [[ -f "$_ZRAM_UNIT" || -x "$_ZRAM_BIN" ]]; then
+    systemctl disable --now friendbox-zram.service >/dev/null 2>&1 || true
+    if [[ -x "$_ZRAM_BIN" ]]; then
+      "$_ZRAM_BIN" stop 2>/dev/null || warn "Could not release zram swap (not enough free RAM to move its pages back?)."
+    fi
+    rm -f "$_ZRAM_UNIT" "$_ZRAM_BIN" "$_ZRAM_SYSCTL"
+    systemctl daemon-reload 2>/dev/null || true
+    _zram_sync_swappiness 10
+    success "zram swap removed."
+  fi
+  return 0
+}
+
+_zram_toggle() {
+  if grep -q '^ZRAM_ENABLED=0' "$ENV_FILE" 2>/dev/null || { ! _zram_active && [[ ! -f "$_ZRAM_UNIT" ]]; }; then
+    _env_put ZRAM_ENABLED 1
+    _zram_ensure
+    _zram_active || warn "zram is not active (another zram setup, or the kernel module is unavailable)."
+  else
+    _env_put ZRAM_ENABLED 0
+    _zram_disable
+  fi
 }
 
 # Snapshot of the values that were live BEFORE Friendbox first tuned the system,
@@ -7139,6 +7421,7 @@ _tuning_restore() {
            fs.inotify.max_user_instances=128 &>/dev/null || true
     info "No pre-tuning snapshot found — applied common defaults. THP returns to its default on reboot."
   fi
+  _reapply_friendbox_sysctls    # QUIC buffer + zram settings are independent of option 19
 }
 
 _tuning_apply() {
@@ -7206,6 +7489,9 @@ fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 512
 SYSCTLEOF
 
+  # zram swap is compressed RAM — a disk-swap-style swappiness of 10 would leave it unused.
+  if [[ -f "$_ZRAM_SYSCTL" ]]; then sed -i 's/^vm\.swappiness *=.*/vm.swappiness = 100/' "$_SYSCTL_CONF"; fi
+
   _tuning_snapshot "$_SYSCTL_CONF"   # record pre-tuning values before they change
 
   # Apply immediately (no reboot needed)
@@ -7252,9 +7538,14 @@ SVCEOF
   local _daemon_dir
   _daemon_dir=$(dirname "$_DOCKER_DAEMON")
   mkdir -p "$_daemon_dir"
+  # userland-proxy=false: Docker otherwise starts a docker-proxy process per published port
+  # (and per IP family — up to ~100 for the full stack). With it off, the kernel's iptables
+  # DNAT forwards traffic directly. Only set when the user has not chosen a value themselves.
+  # Unlike max-concurrent-downloads this option is NOT reloadable — it needs a restart.
+  local _up_set=false _up_out
   if [[ -f "$_DOCKER_DAEMON" ]]; then
     # Merge into existing daemon.json using Python — preserve any user settings.
-    if python3 - "$_DOCKER_DAEMON" << 'DAEMONEOF'
+    if _up_out=$(python3 - "$_DOCKER_DAEMON" << 'DAEMONEOF'
 import json, sys
 path = sys.argv[1]
 try:
@@ -7263,26 +7554,41 @@ try:
 except Exception:
     cfg = {}
 cfg["max-concurrent-downloads"] = 6
+if "userland-proxy" not in cfg:
+    cfg["userland-proxy"] = False
+    print("USERLAND_SET")
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
 DAEMONEOF
-    then
-      success "daemon.json updated (max-concurrent-downloads=6)"
+    ); then
+      success "daemon.json updated (max-concurrent-downloads=6, userland-proxy=false)"
+      [[ "$_up_out" == *USERLAND_SET* ]] && _up_set=true
     else
-      warn "Could not update ${_DOCKER_DAEMON} — Docker download concurrency not changed."
+      warn "Could not update ${_DOCKER_DAEMON} — Docker daemon settings not changed."
     fi
   else
-    printf '{"max-concurrent-downloads": 6}\n' > "$_DOCKER_DAEMON"
-    success "daemon.json created (max-concurrent-downloads=6)"
+    printf '{\n  "max-concurrent-downloads": 6,\n  "userland-proxy": false\n}\n' > "$_DOCKER_DAEMON"
+    _up_set=true
+    success "daemon.json created (max-concurrent-downloads=6, userland-proxy=false)"
   fi
-  # Reload Docker daemon to pick up the new setting (no container restart needed).
-  if systemctl reload docker 2>/dev/null; then
-    success "Docker daemon reloaded — new download concurrency active."
-  elif systemctl restart docker 2>/dev/null; then
-    warn "Docker daemon restarted (reload not supported) — containers will restart."
-  else
-    warn "Could not reload Docker daemon — setting will apply on next Docker restart."
+  if [[ "$_up_set" == "true" ]]; then touch "$_USERLAND_MARK" 2>/dev/null || true; fi
+  # Reload picks up max-concurrent-downloads (no container restart needed).
+  if ! systemctl reload docker 2>/dev/null; then
+    warn "Could not reload the Docker daemon — settings will apply on the next Docker restart."
+  fi
+  if [[ "$_up_set" == "true" ]]; then
+    echo ""
+    warn "userland-proxy=false only takes effect after Docker is restarted, which restarts ALL"
+    warn "containers (usually 30–60 s; they come back automatically)."
+    read -rp "  Restart Docker now? [y/N] " _rd
+    if [[ "${_rd:-n}" =~ ^[Yy]$ ]]; then
+      systemctl restart docker 2>/dev/null \
+        && success "Docker restarted — userland-proxy disabled." \
+        || warn "Could not restart Docker — it will apply on the next restart or reboot."
+    else
+      info "Not restarting now — userland-proxy=false applies at the next Docker restart or reboot."
+    fi
   fi
 
   echo ""
@@ -7312,8 +7618,8 @@ _tuning_revert() {
 
   # Revert daemon.json — remove the max-concurrent-downloads key if we set it.
   if [[ -f "$_DOCKER_DAEMON" ]]; then
-    if python3 - "$_DOCKER_DAEMON" << 'DAEMONEOF'
-import json, sys
+    if python3 - "$_DOCKER_DAEMON" "$_USERLAND_MARK" << 'DAEMONEOF'
+import json, sys, os
 path = sys.argv[1]
 try:
     with open(path) as f:
@@ -7321,16 +7627,18 @@ try:
 except Exception:
     cfg = {}
 cfg.pop("max-concurrent-downloads", None)
+if len(sys.argv) > 2 and os.path.exists(sys.argv[2]):
+    cfg.pop("userland-proxy", None)      # only if Friendbox set it
 if cfg:
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
 else:
-    import os
     os.remove(path)
 DAEMONEOF
     then
-      success "daemon.json reverted (max-concurrent-downloads removed)"
+      rm -f "$_USERLAND_MARK"
+      success "daemon.json reverted (Friendbox settings removed; userland-proxy reverts at the next Docker restart)"
     else
       warn "Could not revert ${_DOCKER_DAEMON}"
     fi
@@ -7407,6 +7715,11 @@ setup_system_tuning() {
     else
       echo -e "  ${YELLOW}○ Kernel tunings NOT applied (kernel defaults in use)${RESET}"
     fi
+    if _zram_active; then
+      echo -e "  ${GREEN}✔ zram swap ACTIVE${RESET}"
+    else
+      echo -e "  ${YELLOW}○ zram swap not active${RESET}"
+    fi
     if _tuning_docker_is_applied; then
       echo -e "  ${GREEN}✔ Docker daemon tuning APPLIED${RESET}"
     else
@@ -7415,7 +7728,7 @@ setup_system_tuning() {
 
     echo ""
     echo -e "  ${DIM}Tunings optimised for a Docker media server workload:${RESET}"
-    echo -e "  ${DIM}  vm.swappiness          60 → 10   (less aggressive swapping)${RESET}"
+    echo -e "  ${DIM}  vm.swappiness          60 → 10   (→ 100 while zram swap is active)${RESET}"
     echo -e "  ${DIM}  vm.dirty_ratio         20 → 5    (smaller write buffers, fewer spikes)${RESET}"
     echo -e "  ${DIM}  vm.dirty_background    10 → 3    (more proactive background flushing)${RESET}"
     echo -e "  ${DIM}  vm.vfs_cache_pressure 100 → 50   (keep directory metadata cached longer)${RESET}"
@@ -7426,12 +7739,14 @@ setup_system_tuning() {
     echo -e "  ${DIM}  fs.inotify.max_instances 128→512 (more concurrent inotify users)${RESET}"
     echo -e "  ${DIM}  transparent_hugepages always→madvise (reduce DB latency spikes)${RESET}"
     echo -e "  ${DIM}  max-concurrent-downloads   3 → 6    (faster image pulls)${RESET}"
+    echo -e "  ${DIM}  userland-proxy          true → false (no docker-proxy process per published port; needs a Docker restart)${RESET}"
     echo ""
     echo "  1) Show current kernel values + swap + Docker status"
     echo "  2) Apply Friendbox tunings (persistent — survives reboot)"
     echo "  3) Revert to kernel defaults"
     echo "  4) Docker image prune (reclaim disk from unused layers)"
-    echo "  5) Back"
+    echo "  5) zram swap: $(_zram_active && echo 'ACTIVE — choose to disable' || echo 'not active — choose to enable') (automatic by default)"
+    echo "  6) Back"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
@@ -7439,7 +7754,8 @@ setup_system_tuning() {
       2) _tuning_apply                 || true; pause ;;
       3) _tuning_revert                || true; pause ;;
       4) _tuning_docker_prune          || true; pause ;;
-      5) return ;;
+      5) _zram_toggle                  || true; pause ;;
+      6) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
@@ -7610,6 +7926,8 @@ else
   fi
 
   _migrate_v3
+  _quic_buffers_ensure
+  if is_installed; then _zram_ensure; fi
   ensure_media_root
   _fix_install_dir_ownership
   main_menu

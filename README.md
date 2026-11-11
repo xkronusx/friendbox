@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.0.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.1.0**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -12,11 +12,31 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 |---|---|
 | **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
 | **Architecture** | x86_64 (amd64) |
-| **RAM** | 4 GB minimum, 8 GB+ recommended |
+| **RAM** | 16 GB or more. Friendbox 3.1 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
-> Friendbox 3.0.0 **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It needs Linux 7.0+, cgroup v2 and Docker 29. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+> Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It needs Linux 7.0+, cgroup v2 and Docker 29. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.1.0
+
+Performance release. Nothing here changes container paths; the `/data` mount rework is a separate, breaking change that is not part of 3.1.0.
+
+| Change | Details |
+|---|---|
+| **16 GB baseline** | Requirement raised from 4 GB. Plex/Jellyfin memory reservations went from 512 MB to 1 GB; the 4 GiB transcode tmpfs caps stay (25% of RAM each, only used when written). |
+| **Automatic zram swap** | Compressed-RAM swap is created on launch (50% of RAM, capped at 16 GiB, `zstd` when the kernel supports it, priority above any disk swap) and `vm.swappiness` is raised to 100 while it is active, because swapping to RAM is cheap. Skipped if another zram setup exists. Controls in `/opt/friendbox/.env`: `ZRAM_ENABLED=0` (disable), `ZRAM_SIZE_PERCENT` (10–100), `ZRAM_MAX_MIB`. Toggle from option 19 → 5. |
+| **Redeploy only what changed** | "Redeploy ALL" and `redeploy.sh` now run `pull` then `up -d`, which recreates only containers whose image or config changed, so streams and VPN tunnels on unchanged containers keep running. Menu option 12 → 5 force-recreates everything. Restore still does a full recreate on purpose, and the Traefik/CA flows always recreate Traefik itself. |
+| **Faster backups** | Backups use `zstd` (about 7x faster than gzip in a benchmark on one core, similar size); restore reads both `.tar.zst` and older `.tar.gz`. Regenerable Plex/Jellyfin caches, logs and codecs are excluded (`_BACKUP_EXCLUDES` in `setup.sh`); Plex metadata is kept. |
+| **Passthrough + page cache** | When FUSE passthrough is active, `dropcacheonclose` is set to `false` (it discarded useful cache on every close; repeat reads were about 2.3x slower in testing). |
+| **HTTP/3 buffer** | When Traefik is selected, the UDP receive-buffer cap is raised to 7.5 MB automatically (`/etc/sysctl.d/98-friendbox-quic.conf`) instead of depending on option 19. Only the receive side is raised. |
+| **Docker `userland-proxy: false`** | Added by option 19 unless you already set a value. The kernel forwards published ports directly instead of one `docker-proxy` process per port. It needs a Docker restart (the menu asks first; that restarts all containers). Revert removes it only if Friendbox set it. |
+| **Offline launches** | If GitHub is unreachable, the update check backs off for about 10 minutes instead of waiting up to 10 seconds on every launch. |
+| **Ownership fixes** | Single-drive provisioning only changes mismatched ownership instead of `chown -R` over the whole library. |
+
+> **Testing status:** backup/restore (both formats), the zram start/stop script, QUIC sysctl logic, `daemon.json` merge/revert, passthrough option handling and the ownership helper were tested in a sandbox. The `zstd` zram algorithm path and the `userland-proxy` change on a live Docker host were not (the sandbox kernel lacks zstd for zram and has no Docker).
 
 ---
 
@@ -481,7 +501,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
 | 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
 | 18 | Full Reset | Uninstalls everything — containers, images, configs, and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. |
-| 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, inotify limits, THP, Docker pull concurrency). Shows current values and swap status. Revert restores the values that were active before tuning. |
+| 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, inotify limits, THP, Docker pull concurrency). Shows current values, swap/zram status and Docker daemon settings; option 5 toggles zram swap. Revert restores the values that were active before tuning. |
 
 > **Options 10–17 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
 
@@ -556,7 +576,7 @@ sudo friendbox  →  option 13
 sudo friendbox  →  option 16
 ```
 
-Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.gz` of all container config directories plus key state files (`.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated. Before archiving, running containers are automatically stopped so that SQLite databases (Sonarr, Radarr, Prowlarr, etc.) are in a consistent state; they are restarted automatically once the archive is written. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
+Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.zst` (or `.tar.gz` if zstd cannot be installed) of all container config directories plus key state files (`.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated — as are regenerable Plex/Jellyfin caches, logs and codecs. Before archiving, running containers are automatically stopped so that SQLite databases (Sonarr, Radarr, Prowlarr, etc.) are in a consistent state; they are restarted automatically once the archive is written. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
 
 To restore: option 16 → option 2 → select an archive. The restore extracts over the current config, re-applies correct acme.json permissions, and offers to redeploy all containers immediately so the restored config takes effect.
 
@@ -577,7 +597,7 @@ sudo friendbox  →  option 12  →  option 2  →  select from numbered list
 ### Redeploy via helper script
 
 ```bash
-sudo /opt/friendbox/scripts/redeploy.sh              # redeploy all
+sudo /opt/friendbox/scripts/redeploy.sh              # pull + recreate only containers that changed
 sudo /opt/friendbox/scripts/redeploy.sh sonarr        # redeploy one
 sudo /opt/friendbox/scripts/redeploy.sh --restart     # restart without pulling
 sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memory/IO pressure + OOM kills
@@ -593,7 +613,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 /opt/friendbox/
 ├── .env                              # Environment variables (domain, paths, UID/GID)
 ├── backups/                          # Config backups created by option 16 (root:root 600)
-│   └── friendbox_backup_YYYYMMDD_HHMMSS.tar.gz
+│   └── friendbox_backup_YYYYMMDD_HHMMSS.tar.zst   # (.tar.gz also accepted)
 ├── .state                            # Internal state
 ├── .installed                        # Written by Full Install, cleared by Teardown
 ├── .selected_containers              # Active container selection

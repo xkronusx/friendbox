@@ -151,9 +151,11 @@ case "${1:-all}" in
   all)
     info "Pulling latest images..."
     compose pull
-    info "Recreating all active containers..."
-    compose up -d --force-recreate
-    success "All active containers redeployed." ;;
+    # Plain 'up -d' recreates only containers whose image or configuration changed, so
+    # unchanged containers (and their streams / VPN tunnels) keep running.
+    info "Recreating containers with a new image or changed configuration..."
+    compose up -d
+    success "Redeploy complete. (Force a full recreate with: docker compose up -d --force-recreate)" ;;
   *)
     svc="$1"
     info "Pulling image for ${svc}..."

@@ -31,7 +31,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.7.0"
+FRIENDBOX_VERSION="3.8.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -112,7 +112,7 @@ _fix_install_dir_ownership() {   # [--deep]
   for _e in "${INSTALL_DIR}"/* "${INSTALL_DIR}"/.[!.]*; do
     [[ -e "$_e" ]] || continue
     case "${_e##*/}" in
-      backups) continue ;;
+      backups|.prev) continue ;;
       config)  chown "${uid}:${gid}" "$_e"; continue ;;
     esac
     chown -R "${uid}:${gid}" "$_e"
@@ -598,6 +598,106 @@ fetch_remote() {
   return 0
 }
 
+# ── Update rollback ───────────────────────────────────────────────────────────
+# Before an update replaces /usr/local/bin/friendbox or docker-compose.yml, the files being
+# replaced are kept in ${INSTALL_DIR}/.prev (root-only: a root script must never be run from a
+# folder another user can write). Taken once per run and only when something actually differs,
+# so a "nothing changed" sync never overwrites the saved copy with the current one.
+PREV_DIR="${INSTALL_DIR}/.prev"
+_snapshot_prev() {
+  [[ -n "${_PREV_SNAPPED:-}" ]] && return 0
+  [[ $EUID -eq 0 && -d "$INSTALL_DIR" ]] || return 0
+  [[ -f /usr/local/bin/friendbox || -f "$COMPOSE_FILE" ]] || return 0
+  mkdir -p "$PREV_DIR" 2>/dev/null || return 0
+  chown root:root "$PREV_DIR"; chmod 700 "$PREV_DIR"
+  [[ -f /usr/local/bin/friendbox ]] && cp -p /usr/local/bin/friendbox "${PREV_DIR}/friendbox"
+  [[ -f "$COMPOSE_FILE" ]]          && cp -p "$COMPOSE_FILE" "${PREV_DIR}/docker-compose.yml"
+  printf '%s\n' "$FRIENDBOX_VERSION" > "${PREV_DIR}/version"
+  _PREV_SNAPPED=1
+  return 0
+}
+
+# Menu 20. Swaps the saved copy with the live files (so running it twice returns to the newer
+# version), turns auto-update off so the next launch does not undo it, then relaunches.
+rollback_update() {
+  require_root || return 1
+  local pf="${PREV_DIR}/friendbox" pc="${PREV_DIR}/docker-compose.yml" pv
+  if [[ ! -f "$pf" && ! -f "$pc" ]]; then
+    warn "No earlier version is saved yet."
+    info "A copy is kept automatically the next time an update changes setup.sh or docker-compose.yml."
+    return 0
+  fi
+  pv=$(cat "${PREV_DIR}/version" 2>/dev/null || echo unknown)
+  local s_diff=false c_diff=false
+  [[ -f "$pf" ]] && ! cmp -s "$pf" /usr/local/bin/friendbox && s_diff=true
+  [[ -f "$pc" ]] && ! cmp -s "$pc" "$COMPOSE_FILE" && c_diff=true
+  if [[ "$s_diff" == "false" && "$c_diff" == "false" ]]; then
+    info "The saved copy is identical to the current files — nothing to roll back."
+    return 0
+  fi
+  # Validate the saved files before touching anything live.
+  if [[ "$s_diff" == "true" ]]; then
+    if [[ "$(wc -c < "$pf" 2>/dev/null || echo 0)" -lt 1000 ]] || ! grep -q '^FRIENDBOX_VERSION=' "$pf" || ! bash -n "$pf" 2>/dev/null; then
+      error "The saved script copy is damaged — not rolling back."; return 1
+    fi
+  fi
+  if [[ "$c_diff" == "true" ]]; then
+    if [[ "$(wc -c < "$pc" 2>/dev/null || echo 0)" -lt 1000 ]]; then
+      error "The saved compose file copy is damaged — not rolling back."; return 1
+    fi
+    if python3 -c "import yaml" 2>/dev/null && ! python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$pc" 2>/dev/null; then
+      error "The saved compose file copy is not valid YAML — not rolling back."; return 1
+    fi
+  fi
+  echo ""
+  echo -e "${BOLD}Roll back the last update${RESET}"
+  echo "  Current version : ${FRIENDBOX_VERSION}"
+  echo "  Saved version   : ${pv}"
+  echo "  Will restore    : $([[ "$s_diff" == "true" ]] && echo -n 'script  ')$([[ "$c_diff" == "true" ]] && echo -n 'docker-compose.yml')"
+  echo ""
+  warn "Auto-update will be switched OFF (AUTO_UPDATE=0 in .env) so the next launch does not undo this."
+  if [[ "$s_diff" == "true" ]] && ! grep -q 'AUTO_UPDATE' "$pf"; then
+    warn "The saved script (${pv}) predates the AUTO_UPDATE switch, so it will update itself again at its next"
+    warn "launch. Start it with: sudo friendbox --skip-update"
+  fi
+  info "Containers keep running as they are; use Redeploy (option 12) to apply a restored compose file."
+  read -rp "Roll back? [y/N] " _yn
+  [[ "$_yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
+
+  local tmp; tmp=$(mktemp -d "${INSTALL_DIR}/.rollback.XXXXXX") || { error "Could not create a temp folder."; return 1; }
+  [[ -f /usr/local/bin/friendbox ]] && cp -p /usr/local/bin/friendbox "${tmp}/friendbox"
+  [[ -f "$COMPOSE_FILE" ]]          && cp -p "$COMPOSE_FILE" "${tmp}/docker-compose.yml"
+  if [[ "$s_diff" == "true" ]]; then
+    cp -p "$pf" /usr/local/bin/friendbox.rb && chmod 755 /usr/local/bin/friendbox.rb \
+      && mv -f /usr/local/bin/friendbox.rb /usr/local/bin/friendbox || { error "Could not restore the script."; rm -rf "$tmp"; return 1; }
+  fi
+  if [[ "$c_diff" == "true" ]]; then
+    cp -p "$pc" "${COMPOSE_FILE}.rb" && mv -f "${COMPOSE_FILE}.rb" "$COMPOSE_FILE" \
+      || { error "Could not restore the compose file."; rm -rf "$tmp"; return 1; }
+    _own "$COMPOSE_FILE"
+  fi
+  # Newer files become the saved copy (so a second rollback undoes this one).
+  [[ -f "${tmp}/friendbox" ]]            && mv -f "${tmp}/friendbox" "$pf"
+  [[ -f "${tmp}/docker-compose.yml" ]]   && mv -f "${tmp}/docker-compose.yml" "$pc"
+  printf '%s\n' "$FRIENDBOX_VERSION" > "${PREV_DIR}/version"
+  rm -rf "$tmp"
+  _env_put AUTO_UPDATE 0
+  success "Rolled back to ${pv}. Auto-update is off."
+  info "Run this option again to return to ${FRIENDBOX_VERSION}; set AUTO_UPDATE=1 in .env to resume updates."
+  if [[ "$c_diff" == "true" && -f "$ENV_FILE" ]]; then
+    ( source "$ENV_FILE" 2>/dev/null || true
+      [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]] && _traefik_write_config 2>/dev/null
+      [[ -n "${JELLYFIN_HW_ACCEL:-}" && "${JELLYFIN_HW_ACCEL}" != "none" ]] && _jellyfin_hw_apply "${JELLYFIN_HW_ACCEL}" 2>/dev/null
+      true )
+  fi
+  if [[ "$s_diff" == "true" ]]; then
+    info "Relaunching the restored script..."
+    pause
+    exec /usr/local/bin/friendbox --skip-update
+  fi
+  return 0
+}
+
 # ── Startup auto-update ───────────────────────────────────────────────────────
 # Called once at launch (before the menu). Downloads the latest versions of all
 # repo-managed files, then re-execs the updated friendbox script so the rest of
@@ -712,6 +812,8 @@ auto_update() {
   # on the next launch after re-exec (avoids a stale 1-hour window post-update).
   rm -f "$_update_cache"
 
+  _snapshot_prev   # keep the files about to be replaced, for menu option 20
+
   # Apply compose file if it changed; otherwise discard the download.
   if [[ "$compose_changed" == "true" ]]; then
     mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
@@ -786,6 +888,7 @@ sync_repo() {
       rm -f /usr/local/bin/friendbox.new
       echo -e "${RED}[FAILED]${RESET} (syntax check failed — file may be corrupt)"
     else
+      cmp -s /usr/local/bin/friendbox.new /usr/local/bin/friendbox || _snapshot_prev
       mv /usr/local/bin/friendbox.new /usr/local/bin/friendbox
       chmod +x /usr/local/bin/friendbox
       echo -e "${GREEN}[OK]${RESET}"
@@ -808,6 +911,7 @@ sync_repo() {
       rm -f "${COMPOSE_FILE}.new"
       echo -e "${RED}[FAILED]${RESET} (YAML parse failed — file may be corrupt)"
     else
+      cmp -s "${COMPOSE_FILE}.new" "$COMPOSE_FILE" || _snapshot_prev
       mv "${COMPOSE_FILE}.new" "${COMPOSE_FILE}"
       _own "${COMPOSE_FILE}"
       echo -e "${GREEN}[OK]${RESET}"
@@ -3178,7 +3282,14 @@ _traefik_emergency_recover() {
     compose_selected up -d --force-recreate traefik
     success "Containers with changed labels and Traefik were redeployed."
     echo ""
-    info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    local _dbind
+    _dbind=$(grep -m1 '^TRAEFIK_DASHBOARD_BIND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')
+    if [[ -z "$_dbind" || "$_dbind" == "127.0.0.1" ]]; then
+      info "Dashboard (this server only): http://localhost:8080/dashboard/  — or https://dashboard.${DOMAIN:-yourdomain} with your login."
+      info "To open the plain-HTTP dashboard to your LAN: set TRAEFIK_DASHBOARD_BIND=0.0.0.0 in .env, then redeploy traefik."
+    else
+      info "Dashboard should be reachable at: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/dashboard/"
+    fi
     info "Watch cert request: option 14 → traefik → follow live logs"
     info "If HTTPS cert renewal still fails, run: option 4 → option 5 (pre-flight checks)"
   else
@@ -4357,6 +4468,78 @@ _backup_ext() {
 
 # _backup_make_archive ARCHIVE CFG [STATE_FILE_REL...] — tar + compress the config tree
 # (stored relative to /). Compression is chosen from ARCHIVE's extension.
+# _backup_verify ARCHIVE — read the whole archive back (decompress + list); catches a truncated
+# or corrupt file that tar reported success for (full disk, I/O error).
+_backup_verify() {
+  tar -tf "$1" >/dev/null 2>&1
+}
+
+# _backup_copy_offsite ARCHIVE — optional second copy to BACKUP_COPY_DIR (.env). The folder must
+# already exist (never created, so an unmounted NFS/USB path cannot silently fill the OS disk).
+# Never fails the backup: a problem is a warning.
+_backup_copy_offsite() {
+  local archive="$1" dest="${BACKUP_COPY_DIR:-}" name
+  [[ -z "$dest" ]] && return 0
+  name=$(basename "$archive")
+  if [[ ! -d "$dest" ]]; then
+    warn "Second backup copy skipped: ${dest} does not exist (is the drive/share mounted?)."
+    return 0
+  fi
+  if [[ "$(realpath "$dest" 2>/dev/null)" == "$(realpath "$BACKUP_DIR" 2>/dev/null)" ]]; then
+    warn "BACKUP_COPY_DIR is the same folder as the backups — no second copy made."
+    return 0
+  fi
+  if [[ "$(stat -c %d "$dest" 2>/dev/null)" == "$(stat -c %d "$BACKUP_DIR" 2>/dev/null)" ]]; then
+    warn "${dest} is on the same disk as ${BACKUP_DIR}: a disk failure would lose both copies."
+  fi
+  if cp -p "$archive" "${dest}/${name}.part" 2>/dev/null \
+     && cmp -s "$archive" "${dest}/${name}.part" \
+     && mv -f "${dest}/${name}.part" "${dest}/${name}"; then
+    success "Second copy stored: ${dest}/${name}"
+    local old o
+    old=$(ls -1t "${dest}"/friendbox_backup_*.tar.* 2>/dev/null | tail -n +11)
+    if [[ -n "$old" ]]; then
+      while IFS= read -r o; do rm -f "$o"; done <<< "$old"
+    fi
+  else
+    rm -f "${dest}/${name}.part" 2>/dev/null
+    warn "Could not copy the backup to ${dest} (full, read-only or unwritable). The local backup is fine."
+  fi
+}
+
+# Menu: backup → 4. Stores BACKUP_COPY_DIR in .env, or clears it on empty input.
+_backup_set_copy_dir() {
+  local cur d
+  cur=$(grep -m1 '^BACKUP_COPY_DIR=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')
+  echo ""
+  echo -e "${BOLD}Second backup destination${RESET}"
+  echo "  Every backup is also copied here (checked byte-for-byte, newest 10 kept)."
+  echo "  Use a different disk or a mounted network share; the folder must already exist."
+  echo -e "  ${DIM}Current: ${cur:-not set}${RESET}"
+  echo ""
+  read -rp "  Folder path (Enter with a current value = clear it): " d
+  if [[ -z "$d" ]]; then
+    if [[ -n "$cur" ]]; then
+      sed -i '/^BACKUP_COPY_DIR=/d' "$ENV_FILE"; success "Second backup destination cleared."
+    else
+      info "Nothing changed."
+    fi
+    return 0
+  fi
+  [[ "$d" == /* ]] || { error "Use an absolute path (starting with /)."; return 1; }
+  _env_plain_ok "Backup folder" "$d" || return 1
+  [[ -d "$d" ]] || { error "${d} does not exist. Mount the drive/share first."; return 1; }
+  if ! touch "${d}/.friendbox_write_test" 2>/dev/null; then
+    error "${d} is not writable by root."; return 1
+  fi
+  rm -f "${d}/.friendbox_write_test"
+  if [[ "$(stat -c %d "$d" 2>/dev/null)" == "$(stat -c %d "$BACKUP_DIR" 2>/dev/null)" ]]; then
+    warn "${d} is on the same disk as ${BACKUP_DIR}. That protects against deleted files, not a disk failure."
+  fi
+  _env_put BACKUP_COPY_DIR "$d"
+  success "Backups will also be copied to ${d}."
+}
+
 _backup_make_archive() {
   local archive="$1" cfg="$2"; shift 2
   local base="${cfg#/}" excl=() p
@@ -4422,13 +4605,16 @@ backup_config() {
   done
 
   info "Excluding regenerable caches (Plex Cache/Logs/Codecs, Jellyfin cache) — see _BACKUP_EXCLUDES."
-  if _backup_make_archive "$archive_path" "$cfg" "${state_files[@]}"; then
+  if _backup_make_archive "$archive_path" "$cfg" "${state_files[@]}" \
+     && { info "Verifying the archive..."; _backup_verify "$archive_path"; }; then
     local size
     size=$(du -sh "$archive_path" 2>/dev/null | awk '{print $1}')
     chown root:root "$archive_path"
     chmod 600 "$archive_path"
     success "Backup created: ${archive_name} (${size:-?})"
+    success "Archive verified (reads back cleanly)."
     info "Location: ${archive_path}"
+    _backup_copy_offsite "$archive_path"
     # Keep only the 10 most recent
     local old
     old=$(ls -1t "${BACKUP_DIR}"/friendbox_backup_*.tar.* 2>/dev/null | tail -n +11)
@@ -4439,7 +4625,7 @@ backup_config() {
     fi
   else
     rm -f "$archive_path"
-    error "Backup failed — check disk space and permissions."
+    error "Backup failed or the archive could not be read back — check disk space and permissions."
     # Restart containers even on failure so we don't leave them stopped
     if [[ "$_was_running" == "true" ]]; then
       info "Restarting containers..."
@@ -4610,17 +4796,23 @@ setup_backup() {
     fi
     echo -e "  ${BOLD}Backup location:${RESET} ${BACKUP_DIR}"
     echo ""
+    local _bcd
+    _bcd=$(grep -m1 '^BACKUP_COPY_DIR=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')
+    echo -e "  ${BOLD}Second copy to :${RESET} ${_bcd:-${DIM}not set${RESET}}"
+    echo ""
     echo "  1) Create backup now"
     echo "  2) Restore from backup"
     echo "  3) List / delete backups"
-    echo "  4) Back to main menu"
+    echo "  4) Set / clear second backup destination (another disk or network share)"
+    echo "  5) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
       1) backup_config        || true; pause ;;
       2) restore_config       || true; pause ;;
       3) _backup_list_delete  || true; pause ;;
-      4) return ;;
+      4) _backup_set_copy_dir || true; pause ;;
+      5) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
@@ -7314,6 +7506,7 @@ full_reset() {
             "$COMPOSE_OVERRIDE" "${INSTALL_DIR}/.media_on_os_disk_ok" "${INSTALL_DIR}/.media_paths_notice"; do
     [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
   done
+  rm -rf "${INSTALL_DIR}/.prev" "${INSTALL_DIR}"/.rollback.* "${INSTALL_DIR}/.log_opts_set" 2>/dev/null || true
 
   # Remove system tuning files if they exist
   local _tune_conf="/etc/sysctl.d/99-friendbox.conf"
@@ -7444,6 +7637,7 @@ _THP_SYSTEMD="/etc/systemd/system/friendbox-thp.service"
 _NET_MODLOAD="/etc/modules-load.d/friendbox-net.conf"   # loads tcp_bbr / nf_conntrack before sysctl.d runs
 _DOCKER_DAEMON="/etc/docker/daemon.json"
 _USERLAND_MARK="${INSTALL_DIR}/.userland_proxy_set"   # present only if Friendbox set userland-proxy
+_LOGOPTS_MARK="${INSTALL_DIR}/.log_opts_set"          # present only if Friendbox set log-driver/log-opts
 
 _tuning_is_applied() {
   [[ -f "$_SYSCTL_CONF" ]]
@@ -7505,6 +7699,11 @@ _tuning_show_current() {
     _up_val=$(python3 -c "import json; d=json.load(open('$_DOCKER_DAEMON')); print(str(d.get('userland-proxy', True)).lower() + ('' if 'userland-proxy' in d else ' (default)'))" 2>/dev/null || echo "true (default)")
   fi
   printf "    %-40s %s\n" "userland-proxy" "$_up_val"
+  local _lo_val="not set (Docker default: unlimited json-file)"
+  if [[ -f "$_DOCKER_DAEMON" ]]; then
+    _lo_val=$(python3 -c "import json; d=json.load(open('$_DOCKER_DAEMON')); o=d.get('log-opts'); print((d.get('log-driver','json-file') + ' ' + ' '.join(k+'='+str(v) for k,v in o.items())) if o else 'not set (Docker default: unlimited json-file)')" 2>/dev/null || echo "unknown")
+  fi
+  printf "    %-40s %s\n" "log-driver / log-opts" "$_lo_val"
 
   # ── Swap ───────────────────────────────────────────────────────────────────
   echo ""
@@ -7965,7 +8164,7 @@ SVCEOF
   # (and per IP family — up to ~100 for the full stack). With it off, the kernel's iptables
   # DNAT forwards traffic directly. Only set when the user has not chosen a value themselves.
   # Unlike max-concurrent-downloads this option is NOT reloadable — it needs a restart.
-  local _up_set=false _up_out
+  local _up_set=false _up_out _log_set=false
   if [[ -f "$_DOCKER_DAEMON" ]]; then
     # Merge into existing daemon.json using Python — preserve any user settings.
     if _up_out=$(python3 - "$_DOCKER_DAEMON" << 'DAEMONEOF'
@@ -7980,6 +8179,12 @@ cfg["max-concurrent-downloads"] = 6
 if "userland-proxy" not in cfg:
     cfg["userland-proxy"] = False
     print("USERLAND_SET")
+# Cap container logs for containers created outside the compose file (Portainer, docker run).
+# Only when the user has not chosen a log driver/options themselves.
+if "log-driver" not in cfg and "log-opts" not in cfg:
+    cfg["log-driver"] = "json-file"
+    cfg["log-opts"] = {"max-size": "10m", "max-file": "3"}
+    print("LOGOPTS_SET")
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
@@ -7987,30 +8192,33 @@ DAEMONEOF
     ); then
       success "daemon.json updated (max-concurrent-downloads=6, userland-proxy=false)"
       [[ "$_up_out" == *USERLAND_SET* ]] && _up_set=true
+      [[ "$_up_out" == *LOGOPTS_SET*  ]] && _log_set=true
     else
       warn "Could not update ${_DOCKER_DAEMON} — Docker daemon settings not changed."
     fi
   else
-    printf '{\n  "max-concurrent-downloads": 6,\n  "userland-proxy": false\n}\n' > "$_DOCKER_DAEMON"
-    _up_set=true
+    printf '{\n  "max-concurrent-downloads": 6,\n  "userland-proxy": false,\n  "log-driver": "json-file",\n  "log-opts": {\n    "max-size": "10m",\n    "max-file": "3"\n  }\n}\n' > "$_DOCKER_DAEMON"
+    _up_set=true; _log_set=true
     success "daemon.json created (max-concurrent-downloads=6, userland-proxy=false)"
   fi
   if [[ "$_up_set" == "true" ]]; then touch "$_USERLAND_MARK" 2>/dev/null || true; fi
+  if [[ "$_log_set" == "true" ]]; then touch "$_LOGOPTS_MARK" 2>/dev/null || true; fi
   # Reload picks up max-concurrent-downloads (no container restart needed).
   if ! systemctl reload docker 2>/dev/null; then
     warn "Could not reload the Docker daemon — settings will apply on the next Docker restart."
   fi
-  if [[ "$_up_set" == "true" ]]; then
+  if [[ "$_up_set" == "true" || "$_log_set" == "true" ]]; then
     echo ""
-    warn "userland-proxy=false only takes effect after Docker is restarted, which restarts ALL"
-    warn "containers (usually 30–60 s; they come back automatically)."
+    [[ "$_up_set"  == "true" ]] && warn "userland-proxy=false only takes effect after Docker is restarted."
+    [[ "$_log_set" == "true" ]] && warn "Log limits (10m x 3 files) apply to containers created after a Docker restart."
+    warn "Restarting Docker restarts ALL containers (usually 30–60 s; they come back automatically)."
     read -rp "  Restart Docker now? [y/N] " _rd
     if [[ "${_rd:-n}" =~ ^[Yy]$ ]]; then
       systemctl restart docker 2>/dev/null \
-        && success "Docker restarted — userland-proxy disabled." \
+        && success "Docker restarted — new daemon settings active." \
         || warn "Could not restart Docker — it will apply on the next restart or reboot."
     else
-      info "Not restarting now — userland-proxy=false applies at the next Docker restart or reboot."
+      info "Not restarting now — these settings apply at the next Docker restart or reboot."
     fi
   fi
 
@@ -8042,7 +8250,7 @@ _tuning_revert() {
 
   # Revert daemon.json — remove the max-concurrent-downloads key if we set it.
   if [[ -f "$_DOCKER_DAEMON" ]]; then
-    if python3 - "$_DOCKER_DAEMON" "$_USERLAND_MARK" << 'DAEMONEOF'
+    if python3 - "$_DOCKER_DAEMON" "$_USERLAND_MARK" "$_LOGOPTS_MARK" << 'DAEMONEOF'
 import json, sys, os
 path = sys.argv[1]
 try:
@@ -8053,6 +8261,9 @@ except Exception:
 cfg.pop("max-concurrent-downloads", None)
 if len(sys.argv) > 2 and os.path.exists(sys.argv[2]):
     cfg.pop("userland-proxy", None)      # only if Friendbox set it
+if len(sys.argv) > 3 and os.path.exists(sys.argv[3]):
+    cfg.pop("log-driver", None)          # only if Friendbox set them
+    cfg.pop("log-opts", None)
 if cfg:
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
@@ -8061,7 +8272,7 @@ else:
     os.remove(path)
 DAEMONEOF
     then
-      rm -f "$_USERLAND_MARK"
+      rm -f "$_USERLAND_MARK" "$_LOGOPTS_MARK"
       success "daemon.json reverted (Friendbox settings removed; userland-proxy reverts at the next Docker restart)"
     else
       warn "Could not revert ${_DOCKER_DAEMON}"
@@ -8167,6 +8378,7 @@ setup_system_tuning() {
     echo -e "  ${DIM}  transparent_hugepages always→madvise (reduce DB latency spikes)${RESET}"
     echo -e "  ${DIM}  max-concurrent-downloads   3 → 6    (faster image pulls)${RESET}"
     echo -e "  ${DIM}  userland-proxy          true → false (no docker-proxy process per published port; needs a Docker restart)${RESET}"
+    echo -e "  ${DIM}  log-opts          unlimited → 10m x 3 (caps logs of containers made outside compose; needs a Docker restart)${RESET}"
     echo -e "  ${DIM}                          ufw users: keep DEFAULT_FORWARD_POLICY=ACCEPT in /etc/default/ufw — with the proxy off, even${RESET}"
     echo -e "  ${DIM}                          connections from this host to a published port can depend on forwarding rules.${RESET}"
     echo ""
@@ -8253,6 +8465,7 @@ main_menu() {
     echo "  17) Teardown (stop & remove containers)"
     echo "  18) Full Reset (wipe everything)"
     echo "  19) System performance tuning"
+    echo "  20) Roll back last update"
     echo "   q) Quit"
     echo ""
     read -rp "Select option: " opt
@@ -8286,6 +8499,7 @@ main_menu() {
       17) teardown                        || true; pause ;;
       18) full_reset                      || true; pause ;;
       19) setup_system_tuning                    ;;   # has its own loop+return
+      20) rollback_update                 || true; pause ;;
       q|Q) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid option '$opt'"; sleep 1 ;;
     esac

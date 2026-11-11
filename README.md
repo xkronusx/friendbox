@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.7.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.8.0**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -17,6 +17,23 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
 > Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It is built for Linux 7.0+, cgroup v2, Docker 29 and amd64: Full Install **warns** (it does not stop) if the kernel is older than 7.0, cgroup v2 is off, Docker is older than 29 or the architecture is not amd64. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.8.0
+
+Hardening and safety release. No container paths change. **Read the first row if you use the Traefik dashboard on port 8080 from other machines.**
+
+| Change | Details |
+|---|---|
+| **Traefik dashboard on port 8080 is now local-only** | The plain-HTTP dashboard/API on `:8080` has no login and was open to your whole LAN, listing every route and hostname. It is now published on `127.0.0.1` only (`http://localhost:8080/dashboard/` on the server itself). From other machines use the HTTPS dashboard (`https://traefik.yourdomain.com`, Basic Auth). To restore LAN access, add `TRAEFIK_DASHBOARD_BIND=0.0.0.0` to `/opt/friendbox/.env` and redeploy Traefik (option 12). Other containers reach the API over the Docker network, so nothing else changes. |
+| **Memory limits on the heaviest containers** | qBittorrent, qBittorrent VPN and Deluge VPN: 4 GB; Jellyfin: 6 GB; UniFi: 3 GB; AMP: 8 GB. A runaway container is now killed on its own instead of pushing the host into out-of-memory and taking Traefik or a database with it. Change a limit in `.env`: `DOWNLOADER_MEM_LIMIT`, `JELLYFIN_MEM_LIMIT`, `UNIFI_MEM_LIMIT`, `AMP_MEM_LIMIT` (for example `AMP_MEM_LIMIT=14g`), then redeploy that container. AMP hosts game servers, so raise its limit if your servers need more. |
+| **Reduced privileges for three containers** | Actual Budget drops all Linux capabilities. Heimdall and netboot.xyz drop all but the six LinuxServer images use to start and switch to your PUID/PGID. If one fails to start after an update, delete its `cap_drop`/`cap_add` lines (or neutralise them in `docker-compose.override.yml`). |
+| **Backups are verified and can be copied elsewhere** | After writing the archive, Friendbox reads it back (decompress and list) and treats an unreadable file as a failed backup, so the pruning of old backups never follows a bad one. Backup menu option 4 sets an optional second destination (another disk or a mounted share, stored as `BACKUP_COPY_DIR` in `.env`). Each backup is copied there, checked byte-for-byte, and the newest 10 are kept. The folder must already exist (it is never created, so an unmounted share cannot quietly fill the OS disk). A failed copy is a warning, never a failed backup. |
+| **Roll back the last update (menu 20)** | Before an update replaces `setup.sh` or `docker-compose.yml`, the old files are saved in `/opt/friendbox/.prev` (root only). Option 20 restores them, checking that they are intact first, turns auto-update off (`AUTO_UPDATE=0`) so the next launch does not undo it, and relaunches. Running it again swaps forward to the newer version. Containers are not touched; use Redeploy (option 12) to apply a restored compose file. Only the last update is kept, and a sync that finds nothing new does not overwrite the saved copy. Rolling back to a version older than 3.7.0 cannot switch auto-update off (that switch did not exist); start it with `sudo friendbox --skip-update`. |
+| **Docker log limits for every container** | Option 19 now also writes `log-driver: json-file` with `max-size 10m` and `max-file 3` to `/etc/docker/daemon.json`, but only if you have not set a log driver or options yourself. The compose stack already limits its own logs; this covers containers created outside it (Portainer, `docker run`). It needs a Docker restart, which option 19 offers; Revert removes it again. |
+
+> **Testing status:** the compose file was validated with `docker compose config` for every profile, and the rendered result checked for the 127.0.0.1 binding, the `.env` overrides, the memory limits and the capability settings. Backup verification (good, truncated archive), the second copy (unset, missing folder, same folder, same disk, byte-check, keep-10), the destination prompt (relative, missing, unsupported characters, set, clear), snapshot and rollback (nothing saved, snapshot-once, unchanged sync, restore, restore forward, damaged copy refused, decline) and the `daemon.json` merge and revert (existing keys kept, run twice, user log settings kept) were tested in a sandbox. **Not run against live containers:** whether Heimdall and netboot.xyz start with the reduced capabilities, whether the memory limits suit your workload, and the Docker restart.
 
 ---
 
@@ -432,9 +449,9 @@ Before clearing `acme.json` (in both emergency recovery and staging toggle), Fri
 
 **Traefik dashboard access:**
 
-Port 8080 is bound to all interfaces — the dashboard is reachable from the host machine at `http://localhost:8080/dashboard/` or from any machine on your LAN at `http://YOUR_SERVER_IP:8080/dashboard/`. This is useful when HTTPS isn't working yet and you need to inspect routing. The secured HTTPS dashboard at `https://traefik.yourdomain.com` requires a valid cert and the credentials set in option 1.
+Port 8080 is bound to the server itself (`127.0.0.1`) — the dashboard is reachable from the host machine at `http://localhost:8080/dashboard/`, or over SSH with `ssh -L 8080:localhost:8080 you@server`. This is useful when HTTPS isn't working yet and you need to inspect routing. To open it to your LAN, set `TRAEFIK_DASHBOARD_BIND=0.0.0.0` in `.env` and redeploy Traefik. The secured HTTPS dashboard at `https://traefik.yourdomain.com` requires a valid cert and the credentials set in option 1.
 
-> ⚠️ Port 8080 has no authentication. Do not forward it through your router to the internet.
+> ⚠️ Port 8080 has no authentication. Keep it on `127.0.0.1`; if you set `TRAEFIK_DASHBOARD_BIND=0.0.0.0`, never forward it through your router to the internet.
 
 ---
 
@@ -505,7 +522,7 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 
 | Service | Default URL | First login |
 |---|---|---|
-| Traefik dashboard | `http://YOUR_SERVER_IP:8080/dashboard/` or `http://localhost:8080/dashboard/` | No auth — LAN accessible. Do not expose port 8080 to the internet. |
+| Traefik dashboard | `http://localhost:8080/dashboard/` (on the server) | No auth — local only by default. `TRAEFIK_DASHBOARD_BIND=0.0.0.0` opens it to the LAN; never expose port 8080 to the internet. |
 | Traefik (HTTPS) | `https://traefik.yourdomain.com` | Credentials set in option 4 → option 1 |
 | Portainer | `https://portainer.yourdomain.com` | Create admin account on first visit |
 | Plex | `https://plex.yourdomain.com` | Sign in with Plex account, set library paths to `/data/media/movies`, `/data/media/tv` |
@@ -599,10 +616,11 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 13 | Update stack | Sync files from GitHub, pull latest images, restart. Reports which images actually changed versus already current. |
 | 14 | View logs | Follow live logs or dump last 200 lines for all containers or a specific one. |
 | 15 | Check port conflicts | Checks whether any ports needed by selected containers are already held by a non-Docker process (Friendbox's own containers are not counted). |
-| 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
+| 16 | Backup & Restore | Create (verified by reading it back), restore, and delete timestamped config backups; optionally copy each one to a second disk or share. Backups stored in `/opt/friendbox/backups/`. |
 | 17 | Teardown | Stops and removes containers (including ones you deselected earlier), removes Docker network. Config and data preserved. |
 | 18 | Full Reset | Uninstalls everything — containers, images, configs, tuning, zram swap and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. The config folder is not deleted if `CONFIG_ROOT` is `/`, a system directory, a home directory, a mount point or contains your media root. |
 | 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, BBR congestion control, connection-tracking limit, inotify limits, THP, Docker pull concurrency). Shows current values, swap/zram status and Docker daemon settings; option 5 toggles zram swap. Revert restores the values that were active before tuning. |
+| 20 | Roll back last update | Restores the `setup.sh` and `docker-compose.yml` that the last update replaced (saved in `/opt/friendbox/.prev`), switches auto-update off and relaunches. Run it again to go forward. |
 
 > **Options 10–17 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
 
@@ -664,6 +682,10 @@ Enable HAProxy via: **System → Firmware → Plugins → `os-haproxy`**
 ### Auto-update on launch
 
 Every `sudo friendbox` launch downloads the latest `docker-compose.yml` and `setup.sh` from GitHub. Both files are validated (syntax check for the script, YAML parse for the compose file) before replacing the live copies. If an update is found the script re-executes itself automatically. No manual sync needed. To opt out, set `AUTO_UPDATE=0` in `.env`. Auto-update only runs after Full Install (option 1) has been completed — on a fresh machine before install it is skipped.
+
+### Roll back an update
+
+Menu option 20 undoes the last update that changed `setup.sh` or `docker-compose.yml`. The replaced files are kept in `/opt/friendbox/.prev` (root only) and checked before use. It switches auto-update off (`AUTO_UPDATE=0` in `.env`); remove that line to resume updates. Running the option again returns to the newer version. Containers are not touched, so use Redeploy (option 12) afterwards to apply a restored compose file. Only one earlier version is kept.
 
 ### Pull latest container images
 
@@ -743,6 +765,8 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 ├── .mergerfs_modes                   # Per-disk MergerFS mode (RW/NC/RO)
 ├── .mergerfs_pool                    # MergerFS pool mount path
 ├── .tuning_prev                      # Values active before option 19 tuning (used by Revert)
+├── .log_opts_set                     # Present only if Friendbox set Docker's log-driver/log-opts (so Revert removes only those)
+├── .prev/                            # Files replaced by the last update (root:root 700) — used by option 20
 ├── .userland_proxy_set               # Present only if Friendbox set Docker's userland-proxy (so Revert removes only that)
 ├── .media_paths_notice               # One-time /data/downloads → /data/media/downloads reminder already shown
 ├── .dns_config                       # DNS provider credentials (chmod 600)
@@ -774,7 +798,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 /etc/modules-load.d/friendbox-net.conf  # loads tcp_bbr / nf_conntrack before sysctl at boot
 /etc/systemd/system/friendbox-thp.service   # Transparent HugePages = madvise
 /etc/systemd/system/friendbox-zram.service  # zram swap (script: /usr/local/sbin/friendbox-zram)
-/etc/docker/daemon.json               # max-concurrent-downloads and userland-proxy (keys Friendbox set)
+/etc/docker/daemon.json               # max-concurrent-downloads, userland-proxy and log-opts (keys Friendbox set)
 
 # DNS auto-update (option 6 → 7)
 /usr/local/bin/friendbox-dns-update   # cron job script (/etc/cron.d/friendbox-dns, every 5 minutes)
@@ -791,6 +815,8 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 - `.env` is `chmod 600` — contains VPN credentials, DNS provider API keys, and hashed dashboard passwords. Do not share or commit it
 - Mumble and AMP fall back to the password `changeme`, and UniFi's database to `unifipass`, if you skip option 5. Set real credentials before exposing those services
 - Auto-update downloads and runs code from the repo's `main` branch as root. Set `AUTO_UPDATE=0` in `.env` if you would rather review and update manually
+- The Traefik plain-HTTP dashboard (port 8080, no login) listens on `127.0.0.1` only; `TRAEFIK_DASHBOARD_BIND=0.0.0.0` opens it to the LAN
+- Heavy containers have memory limits and three run with reduced Linux capabilities (see *What's new in 3.8.0*)
 - Traefik refuses TLS 1.0 and 1.1 (`dynamic/tls.yml`, minimum TLS 1.2)
 - `.dns_config` is `chmod 600` — contains DNS provider API keys
 - WireGuard Easy v15 stores credentials in its internal database — `INIT_PASSWORD` in `.env` is plaintext and only consumed on first start; remove it after first deploy

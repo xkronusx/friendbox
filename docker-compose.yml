@@ -205,7 +205,7 @@ services:
       - ${CONFIG_ROOT}/jellyfin-cache:/cache
       - ${MEDIA_ROOT}/tv:/data/media/tv
       - ${MEDIA_ROOT}/movies:/data/media/movies
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      - ${MEDIA_ROOT}/downloads:/data/media/downloads
     # /cache/transcodes is ephemeral — tmpfs keeps transcode off disk without
     # losing the persistent thumbnail/metadata cache in /cache itself.
     tmpfs:
@@ -252,8 +252,9 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/sonarr:/config
-      - ${MEDIA_ROOT}/tv:/data/media/tv
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      # ONE mount for library + downloads: hardlinks and instant moves only work when both
+      # paths are on the same mount (separate bind mounts fail with EXDEV and fall back to copy).
+      - ${MEDIA_ROOT}:/data/media
     ports:
       - "8989:8989"
     labels:
@@ -289,8 +290,9 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/radarr:/config
-      - ${MEDIA_ROOT}/movies:/data/media/movies
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      # ONE mount for library + downloads: hardlinks and instant moves only work when both
+      # paths are on the same mount (separate bind mounts fail with EXDEV and fall back to copy).
+      - ${MEDIA_ROOT}:/data/media
     ports:
       - "7878:7878"
     labels:
@@ -398,8 +400,9 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/lidarr:/config
-      - ${MEDIA_ROOT}/music:/data/media/music
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      # ONE mount for library + downloads: hardlinks and instant moves only work when both
+      # paths are on the same mount (separate bind mounts fail with EXDEV and fall back to copy).
+      - ${MEDIA_ROOT}:/data/media
     ports:
       - "8686:8686"
     labels:
@@ -510,7 +513,7 @@ services:
       - TZ=${TZ}
     volumes:
       - ${CONFIG_ROOT}/nzbget:/config
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      - ${MEDIA_ROOT}/downloads:/data/media/downloads
     ports:
       - "6789:6789"
     labels:
@@ -553,7 +556,7 @@ services:
       - TORRENTING_PORT=6881
     volumes:
       - ${CONFIG_ROOT}/qbittorrent:/config
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      - ${MEDIA_ROOT}/downloads:/data/media/downloads
     ports:
       - "8082:8080"
       - "6881:6881"
@@ -611,7 +614,7 @@ services:
       - UMASK=002
     volumes:
       - ${CONFIG_ROOT}/qbittorrentvpn:/config
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      - ${MEDIA_ROOT}/downloads:/data/media/downloads
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "8181:8080"
@@ -668,7 +671,7 @@ services:
       - UMASK=002
     volumes:
       - ${CONFIG_ROOT}/delugevpn:/config
-      - ${MEDIA_ROOT}/downloads:/data/downloads
+      - ${MEDIA_ROOT}/downloads:/data/media/downloads
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "8112:8112"

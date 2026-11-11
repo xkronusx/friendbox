@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.1.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.2.0**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -12,7 +12,7 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 |---|---|
 | **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
 | **Architecture** | x86_64 (amd64) |
-| **RAM** | 16 GB or more. Friendbox 3.1 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
+| **RAM** | 16 GB or more. Friendbox 3.2 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
@@ -20,9 +20,9 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 
 ---
 
-## 🆕 What's new in 3.1.0
+## 🆕 What's new in 3.2.0
 
-Performance release. Nothing here changes container paths; the `/data` mount rework is a separate, breaking change that is not part of 3.1.0.
+Performance release. **One change affects existing installs:** the downloads path moves from `/data/downloads` to `/data/media/downloads` (see the *Hardlinks and instant moves* row and *Upgrading the media paths* below).
 
 | Change | Details |
 |---|---|
@@ -33,6 +33,7 @@ Performance release. Nothing here changes container paths; the `/data` mount rew
 | **Passthrough + page cache** | When FUSE passthrough is active, `dropcacheonclose` is set to `false` (it discarded useful cache on every close; repeat reads were about 2.3x slower in testing). |
 | **HTTP/3 buffer** | When Traefik is selected, the UDP receive-buffer cap is raised to 7.5 MB automatically (`/etc/sysctl.d/98-friendbox-quic.conf`) instead of depending on option 19. Only the receive side is raised. |
 | **Docker `userland-proxy: false`** | Added by option 19 unless you already set a value. The kernel forwards published ports directly instead of one `docker-proxy` process per port. It needs a Docker restart (the menu asks first; that restarts all containers). Revert removes it only if Friendbox set it. |
+| **Hardlinks and instant moves** | Sonarr, Radarr and Lidarr now see `${MEDIA_ROOT}` through **one** mount at `/data/media`. Before, `downloads` and the library were separate bind mounts, which the kernel treats as different devices, so every import was a full copy (and a torrent still seeding kept a second copy on disk). Download clients and Jellyfin get a downloads-only mount at `/data/media/downloads` (**was `/data/downloads`**). Plex and Bazarr are unchanged. See *Upgrading the media paths* below. |
 | **Offline launches** | If GitHub is unreachable, the update check backs off for about 10 minutes instead of waiting up to 10 seconds on every launch. |
 | **Ownership fixes** | Single-drive provisioning only changes mismatched ownership instead of `chown -R` over the whole library. |
 
@@ -95,6 +96,16 @@ Version 3.0.0 is a major release built around Ubuntu 26.04 LTS ("Resolute Raccoo
 | System tuning (option 19) | "Revert" restores the values that were live *before* tuning (saved to `/opt/friendbox/.tuning_prev`) instead of assuming hard-coded defaults. |
 
 > **Testing status:** the pieces above were tested individually against the real 26.04 packages (coreutils, mergerfs 2.40.2) and upstream mergerfs 2.42.0 on a 6.18 kernel, including shared-`mmap` writes (the libtorrent pattern) with `rw` passthrough. A full end-to-end install on a physical 26.04 machine has not been run.
+
+
+### Upgrading the media paths (existing installs)
+
+The compose change takes effect when containers are recreated (menu 12 → 1). On the first launch after the update Friendbox prints a one-time reminder if it finds containers still using the old `/data/downloads` mount. Then:
+
+1. **Download clients:** set the default save path to `/data/media/downloads` (qBittorrent: Options → Downloads; Deluge: Preferences → Downloads; NZBGet: `MainDir`). A Deluge `core.conf` still holding Friendbox's untouched defaults is updated for you.
+2. **Existing torrents:** point them at the new path (qBittorrent: right-click → *Set location*; Deluge: *Move storage*), otherwise they show missing files.
+3. **Sonarr / Radarr / Lidarr:** update the download client path or category to `/data/media/downloads`. Library root folders (`/data/media/tv`, `/data/media/movies`, `/data/media/music`) do **not** change, and neither do Plex, Jellyfin or Bazarr.
+4. Keep **Settings → Media Management → Use Hardlinks instead of Copy** ticked. On a MergerFS pool the hardlink is created on the same disk as the downloaded file (tested, including when the library folder did not yet exist on that disk), so no extra pool settings are needed. A hardlink can never span two physical disks: if a download and its library folder genuinely live on different filesystems, the import still copies.
 
 ---
 
@@ -463,7 +474,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 
 **Recommended connection order:**
 1. Prowlarr → add your indexers
-2. Sonarr → Settings → Download Clients → add qBittorrent at `http://qbittorrent:8080`, set download category path to `/data/downloads`
+2. Sonarr → Settings → Download Clients → add qBittorrent at `http://qbittorrent:8080`, set download category path to `/data/media/downloads`
 3. Sonarr → Settings → Apps → connect Prowlarr at `http://prowlarr:9696`
 4. Sonarr → Settings → Media Management → tick **Use Hardlinks instead of Copy** (prevents file duplication on import)
 5. Radarr → repeat the same steps as Sonarr

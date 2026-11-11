@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.1.0"
+FRIENDBOX_VERSION="3.2.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -218,7 +218,7 @@ check_os() {
     warn "kernel command line (/etc/default/grub) and reboot."
   fi
 
-  # Friendbox 3.1 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
+  # Friendbox 3.2 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
   # directories, 1 GiB memory reservations for the media servers, zram swap at 50% of RAM).
   local mem_kib
   mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
@@ -5554,10 +5554,10 @@ HDEOF
   "format": 1
 }{
   "pre_allocate_storage": false,
-  "download_location": "/data/downloads",
+  "download_location": "/data/media/downloads",
   "move_completed": false,
-  "move_completed_path": "/data/downloads",
-  "torrentfiles_location": "/data/downloads",
+  "move_completed_path": "/data/media/downloads",
+  "torrentfiles_location": "/data/media/downloads",
   "autoadd_enable": false
 }
 DELUGEEOF
@@ -7884,6 +7884,47 @@ _migrate_v3() {
   fi
 }
 
+# ── One-time notice when upgrading to the single-mount /data/media layout ────
+# Sonarr/Radarr/Lidarr now see the library and downloads through ONE bind mount
+# (${MEDIA_ROOT} -> /data/media) so hardlinks and instant moves work; separate bind mounts
+# are different devices to the kernel and force a copy. Download clients and Jellyfin keep a
+# downloads-only mount, now at /data/media/downloads (was /data/downloads).
+# Fires only when a container still has the OLD mount (i.e. an existing install that has not
+# been redeployed yet), so fresh installs never see it.
+_migrate_media_paths() {
+  [[ $EUID -eq 0 && -d "$INSTALL_DIR" ]] || return 0
+  command -v docker &>/dev/null || return 0
+  local marker="${INSTALL_DIR}/.media_paths_notice" names=() n old=false
+  [[ -f "$marker" ]] && return 0
+  while IFS= read -r n; do [[ -n "$n" ]] && names+=("$n"); done \
+    < <(docker ps -a --format '{{.Names}}' 2>/dev/null)
+  [[ ${#names[@]} -gt 0 ]] || return 0
+  if docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "${names[@]}" 2>/dev/null \
+       | tr ' ' '\n' | grep -qx '/data/downloads'; then
+    old=true
+  fi
+  [[ "$old" == "true" ]] || return 0
+
+  # Deluge: patch the default core.conf only if it still holds the untouched old defaults.
+  local deluge_cfg="${CONFIG_ROOT:-${INSTALL_DIR}/config}/delugevpn/core.conf"
+  if [[ -f "$deluge_cfg" ]] && grep -q '"download_location": "/data/downloads"' "$deluge_cfg" 2>/dev/null; then
+    sed -i 's|"/data/downloads"|"/data/media/downloads"|g' "$deluge_cfg" \
+      && info "Deluge core.conf: download paths updated to /data/media/downloads."
+  fi
+
+  echo ""
+  warn "Media paths changed: the downloads folder is now /data/media/downloads (was /data/downloads)."
+  warn "Sonarr, Radarr and Lidarr now use a single /data/media mount, so hardlinks work."
+  echo -e "  ${DIM}After redeploying (menu 12 → 1), update these in each app:${RESET}"
+  echo -e "  ${DIM}  • qBittorrent / Deluge / NZBGet: default save path → /data/media/downloads${RESET}"
+  echo -e "  ${DIM}  • Sonarr / Radarr / Lidarr: download client category/path → /data/media/downloads${RESET}"
+  echo -e "  ${DIM}  • Existing torrents: use \"Set location\" (qBittorrent) or \"Move storage\" (Deluge)${RESET}"
+  echo -e "  ${DIM}  • Plex, Jellyfin, Bazarr and library root folders (/data/media/tv, /data/media/movies) are unchanged.${RESET}"
+  touch "$marker" 2>/dev/null || true
+  echo ""
+  return 0
+}
+
 # =============================================================================
 #  Entrypoint
 # =============================================================================
@@ -7926,6 +7967,7 @@ else
   fi
 
   _migrate_v3
+  _migrate_media_paths
   _quic_buffers_ensure
   if is_installed; then _zram_ensure; fi
   ensure_media_root

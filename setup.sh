@@ -19,6 +19,9 @@ REPO_URL="https://raw.githubusercontent.com/xkronusx/friendbox/main"
 INSTALL_DIR="/opt/friendbox"
 ENV_FILE="${INSTALL_DIR}/.env"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+# Optional user overrides, merged on top of COMPOSE_FILE by every compose call. Auto-update
+# replaces docker-compose.yml wholesale but never touches this file.
+COMPOSE_OVERRIDE="${INSTALL_DIR}/docker-compose.override.yml"
 STATE_FILE="${INSTALL_DIR}/.state"
 SELECTED_FILE="${INSTALL_DIR}/.selected_containers"
 MERGERFS_MODES_FILE="${INSTALL_DIR}/.mergerfs_modes"
@@ -28,7 +31,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.4.0"
+FRIENDBOX_VERSION="3.5.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -218,7 +221,18 @@ check_os() {
     warn "kernel command line (/etc/default/grub) and reboot."
   fi
 
-  # Friendbox 3.4 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
+  local _arch
+  _arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+  if [[ "$_arch" != "amd64" ]]; then
+    warn "Architecture is ${_arch}; Friendbox is written and tested for amd64 (x86_64)."
+    warn "Some steps (GPU acceleration, upstream mergerfs, UniFi's database) may not work."
+  fi
+  if ! _kernel_at_least 7 0; then
+    warn "Kernel $(uname -r) is older than 7.0, the kernel Ubuntu 26.04 ships; Friendbox is tuned for 7.0+."
+    warn "It will run, but FUSE passthrough needs 6.9+ and is skipped on older kernels."
+  fi
+
+  # Friendbox 3.5 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
   # directories, 1 GiB memory reservations for the media servers, zram swap at 50% of RAM).
   local mem_kib
   mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
@@ -540,7 +554,15 @@ compose_selected() {
   for key in "${CONTAINER_ORDER[@]}"; do
     [[ -n "${SELECTED[$key]+_}" ]] && profile_args+=(--profile "$key")
   done
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
+  _compose_file_args
+  docker compose "${_CF[@]}" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
+}
+
+# Sets _CF to the compose file arguments: the stack file plus the user's override when present.
+_compose_file_args() {
+  _CF=(-f "$COMPOSE_FILE")
+  [[ -f "$COMPOSE_OVERRIDE" ]] && _CF+=(-f "$COMPOSE_OVERRIDE")
+  return 0
 }
 
 # ── Fetch helper ──────────────────────────────────────────────────────────────
@@ -4065,6 +4087,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 INSTALL_DIR="/opt/friendbox"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+OVERRIDE_FILE="${INSTALL_DIR}/docker-compose.override.yml"   # optional, never touched by updates
 ENV_FILE="${INSTALL_DIR}/.env"
 SELECTED_FILE="${INSTALL_DIR}/.selected_containers"
 
@@ -4092,7 +4115,9 @@ compose() {
   while IFS= read -r line; do
     [[ -n "$line" ]] && profile_args+=("$line")
   done < <(get_profile_args)
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
+  local files=(-f "$COMPOSE_FILE")
+  [[ -f "$OVERRIDE_FILE" ]] && files+=(-f "$OVERRIDE_FILE")
+  docker compose "${files[@]}" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
 }
 
 # Kernel-level resource report (cgroup v2 + PSI — Ubuntu 26.04 is cgroup v2 only).
@@ -4142,6 +4167,24 @@ resource_report() {
   return 0
 }
 
+# MEDIA_ROOT under /mnt or /media that is only a folder on the OS disk usually means the drive
+# it should live on is not mounted (containers would then write to the OS disk). Silenced
+# once Full Install recorded that this is intended (.media_on_os_disk_ok).
+media_root_check() {
+  local m p
+  m=$(grep -m1 '^MEDIA_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+  m="${m//\'/}"
+  [[ -n "$m" && ! -f "${INSTALL_DIR}/.media_on_os_disk_ok" ]] || return 0
+  case "$m" in /mnt|/mnt/*|/media|/media/*) ;; *) return 0 ;; esac
+  mountpoint -q "$m" 2>/dev/null && return 0
+  p="$m"; while [[ ! -e "$p" && "$p" != "/" ]]; do p=$(dirname "$p"); done
+  [[ "$(stat -c %d / 2>/dev/null)" == "$(stat -c %d "$p" 2>/dev/null)" ]] || return 0
+  echo ""
+  warn "MEDIA_ROOT (${m}) is a plain folder on the OS disk, not a mounted drive or pool."
+  echo -e "  ${DIM:-}If it should be a separate drive, it is not mounted: containers are writing to the OS disk.${RESET}"
+  echo -e "  ${DIM:-}If this is intended, run: sudo touch ${INSTALL_DIR}/.media_on_os_disk_ok${RESET}"
+}
+
 health_check() {
   echo ""
   echo -e "${BOLD}Container Health Report${RESET}"
@@ -4175,6 +4218,7 @@ health_check() {
   echo "─────────────────────────────────────────────────────"
 
   resource_report "${pairs[@]}"
+  media_root_check
 
   local bad
   bad=$(docker ps --filter "network=medianet" --filter "status=exited" --format "{{.Names}}" 2>/dev/null || true)
@@ -4321,7 +4365,7 @@ backup_config() {
   local state_files=() sf
   for sf in "$ENV_FILE" "$SELECTED_FILE" "$DNS_STATE_FILE" \
             "$MERGERFS_MODES_FILE" "$MERGERFS_POOL_FILE" \
-            "$INSTALL_FLAG" "$STATE_FILE"; do
+            "$INSTALL_FLAG" "$STATE_FILE" "$COMPOSE_OVERRIDE"; do
     [[ -f "$sf" ]] && state_files+=("${sf#/}")
   done
 
@@ -4532,9 +4576,84 @@ setup_backup() {
 
 # MongoDB 5+ (so unifi-db, mongo:7) needs the AVX instruction set. True on non-x86 hosts, where
 # the flag does not exist (Friendbox targets amd64, so this is only a safe default).
+# Friendbox targets Docker 29 (Ubuntu 26.04). Older versions usually work, but are untested.
+_check_docker_version() {
+  local v major
+  v=$(docker version --format '{{.Server.Version}}' 2>/dev/null) || return 0
+  major="${v%%.*}"
+  [[ "$major" =~ ^[0-9]+$ ]] || return 0
+  if (( major < 29 )); then
+    warn "Docker ${v} is older than 29, which Friendbox targets. It will probably work but is untested."
+    warn "Update with: sudo apt update && sudo apt upgrade"
+  fi
+  return 0
+}
+
 _unifi_cpu_ok() {
   [[ "$(uname -m)" != "x86_64" ]] && return 0
   grep -qm1 -w avx /proc/cpuinfo 2>/dev/null
+}
+
+# True when any process in an `ss -p` "users:((\"name\",pid=N,fd=M))" string belongs to Docker:
+# the docker-proxy helper, or a process whose cgroup is a container scope (this also covers
+# host-network containers such as Home Assistant). Judging by name was wrong: any process with
+# "proxy" in its name, such as haproxy, was skipped as if it were Docker.
+_PROC_ROOT="${_PROC_ROOT:-/proc}"
+_ss_holder_is_docker() {
+  local name pid
+  while IFS=, read -r name pid; do
+    [[ -n "$pid" ]] || continue
+    [[ "$name" == "docker-proxy" ]] && return 0
+    grep -qE 'docker-[0-9a-f]{12,}\.scope|/docker/[0-9a-f]{12,}' "${_PROC_ROOT}/${pid}/cgroup" 2>/dev/null && return 0
+  done < <(printf '%s' "$1" | grep -oE '\("[^"]+",pid=[0-9]+' | sed -E 's/^\("([^"]+)",pid=([0-9]+)$/\1,\2/')
+  return 1
+}
+
+# Free space where Docker stores images. A full stack pulls tens of GB, so a small disk fails
+# halfway through `pull`. Returns 1 if the user chooses to stop.
+_check_docker_disk() {
+  local root avail_kb need_gb=20 yn
+  root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null) || root=""
+  [[ -n "$root" && -d "$root" ]] || root=/var/lib/docker
+  [[ -d "$root" ]] || root=/var/lib
+  avail_kb=$(df -Pk "$root" 2>/dev/null | awk 'NR==2{print $4}')
+  [[ "$avail_kb" =~ ^[0-9]+$ ]] || return 0
+  if (( avail_kb < need_gb * 1024 * 1024 )); then
+    echo ""
+    warn "Only $(awk -v k="$avail_kb" 'BEGIN{printf "%.1f", k/1048576}') GiB free where Docker stores images (${root}); a full stack can need ${need_gb} GiB or more."
+    warn "Image pulls will fail partway if the disk fills. Free up space or move Docker's data directory first."
+    read -rp "  Continue anyway? [y/N] " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || return 1
+  fi
+  return 0
+}
+
+# True when MEDIA_ROOT sits under /mnt or /media, is not itself a mount point, and lives on the
+# same filesystem as / — i.e. a drive that should be mounted there probably is not.
+_media_root_on_os_disk() {
+  local m="${1:-}" p
+  [[ -n "$m" ]] || return 1
+  case "$m" in /mnt|/mnt/*|/media|/media/*) ;; *) return 1 ;; esac
+  mountpoint -q "$m" 2>/dev/null && return 1
+  p="$m"; while [[ ! -e "$p" && "$p" != "/" ]]; do p=$(dirname "$p"); done
+  [[ -n "$(stat -c %d / 2>/dev/null)" && "$(stat -c %d / 2>/dev/null)" == "$(stat -c %d "$p" 2>/dev/null)" ]]
+}
+
+# Full Install: asked once; the answer is remembered in .media_on_os_disk_ok. Returns 1 to abort.
+_check_media_root_mount() {
+  local yn marker="${INSTALL_DIR}/.media_on_os_disk_ok"
+  [[ -f "$marker" ]] && return 0
+  _media_root_on_os_disk "${MEDIA_ROOT:-}" || return 0
+  echo ""
+  warn "Media root (${MEDIA_ROOT}) is a plain folder on the OS disk, not a separate drive or pool."
+  warn "If your media lives on another drive or a MergerFS pool, mount it BEFORE continuing:"
+  warn "otherwise containers will fill the OS disk, and if that drive is ever unmounted they will"
+  warn "silently write there instead."
+  read -rp "  The OS disk is where I want my media. Continue and don't ask again? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] || return 1
+  _ensure_install_dir
+  touch "$marker" 2>/dev/null || true
+  return 0
 }
 
 check_port_conflicts() {
@@ -4547,7 +4666,7 @@ check_port_conflicts() {
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
 
   declare -A _PM=(
-    [traefik]="80/tcp:HTTP 443/tcp:HTTPS 8080/tcp:Traefik-dashboard"
+    [traefik]="80/tcp:HTTP 443/tcp:HTTPS 443/udp:HTTP3-QUIC 8080/tcp:Traefik-dashboard"
     [portainer]="9000/tcp:Portainer"
     [plex]="32400/tcp:Plex 32410/udp:Plex-GDM1 32412/udp:Plex-GDM2 32413/udp:Plex-GDM3 32414/udp:Plex-GDM4"
     [jellyfin]="8096/tcp:Jellyfin"
@@ -4572,7 +4691,7 @@ check_port_conflicts() {
     [heimdall]="8091/tcp:Heimdall 8092/tcp:Heimdall-HTTPS"
     [fail2ban]=""
     [doplarr]="8787/tcp:Doplarr"
-    [unifi]="8443/tcp:UniFi-UI 8880/tcp:UniFi-inform 3478/udp:UniFi-STUN 10001/udp:UniFi-discovery"
+    [unifi]="8443/tcp:UniFi-UI 8880/tcp:UniFi-inform 6790/tcp:UniFi-speedtest 3478/udp:UniFi-STUN 10001/udp:UniFi-discovery"
     [actual]="5006/tcp:ActualBudget"
     [wgeasy]="51820/udp:WireGuard 51821/tcp:WG-Easy-UI"
   )
@@ -4590,10 +4709,19 @@ check_port_conflicts() {
       proto="${entry##*/}"; proto="${proto%%:*}"
       label="${entry##*:}"
       local ss_out; [[ "$proto" == "udp" ]] && ss_out="$_ss_udp" || ss_out="$_ss_tcp"
-      local holder; holder=$(printf '%s' "$ss_out" | awk "/:${port} /{print \$NF}" | head -1)
+      # Every socket bound to this local port (IPv4 and IPv6); the first one that does not
+      # belong to Docker is the conflict. Ownership is decided by cgroup, not by process name.
+      local holder="" h
+      while IFS= read -r h; do
+        [[ -z "$h" ]] && continue
+        _ss_holder_is_docker "$h" && continue
+        holder="$h"; break
+      done < <(printf '%s\n' "$ss_out" | awk -v p="$port" '$4 ~ (":" p "$") {print $NF}')
       [[ -z "$holder" ]] && continue
-      printf '%s' "$holder" | grep -qi "docker\|proxy" && continue
-      warn "Port ${port}/${proto} (${label}) is already in use by: ${holder:-unknown}"
+      local who
+      who=$(printf '%s' "$holder" | grep -oE '\("[^"]+",pid=[0-9]+' | head -1 \
+            | sed -E 's/^\("([^"]+)",pid=([0-9]+)$/\1 (pid \2)/')
+      warn "Port ${port}/${proto} (${label}) is already in use by: ${who:-an unknown process}"
       conflicts=$((conflicts + 1))
     done
   done
@@ -4640,7 +4768,8 @@ ensure_network() {
     attached=$(docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
     if [[ -n "$attached" ]]; then
       info "Stopping containers attached to ${net}: ${attached}"
-      docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down 2>/dev/null || true
+      _compose_file_args
+      docker compose "${_CF[@]}" --env-file "$ENV_FILE" down 2>/dev/null || true
     fi
     if docker network rm "$net" 2>/dev/null; then
       success "Removed stale network '${net}'."
@@ -6573,12 +6702,14 @@ full_install() {
 
   check_os
   check_deps
+  _check_docker_version
   _zram_ensure
   sync_repo
   select_containers    # must run before configure_env so Plex/Traefik selections are known
   configure_env
   ensure_network
   ensure_acme
+  _check_media_root_mount || { info "Aborted — mount your media drive or pool, then run option 1 again."; return 0; }
   provision_directories
   _jellyfin_fix_markers
 
@@ -6611,6 +6742,9 @@ full_install() {
 
   # ── Port conflict check ───────────────────────────────────────────────────────
   check_port_conflicts --interactive || return 1
+
+  # ── Disk space for image pulls ───────────────────────────────────────────────
+  _check_docker_disk || { info "Aborted — free up disk space, then run option 1 again."; return 0; }
 
   # ── VPN credential pre-flight check ──────────────────────────────────────────
   # DelugeVPN and qBittorrentVPN crash-loop immediately on first start when VPN
@@ -6910,7 +7044,7 @@ update_stack() {
   local _images=()
   while IFS= read -r _img; do
     [[ -n "$_img" ]] && _images+=("$_img")
-  done < <(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+  done < <(_compose_file_args; docker compose "${_CF[@]}" --env-file "$ENV_FILE" \
     "${_prof[@]}" config --images 2>/dev/null)
 
   # Snapshot digests before pull — single batch inspect call instead of one per image.
@@ -7063,7 +7197,8 @@ full_reset() {
   for sf in "$ENV_FILE" "$STATE_FILE" "$SELECTED_FILE" "$MERGERFS_MODES_FILE" \
             "$MERGERFS_POOL_FILE" "$DNS_STATE_FILE" "$INSTALL_FLAG" \
             "${INSTALL_DIR}/.update_notice" "${INSTALL_DIR}/.last_update_check" \
-            "${INSTALL_DIR}/docker-compose.yml" "${INSTALL_DIR}/scripts/redeploy.sh"; do
+            "${INSTALL_DIR}/docker-compose.yml" "${INSTALL_DIR}/scripts/redeploy.sh" \
+            "$COMPOSE_OVERRIDE" "${INSTALL_DIR}/.media_on_os_disk_ok" "${INSTALL_DIR}/.media_paths_notice"; do
     [[ -f "$sf" ]] && rm -f "$sf" && info "  Removed: ${sf}"
   done
 

@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.4.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.5.0**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -12,11 +12,27 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 |---|---|
 | **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
 | **Architecture** | x86_64 (amd64). If UniFi is selected the CPU must support AVX (MongoDB 7 requirement); on a VM set the CPU type to `host`. |
-| **RAM** | 16 GB or more. Friendbox 3.4 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
+| **RAM** | 16 GB or more. Friendbox 3.5 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
-> Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It needs Linux 7.0+, cgroup v2 and Docker 29. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+> Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It is built for Linux 7.0+, cgroup v2, Docker 29 and amd64: Full Install **warns** (it does not stop) if the kernel is older than 7.0, cgroup v2 is off, Docker is older than 29 or the architecture is not amd64. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.5.0
+
+Checks and safety release. No container paths change.
+
+| Change | Details |
+|---|---|
+| **Port-conflict check is accurate** | It used to treat any process with "proxy" in its name (such as `haproxy`) as Docker and skip it, so a real conflict on 80/443 went unreported. It also flagged Friendbox's own host-network containers (Home Assistant on 8123) as conflicts when re-run. Ownership is now decided by the process's cgroup, so only non-Docker processes count. Traefik's `443/udp` (HTTP/3) and UniFi's `6790/tcp` are now checked too. With `userland-proxy: false` there is no `docker-proxy` socket, so conflicts with *other Docker containers* are not visible to this check (Docker itself refuses to start the container). |
+| **Disk space before pulling images** | Full Install checks free space where Docker stores images and asks before continuing below 20 GiB, instead of failing halfway through the pull. |
+| **Media root mount check** | If `MEDIA_ROOT` is under `/mnt` or `/media` but is only a folder on the OS disk (usually a drive that is not mounted), Full Install asks before creating anything, and `redeploy.sh --health` warns. Answer "yes, intended" once and it is remembered in `/opt/friendbox/.media_on_os_disk_ok`. |
+| **Requirement warnings** | Full Install now warns about a kernel older than 7.0, a non-amd64 architecture and Docker older than 29, alongside the existing cgroup v2 and RAM warnings. |
+| **`docker-compose.override.yml`** | Auto-update replaces `docker-compose.yml` whenever the project's copy changes, which erased hand edits. Put your changes in `/opt/friendbox/docker-compose.override.yml` instead: every Friendbox compose call (menu, `redeploy.sh`, update checks) merges it on top, updates never touch it, and it is included in backups. See *Customising the stack* below. |
+
+> **Testing status:** the Docker-ownership test (container, host-network container, `docker-proxy`, `haproxy`, ordinary process, missing PID), port selection across IPv4/IPv6, the disk and Docker-version warnings, the media-root detection (existing and not-yet-created folders), the remembered answer in `redeploy.sh` and the override file arguments were tested in a sandbox with stubbed `ss`, `df` and `docker`. The override merge itself was not run against Docker Compose.
 
 ---
 
@@ -323,7 +339,7 @@ Runs the complete first-time setup in sequence:
 6. Creates the `medianet` Docker bridge network
 7. Creates `acme.json` with correct permissions (`root:root 600`)
 8. Provisions config and media directories (creates `traefik.yml`, `acme.json`, all config and media dirs)
-9. Pre-flight checks: Traefik/ACME settings, port conflicts, VPN credentials, and an AVX check if UniFi is selected
+9. Pre-flight checks: Traefik/ACME settings, port conflicts, free disk space for images, VPN credentials, and an AVX check if UniFi is selected (a media-root mount check runs just before step 8)
 10. Starts all selected containers (`docker compose pull`, then `up -d`)
 
 If Friendbox is already installed, option 1 warns before proceeding.
@@ -550,7 +566,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 12 | Redeploy containers | Pull latest images, redeploy all or single container, restart, change selection. |
 | 13 | Update stack | Sync files from GitHub, pull latest images, restart. Reports which images actually changed versus already current. |
 | 14 | View logs | Follow live logs or dump last 200 lines for all containers or a specific one. |
-| 15 | Check port conflicts | Checks whether any ports needed by selected containers are already in use. |
+| 15 | Check port conflicts | Checks whether any ports needed by selected containers are already held by a non-Docker process (Friendbox's own containers are not counted). |
 | 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
 | 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
 | 18 | Full Reset | Uninstalls everything — containers, images, configs, tuning, zram swap and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. The config folder is not deleted if `CONFIG_ROOT` is `/`, a system directory, a home directory, a mount point or contains your media root. |
@@ -629,7 +645,7 @@ sudo friendbox  →  option 13
 sudo friendbox  →  option 16
 ```
 
-Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.zst` (or `.tar.gz` if zstd cannot be installed) of all container config directories plus key state files (`.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated — as are regenerable Plex/Jellyfin caches, logs and codecs. Before archiving, running containers are automatically stopped so that SQLite databases (Sonarr, Radarr, Prowlarr, etc.) are in a consistent state; they are restarted automatically once the archive is written. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
+Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.zst` (or `.tar.gz` if zstd cannot be installed) of all container config directories plus key state files (`docker-compose.override.yml` if you have one, `.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated — as are regenerable Plex/Jellyfin caches, logs and codecs. Before archiving, running containers are automatically stopped so that SQLite databases (Sonarr, Radarr, Prowlarr, etc.) are in a consistent state; they are restarted automatically once the archive is written. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
 
 To restore: option 16 → option 2 → select an archive. The restore extracts over the current config, re-applies correct acme.json permissions, and offers to redeploy all containers immediately so the restored config takes effect.
 
@@ -640,6 +656,28 @@ sudo friendbox  →  option 18
 ```
 
 Removes all containers, pulled images, the `medianet` network, all config data, state files, and the `friendbox` binary. Requires typing `RESET` to confirm. Media files in your media root and any existing backups in `/opt/friendbox/backups/` are **not** touched.
+
+### Customising the stack
+
+Do not edit `/opt/friendbox/docker-compose.yml`: it is replaced whenever the project's copy changes. Put your changes in **`/opt/friendbox/docker-compose.override.yml`** instead. Every Friendbox compose call merges it on top of the stack file (lists such as `ports` and `labels` are added to, other keys replace), updates never touch it, backups include it, and Full Reset removes it. Example, enabling TeamSpeak 6 WebAuth and Jellyfin DLNA:
+
+```yaml
+services:
+  teamspeak6:
+    ports:
+      - "10080:10080"
+    labels:
+      - "traefik.http.routers.ts6.rule=Host(`ts6.${DOMAIN}`)"
+      - "traefik.http.routers.ts6.entrypoints=websecure"
+      - "traefik.http.routers.ts6.tls=true"
+      - "traefik.http.services.ts6.loadbalancer.server.port=10080"
+  jellyfin:
+    ports:
+      - "7359:7359/udp"
+      - "1900:1900/udp"      # conflicts with avahi-daemon; stop it first
+```
+
+Then redeploy the affected container (option 12 → option 2). Check the merged result with `docker compose -f /opt/friendbox/docker-compose.yml -f /opt/friendbox/docker-compose.override.yml --env-file /opt/friendbox/.env config`.
 
 ### Redeploy a single container
 
@@ -676,7 +714,9 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 ├── .userland_proxy_set               # Present only if Friendbox set Docker's userland-proxy (so Revert removes only that)
 ├── .media_paths_notice               # One-time /data/downloads → /data/media/downloads reminder already shown
 ├── .dns_config                       # DNS provider credentials (chmod 600)
-├── docker-compose.yml                # Full service stack
+├── docker-compose.yml                # Full service stack (replaced by updates — do not edit)
+├── docker-compose.override.yml       # Your own changes, merged on top (optional; never touched by updates)
+├── .media_on_os_disk_ok              # Present once you confirmed MEDIA_ROOT is meant to be on the OS disk
 ├── config/
 │   ├── traefik/
 │   │   ├── traefik.yml               # Generated by Friendbox — do not edit manually
@@ -728,7 +768,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 - qBittorrent binds host port `8082` (not 8080) to avoid conflicting with Traefik's API on port 8080
 
 - UniFi binds host port `8880` for device inform (not 8080) to avoid conflicting with Traefik
-- TeamSpeak 6 WebAuth port `10080` is commented out by default — enable manually only if needed and with appropriate firewall rules
+- TeamSpeak 6 WebAuth port `10080` is off by default — enable it (see *Customising the stack*) only if needed and with appropriate firewall rules
 
 ---
 
@@ -827,7 +867,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 - Check a specific jail: `docker exec fail2ban fail2ban-client status sshd`
 
 **TeamSpeak 6 WebAuth (port 10080) not accessible**
-- Port 10080 is commented out by default. To enable it, edit `/opt/friendbox/docker-compose.yml` and uncomment the `10080:10080` port line and the four Traefik label lines in the `teamspeak6` service, then redeploy: option 12 → option 2 → select TeamSpeak 6
+- Port 10080 is off by default. Enable it in `/opt/friendbox/docker-compose.override.yml` (example under *Customising the stack*), then redeploy: option 12 → option 2 → select TeamSpeak 6
 
 **TeamSpeak 6 admin token not showing after install**
 - Option 1 automatically checks container logs and displays the token in the post-install summary. If it didn't appear, the container may not have started yet when the check ran.

@@ -11,6 +11,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 INSTALL_DIR="/opt/friendbox"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+OVERRIDE_FILE="${INSTALL_DIR}/docker-compose.override.yml"   # optional, never touched by updates
 ENV_FILE="${INSTALL_DIR}/.env"
 SELECTED_FILE="${INSTALL_DIR}/.selected_containers"
 
@@ -38,7 +39,9 @@ compose() {
   while IFS= read -r line; do
     [[ -n "$line" ]] && profile_args+=("$line")
   done < <(get_profile_args)
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
+  local files=(-f "$COMPOSE_FILE")
+  [[ -f "$OVERRIDE_FILE" ]] && files+=(-f "$OVERRIDE_FILE")
+  docker compose "${files[@]}" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
 }
 
 # Kernel-level resource report (cgroup v2 + PSI — Ubuntu 26.04 is cgroup v2 only).
@@ -88,6 +91,24 @@ resource_report() {
   return 0
 }
 
+# MEDIA_ROOT under /mnt or /media that is only a folder on the OS disk usually means the drive
+# it should live on is not mounted (containers would then write to the OS disk). Silenced
+# once Full Install recorded that this is intended (.media_on_os_disk_ok).
+media_root_check() {
+  local m p
+  m=$(grep -m1 '^MEDIA_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+  m="${m//\'/}"
+  [[ -n "$m" && ! -f "${INSTALL_DIR}/.media_on_os_disk_ok" ]] || return 0
+  case "$m" in /mnt|/mnt/*|/media|/media/*) ;; *) return 0 ;; esac
+  mountpoint -q "$m" 2>/dev/null && return 0
+  p="$m"; while [[ ! -e "$p" && "$p" != "/" ]]; do p=$(dirname "$p"); done
+  [[ "$(stat -c %d / 2>/dev/null)" == "$(stat -c %d "$p" 2>/dev/null)" ]] || return 0
+  echo ""
+  warn "MEDIA_ROOT (${m}) is a plain folder on the OS disk, not a mounted drive or pool."
+  echo -e "  ${DIM:-}If it should be a separate drive, it is not mounted: containers are writing to the OS disk.${RESET}"
+  echo -e "  ${DIM:-}If this is intended, run: sudo touch ${INSTALL_DIR}/.media_on_os_disk_ok${RESET}"
+}
+
 health_check() {
   echo ""
   echo -e "${BOLD}Container Health Report${RESET}"
@@ -121,6 +142,7 @@ health_check() {
   echo "─────────────────────────────────────────────────────"
 
   resource_report "${pairs[@]}"
+  media_root_check
 
   local bad
   bad=$(docker ps --filter "network=medianet" --filter "status=exited" --format "{{.Names}}" 2>/dev/null || true)

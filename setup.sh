@@ -31,7 +31,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.6.0"
+FRIENDBOX_VERSION="3.7.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -608,6 +608,17 @@ auto_update() {
   # Skip on first-time runs — nothing is installed yet, the compose file and
   # .env don't exist, so there's nothing useful to update or re-apply.
   is_installed || return 0
+
+  # Opt-out: AUTO_UPDATE=0 in .env stops the launch-time download of setup.sh
+  # and docker-compose.yml from the repo's main branch (which runs as root).
+  # Read with grep, never sourced, so a bad .env line cannot run code here.
+  local _au
+  _au=$(grep -m1 '^AUTO_UPDATE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')
+  case "${_au,,}" in
+    0|false|no|off)
+      echo -e "${DIM}[INFO]  Auto-update is off (AUTO_UPDATE=${_au} in ${ENV_FILE}).${RESET}"
+      return 0 ;;
+  esac
 
   # Rate-limit GitHub checks to once per hour. If the cache file exists and
   # is less than 3600 seconds old, skip the network calls entirely.
@@ -1653,13 +1664,35 @@ _mergerfs_remove_disk() {
   read -rp "Select disk number to remove: " sel
   [[ -z "${IDX[$sel]+_}" ]] && { warn "Invalid selection."; return; }
   local chosen="${IDX[$sel]}"
-  warn "Removing ${chosen} from the pool. Data on this disk is NOT deleted."
-  read -rp "Confirm? [y/N] " yn
+  if [[ ${#DISK_MODES[@]} -le 1 ]]; then
+    warn "${chosen} is the last disk in the pool. Removing it would leave the pool empty and"
+    warn "every file would disappear from ${MERGERFS_POOL:-the media root}. Add another disk first."
+    return
+  fi
+  echo ""
+  warn "Removing ${chosen} from the pool. Nothing is deleted from the disk itself, but"
+  warn "every file stored on it VANISHES from ${MERGERFS_POOL:-the pool} until the disk is added back."
+  warn "Sonarr/Radarr/Lidarr will see those titles as missing and Jellyfin will drop them"
+  warn "on its next scan (the *arr apps may also remove the library entries)."
+  local _media_svcs="sonarr radarr lidarr bazarr jellyfin plex qbittorrent qbittorrentvpn delugevpn nzbget"
+  local _running=() _svc _ans _do_stop=0
+  for _svc in $_media_svcs; do
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$_svc" && _running+=("$_svc")
+  done
+  if [[ ${#_running[@]} -gt 0 ]]; then
+    read -rp "Stop running media containers first (${_running[*]})? [Y/n] " _ans
+    [[ "$_ans" =~ ^[Nn]$ ]] || _do_stop=1
+  fi
+  read -rp "Remove ${chosen} from the pool? [y/N] " yn
   [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return; }
+  if [[ $_do_stop -eq 1 ]]; then
+    docker stop "${_running[@]}" >/dev/null 2>&1 && info "Stopped: ${_running[*]}"
+  fi
   unset "DISK_MODES[$chosen]"
   _mergerfs_save_modes
   [[ -n "$MERGERFS_POOL" ]] && { _mergerfs_write_fstab "$MERGERFS_POOL"; _mergerfs_remount "$MERGERFS_POOL"; }
   success "${chosen} removed from pool."
+  [[ $_do_stop -eq 1 ]] && info "Containers were left stopped. Start them again (menu: Launch / redeploy) once the pool looks right."
 }
 
 _mergerfs_initial_setup() {
@@ -2380,6 +2413,7 @@ EOF
   # Only write headers.yml when it does not already exist — preserves any
   # user customisations to CSP, frame options, or custom headers.
   # To reset to defaults: rm ${CONFIG_ROOT}/traefik/dynamic/headers.yml
+  _traefik_write_tls "$dynamic_dir"
   if [[ ! -f "${dynamic_dir}/headers.yml" ]]; then
     cat > "${dynamic_dir}/headers.yml" <<'HDEOF'
 http:
@@ -5600,6 +5634,7 @@ provision_directories() {
     # To reset to defaults: rm ${CONFIG_ROOT}/traefik/dynamic/headers.yml
     local _headers="${cfg}/traefik/dynamic/headers.yml"
     mkdir -p "${cfg}/traefik/dynamic"
+    _traefik_write_tls "${cfg}/traefik/dynamic"
     if [[ ! -f "$_headers" ]]; then
     cat > "$_headers" <<'HDEOF'
 http:
@@ -7511,6 +7546,36 @@ _ZRAM_VERSION=1        # bump when the installed script/unit content changes
 # at 208 KiB by default, which throttles high-bandwidth QUIC transfers (and logs "failed to
 # sufficiently increase receive buffer size"). This used to depend on the optional option-19
 # tuning. Only the RECEIVE side is raised — a larger send cap has no justification.
+# Traefik TLS options: refuse TLS 1.0/1.1 (Traefik's default minimum is TLS 1.2
+# on current v3 builds, but pinning it makes the policy explicit and survives
+# image changes). Separate file from headers.yml so existing installs get it
+# too, and so user edits to headers.yml are never touched. Written only if
+# absent. The file provider has watch:false, so it applies on Traefik restart.
+_traefik_write_tls() {
+  local dir="${1:-}" cfg uid gid
+  if [[ -z "$dir" ]]; then
+    # Launch path: nothing sourced .env yet, so read the values with grep.
+    cfg=$(grep -m1 '^CONFIG_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')
+    dir="${cfg:-${CONFIG_ROOT:-${INSTALL_DIR}/config}}/traefik/dynamic"
+  fi
+  [[ -d "$dir" ]] || return 0
+  [[ $EUID -eq 0 ]] || return 0
+  uid=$(grep -m1 '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r'); uid="${uid:-${PUID:-1000}}"
+  gid=$(grep -m1 '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r'); gid="${gid:-${PGID:-1000}}"
+  [[ -f "${dir}/tls.yml" ]] && return 0
+  cat > "${dir}/tls.yml" <<'TLSEOF'
+# Friendbox: minimum TLS version for every HTTPS router.
+# Delete this file to fall back to Traefik's built-in defaults.
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+TLSEOF
+  chmod 644 "${dir}/tls.yml"
+  chown "${uid}:${gid}" "${dir}/tls.yml" 2>/dev/null || true
+  info "Wrote ${dir}/tls.yml (min TLS 1.2). Restart Traefik to apply."
+}
+
 _quic_buffers_ensure() {
   [[ $EUID -eq 0 ]] || return 0
   [[ -f "$SELECTED_FILE" ]] && grep -qx 'traefik' "$SELECTED_FILE" 2>/dev/null || return 0
@@ -8366,7 +8431,7 @@ else
   _migrate_v3
   _migrate_media_paths
   _quic_buffers_ensure
-  if is_installed; then _zram_ensure; fi
+  if is_installed; then _zram_ensure; _traefik_write_tls; fi
   ensure_media_root
   _fix_install_dir_ownership
   _launch_media_warning

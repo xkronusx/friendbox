@@ -218,6 +218,14 @@ services:
       # optional — Jellyfin is fully functional without them. To enable them (only if
       # avahi-daemon is not running on the host) add them in docker-compose.override.yml
       # (README: "Customising the stack"), not here: updates replace this file.
+    # Healthy = the web port answers (any HTTP status). Deliberately not /ping or /health:
+    # those 404 or 401 when a URL base or auth is configured, and would flag a working app.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null --max-time 5 http://localhost:8096/ || exit 1"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"
@@ -256,6 +264,14 @@ services:
       - ${MEDIA_ROOT}:/data/media
     ports:
       - "8989:8989"
+    # Healthy = the web port answers (any HTTP status). Deliberately not /ping or /health:
+    # those 404 or 401 when a URL base or auth is configured, and would flag a working app.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null --max-time 5 http://localhost:8989/ || exit 1"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"
@@ -294,6 +310,14 @@ services:
       - ${MEDIA_ROOT}:/data/media
     ports:
       - "7878:7878"
+    # Healthy = the web port answers (any HTTP status). Deliberately not /ping or /health:
+    # those 404 or 401 when a URL base or auth is configured, and would flag a working app.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null --max-time 5 http://localhost:7878/ || exit 1"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"
@@ -329,6 +353,14 @@ services:
       - ${CONFIG_ROOT}/prowlarr:/config
     ports:
       - "9696:9696"
+    # Healthy = the web port answers (any HTTP status). Deliberately not /ping or /health:
+    # those 404 or 401 when a URL base or auth is configured, and would flag a working app.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null --max-time 5 http://localhost:9696/ || exit 1"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"
@@ -560,6 +592,14 @@ services:
       - "8082:8080"
       - "6881:6881"
       - "6881:6881/udp"
+    # Healthy = the web port answers (any HTTP status). Deliberately not /ping or /health:
+    # those 404 or 401 when a URL base or auth is configured, and would flag a working app.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null --max-time 5 http://localhost:8080/ || exit 1"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=medianet"

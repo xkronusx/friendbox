@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.5.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.6.0**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -12,11 +12,28 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 |---|---|
 | **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
 | **Architecture** | x86_64 (amd64). If UniFi is selected the CPU must support AVX (MongoDB 7 requirement); on a VM set the CPU type to `host`. |
-| **RAM** | 16 GB or more. Friendbox 3.5 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
+| **RAM** | 16 GB or more. Friendbox 3.6 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
 > Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It is built for Linux 7.0+, cgroup v2, Docker 29 and amd64: Full Install **warns** (it does not stop) if the kernel is older than 7.0, cgroup v2 is off, Docker is older than 29 or the architecture is not amd64. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.6.0
+
+Stability release. No container paths change.
+
+| Change | Details |
+|---|---|
+| **No more recursive `chown` of all config at every launch** | Opening the menu used to run `chown -R PUID:PGID /opt/friendbox`, which re-owned every container's config (slow on large Plex/Jellyfin metadata) and overrode containers that run as their own user. The clearest case was `unifi-db`: MongoDB runs as user 999 and the mongo image sets that folder up itself at container start, so re-owning it under a running database could cut off MongoDB's write access until the container restarted. Launch now fixes only the small state files and scripts; the recursive pass runs only during provisioning (option 8, Full Install) and restore, touches only files whose owner is wrong, and skips `config/unifi-db` entirely. `backups/` stays `root:root 600` as documented (it used to be re-owned to PUID). |
+| **Safer bootstrap** | `curl … \| sudo bash` now checks root and the Ubuntu release first, downloads to a temporary file, validates it (size, version line, syntax) and only then moves it into place. A failed or truncated download leaves any working copy untouched and the command exits with an error instead of printing "Done!". |
+| **No accidental self-overwrite** | Running the installed `friendbox` without a terminal (`ssh host sudo friendbox`, piped input, cron) used to re-download and overwrite itself. It now stops with "needs an interactive terminal; use `ssh -t`". Only a script piped from `curl` bootstraps. |
+| **Deselected containers are cleaned up** | A container removed from your selection used to keep running and restart on reboot, invisible to redeploy, backup, health and Teardown. Option 2 now lists containers from an earlier selection (including leftovers such as `homarr` and the UniFi database when UniFi is deselected) and offers to remove them (config data is kept). Teardown and Full Reset remove them too, and launch prints a one-line notice while any exist. |
+| **Backup checks disk space first** | The free-space check now runs before containers are stopped, so a full disk costs no downtime. |
+| **Launch-time media-root warning** | The media-root warning from 3.5.0 (a plain folder on the OS disk where a drive should be mounted) now also appears at launch, silenced the same way by `.media_on_os_disk_ok`. |
+
+> **Testing status:** the ownership behaviour (shallow launch pass, deep pass, `unifi-db`, `backups/` and `acme.json` left alone), the bootstrap (root, failed and invalid downloads, existing copy preserved, OS check before download), the three entry modes (piped, installed without a terminal, with a terminal), leftover detection and removal with a stubbed `docker`, the launch warning and the backup order were tested in a sandbox. The MongoDB permission problem is based on how the mongo image works and was not reproduced against a running database.
 
 ---
 
@@ -32,7 +49,7 @@ Checks and safety release. No container paths change.
 | **Requirement warnings** | Full Install now warns about a kernel older than 7.0, a non-amd64 architecture and Docker older than 29, alongside the existing cgroup v2 and RAM warnings. |
 | **`docker-compose.override.yml`** | Auto-update replaces `docker-compose.yml` whenever the project's copy changes, which erased hand edits. Put your changes in `/opt/friendbox/docker-compose.override.yml` instead: every Friendbox compose call (menu, `redeploy.sh`, update checks) merges it on top, updates never touch it, and it is included in backups. See *Customising the stack* below. |
 
-> **Testing status:** the Docker-ownership test (container, host-network container, `docker-proxy`, `haproxy`, ordinary process, missing PID), port selection across IPv4/IPv6, the disk and Docker-version warnings, the media-root detection (existing and not-yet-created folders), the remembered answer in `redeploy.sh` and the override file arguments were tested in a sandbox with stubbed `ss`, `df` and `docker`. The override merge itself was not run against Docker Compose.
+> **Testing status (3.5.0):** the Docker-ownership test (container, host-network container, `docker-proxy`, `haproxy`, ordinary process, missing PID), port selection across IPv4/IPv6, the disk and Docker-version warnings, the media-root detection (existing and not-yet-created folders), the remembered answer in `redeploy.sh` and the override file arguments were tested in a sandbox with stubbed `ss`, `df` and `docker`. The override merge and the compose file were later validated with `docker compose config` (Compose v5.7.0): ports are appended, labels merged, `depends_on`/healthcheck/`command` accepted.
 
 ---
 
@@ -168,7 +185,7 @@ The compose change takes effect when containers are recreated (menu 12 → 1). O
 curl -fsSL https://raw.githubusercontent.com/xkronusx/friendbox/main/setup.sh | sudo bash
 ```
 
-This installs the `friendbox` command to `/usr/local/bin/friendbox`. It does **not** install Docker or start any containers.
+This installs the `friendbox` command to `/usr/local/bin/friendbox` after checking that you are root and on Ubuntu 26.04+, and validating the download. It does **not** install Docker or start any containers.
 
 ### 2. Launch the menu
 
@@ -176,7 +193,7 @@ This installs the `friendbox` command to `/usr/local/bin/friendbox`. It does **n
 sudo friendbox
 ```
 
-Every launch automatically pulls the latest files from GitHub before opening the menu. If GitHub is unreachable, it falls back to the local copy silently. Auto-update only runs after Full Install (option 1) has been completed — on a fresh machine it is skipped.
+The menu needs an interactive terminal (over ssh use `ssh -t <host> sudo friendbox`). Every launch automatically pulls the latest files from GitHub before opening the menu. If GitHub is unreachable, it falls back to the local copy silently. Auto-update only runs after Full Install (option 1) has been completed — on a fresh machine it is skipped.
 
 ### 3. Run Full Install
 
@@ -548,7 +565,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | Option | Function | Notes |
 |---|---|---|
 | 1 | Full Install | Runs all setup steps in sequence. Warns if already installed. |
-| 2 | Select containers | Toggle which services to deploy. |
+| 2 | Select containers | Toggle which services to deploy. Offers to remove containers you deselected that still exist. |
 | 3 | Configure .env | Domain, paths, PUID/PGID, timezone. |
 | 4 | Traefik configuration | Credentials, domain, ACME provider, staging toggle, pre-flight checks, live diagnostics, emergency recovery, root redirect target. |
 | 5 | Service credentials & hardware acceleration | VPN client credentials (qBittorrentVPN / DelugeVPN), AMP, Mumble, Doplarr, WireGuard Easy + Jellyfin hardware acceleration setup and diagnostics. Only shows options for selected services. |
@@ -559,7 +576,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 
 | Option | Function | Notes |
 |---|---|---|
-| 8 | Provision / fix directory ownership | Creates config and media dirs, fixes permissions. |
+| 8 | Provision / fix directory ownership | Creates config and media dirs and fixes ownership of files that have the wrong owner. `config/unifi-db` and `backups/` keep their own ownership. |
 | 9 | Sync latest files from GitHub | Re-downloads compose file and setup script. Validates both before applying. |
 | 10 | Show container status | Runs `docker compose ps` for selected containers. |
 | 11 | View service URLs | HTTPS URLs (Traefik) or `ip:port` URLs (no Traefik). |
@@ -568,7 +585,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 14 | View logs | Follow live logs or dump last 200 lines for all containers or a specific one. |
 | 15 | Check port conflicts | Checks whether any ports needed by selected containers are already held by a non-Docker process (Friendbox's own containers are not counted). |
 | 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
-| 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
+| 17 | Teardown | Stops and removes containers (including ones you deselected earlier), removes Docker network. Config and data preserved. |
 | 18 | Full Reset | Uninstalls everything — containers, images, configs, tuning, zram swap and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. The config folder is not deleted if `CONFIG_ROOT` is `/`, a system directory, a home directory, a mount point or contains your media root. |
 | 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, BBR congestion control, connection-tracking limit, inotify limits, THP, Docker pull concurrency). Shows current values, swap/zram status and Docker daemon settings; option 5 toggles zram swap. Revert restores the values that were active before tuning. |
 

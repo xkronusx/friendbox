@@ -31,7 +31,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.5.0"
+FRIENDBOX_VERSION="3.6.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -91,15 +91,36 @@ _ensure_install_dir() {
 
 # Recursively fix ownership of everything in INSTALL_DIR to PUID:PGID.
 # Safe to call on every launch — fast no-op if already correct.
-_fix_install_dir_ownership() {
+_fix_install_dir_ownership() {   # [--deep]
   [[ $EUID -ne 0 ]] && return 0
   [[ ! -d "$INSTALL_DIR" ]] && return 0
+  local deep=false
+  [[ "${1:-}" == "--deep" ]] && deep=true
 
   local uid gid
   uid=$(grep '^PUID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; uid="${uid:-1000}"
   gid=$(grep '^PGID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true) ; gid="${gid:-1000}"
 
-  chown -R "${uid}:${gid}" "${INSTALL_DIR}"
+  # Launch-time fixes stay shallow: the state files and scripts (small), and the top of config/.
+  # backups/ is root:root 600 by design and is left alone. The recursive pass over the container
+  # config folders (which can hold hundreds of thousands of Plex/Jellyfin files) only runs with
+  # --deep (provisioning, restore), and only touches files whose owner is actually wrong.
+  # config/unifi-db is never touched: MongoDB runs as its own user (999) and the mongo image fixes
+  # that folder itself when the container starts; re-owning it under a running mongod breaks writes.
+  local _e
+  chown "${uid}:${gid}" "${INSTALL_DIR}"
+  for _e in "${INSTALL_DIR}"/* "${INSTALL_DIR}"/.[!.]*; do
+    [[ -e "$_e" ]] || continue
+    case "${_e##*/}" in
+      backups) continue ;;
+      config)  chown "${uid}:${gid}" "$_e"; continue ;;
+    esac
+    chown -R "${uid}:${gid}" "$_e"
+  done
+  if [[ "$deep" == "true" && -d "${INSTALL_DIR}/config" ]]; then
+    find "${INSTALL_DIR}/config" -xdev -path "${INSTALL_DIR}/config/unifi-db" -prune -o \
+      \( ! -uid "$uid" -o ! -gid "$gid" \) -exec chown -h "${uid}:${gid}" {} + 2>/dev/null || true
+  fi
 
   # acme.json must be root:root 600 — Traefik v3 runs as root inside the
   # container and needs write access. Exclude it from the PUID:PGID chown.
@@ -232,7 +253,7 @@ check_os() {
     warn "It will run, but FUSE passthrough needs 6.9+ and is skipped on older kernels."
   fi
 
-  # Friendbox 3.5 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
+  # Friendbox 3.6 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
   # directories, 1 GiB memory reservations for the media servers, zram swap at 50% of RAM).
   local mem_kib
   mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
@@ -533,6 +554,8 @@ select_containers() {
     _env_set_inline ROOT_REDIRECT_HOST "$_redir_name"
     _env_set_inline ROOT_REDIRECT_PORT "$_redir_port"
   fi
+
+  _remove_leftover_containers
 }
 
 # ── Profile args for docker compose ──────────────────────────────────────────
@@ -4335,6 +4358,15 @@ backup_config() {
   echo -e "  ${DIM}Archive: ${archive_path}${RESET}"
   echo ""
 
+  # Check disk space BEFORE stopping anything, so a full disk costs no downtime.
+  local cfg_kb free_kb
+  cfg_kb=$(du -sk "$cfg" 2>/dev/null | awk '{print $1}') || cfg_kb=0
+  free_kb=$(df -k "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $4}') || free_kb=0
+  if [[ "$cfg_kb" -gt 0 && "$free_kb" -gt 0 && "$cfg_kb" -gt "$free_kb" ]]; then
+    warn "Not enough disk space — config is ~${cfg_kb}KB, free is ${free_kb}KB."
+    return 1
+  fi
+
   # Stop containers before backing up so database files are in a consistent state.
   # SQLite databases (Sonarr, Radarr, Prowlarr, etc.) can be mid-write while running,
   # producing a corrupt or inconsistent backup if snapshotted live.
@@ -4345,20 +4377,6 @@ backup_config() {
     compose_selected stop 2>/dev/null || true
     success "Containers stopped."
     echo ""
-  fi
-
-  # Check disk space
-  local cfg_kb free_kb
-  cfg_kb=$(du -sk "$cfg" 2>/dev/null | awk '{print $1}') || cfg_kb=0
-  free_kb=$(df -k "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $4}') || free_kb=0
-  if [[ "$cfg_kb" -gt 0 && "$free_kb" -gt 0 && "$cfg_kb" -gt "$free_kb" ]]; then
-    warn "Not enough disk space — config is ~${cfg_kb}KB, free is ${free_kb}KB."
-    # Restart containers before returning so we don't leave them stopped on failure
-    if [[ "$_was_running" == "true" ]]; then
-      info "Restarting containers..."
-      compose_selected up -d 2>/dev/null || true
-    fi
-    return 1
   fi
 
   # Collect state files alongside the config dir
@@ -4467,7 +4485,7 @@ restore_config() {
     [[ ! -f "$acme" ]] && touch "$acme"
     chown root:root "$acme"; chmod 600 "$acme"
     # Fix ownership of all restored files
-    _fix_install_dir_ownership
+    _fix_install_dir_ownership --deep
     # Regenerate traefik.yml from restored .env so it matches current provider settings
     if [[ -n "${TRAEFIK_ACME_PROVIDER:-}" ]]; then
       _traefik_write_config && info "traefik.yml regenerated from restored settings."
@@ -4654,6 +4672,64 @@ _check_media_root_mount() {
   _ensure_install_dir
   touch "$marker" 2>/dev/null || true
   return 0
+}
+
+# Containers created by this stack whose service is no longer selected. Compose only ever sees
+# the selected profiles, so such containers are invisible to redeploy/teardown/backup/health yet
+# keep running and restart on reboot. Prints "container|service" lines.
+_leftover_containers() {
+  command -v docker &>/dev/null || return 0
+  load_selected
+  local name svc key
+  while IFS='|' read -r name svc; do
+    [[ -n "$name" ]] || continue
+    key="$svc"; [[ "$svc" == "unifi-db" ]] && key="unifi"
+    [[ -n "${SELECTED[$key]+_}" ]] && continue
+    echo "${name}|${svc}"
+  done < <(docker ps -a --filter "label=com.docker.compose.project.working_dir=${INSTALL_DIR}" \
+             --format '{{.Names}}|{{index .Labels "com.docker.compose.service"}}' 2>/dev/null)
+}
+
+# Offers to remove them (their config data is kept). Pass "yes" to remove without asking.
+_remove_leftover_containers() {
+  local auto="${1:-}" lines=() names=() l yn
+  while IFS= read -r l; do [[ -n "$l" ]] && lines+=("$l"); done < <(_leftover_containers)
+  [[ ${#lines[@]} -gt 0 ]] || return 0
+  for l in "${lines[@]}"; do names+=("${l%%|*}"); done
+  echo ""
+  warn "These containers are no longer part of your selection but still exist (and restart on reboot):"
+  for l in "${lines[@]}"; do echo "    • ${l%%|*}  (service: ${l#*|})"; done
+  if [[ "$auto" != "yes" ]]; then
+    read -rp "  Remove them now? Their config data is kept. [y/N] " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || { info "Left in place. Remove later with: docker rm -f ${names[*]}"; return 0; }
+  fi
+  if docker rm -f "${names[@]}" >/dev/null 2>&1; then
+    success "Removed: ${names[*]}"
+  else
+    warn "Could not remove some containers — try: docker rm -f ${names[*]}"
+  fi
+}
+
+# One-line launch notice (never prompts).
+_leftover_notice() {
+  is_installed || return 0
+  local out
+  out=$(_leftover_containers | cut -d'|' -f1 | tr '\n' ' ')
+  [[ -n "${out// }" ]] || return 0
+  warn "Containers from an earlier selection still exist: ${out}"
+  echo -e "  ${DIM}Open option 2 and press d to review and remove them.${RESET}"
+}
+
+# Launch-time version of the Full Install media-root check: after a reboot with the drive or pool
+# unmounted, ensure_media_root has just created an empty MEDIA_ROOT on the OS disk, which is
+# exactly where containers would then write. Silenced by .media_on_os_disk_ok.
+_launch_media_warning() {
+  is_installed || return 0
+  [[ -f "${INSTALL_DIR}/.media_on_os_disk_ok" ]] && return 0
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  _media_root_on_os_disk "${MEDIA_ROOT:-}" || return 0
+  warn "Media root (${MEDIA_ROOT}) is a plain folder on the OS disk, not a mounted drive or pool."
+  echo -e "  ${DIM}If it should be a separate drive, mount it before starting containers. If this is intended: sudo touch ${INSTALL_DIR}/.media_on_os_disk_ok${RESET}"
 }
 
 check_port_conflicts() {
@@ -5498,7 +5574,7 @@ provision_directories() {
 
   # Create INSTALL_DIR tree and fix ownership of all existing files in it
   _ensure_install_dir
-  _fix_install_dir_ownership
+  _fix_install_dir_ownership --deep
   success "  ${INSTALL_DIR}  [${uid}:${gid}] (recursive)"
 
   # Always-on config dirs
@@ -5619,16 +5695,16 @@ HDEOF
     [[ -z "${CFG_DIRS[$key]+_}" ]]  && continue
     dir="${cfg}/${CFG_DIRS[$key]}"
     mkdir -p "$dir"
-    chown -R "${uid}:${gid}" "$dir"
+    _mergerfs_fix_owner "$dir" "$uid" "$gid"      # only files whose owner is wrong
     success "  ${dir}  [${uid}:${gid}]"
     created=$((created + 1))
-    # UniFi ships with a MongoDB sidecar (unifi-db) on the same profile.
-    # Create its data dir now so MongoDB starts as the correct user, not root.
+    # UniFi ships with a MongoDB sidecar (unifi-db) on the same profile. Create its data dir,
+    # but leave its ownership alone: MongoDB runs as its own user (999) and the mongo image
+    # sets that up when the container starts. Owning it as PUID:PGID would break MongoDB.
     if [[ "$key" == "unifi" ]]; then
       local _udb="${cfg}/unifi-db"
       mkdir -p "$_udb"
-      chown -R "${uid}:${gid}" "$_udb"
-      success "  ${_udb}  [${uid}:${gid}] (unifi-db)"
+      success "  ${_udb}  (unifi-db — owned by MongoDB's own user)"
     fi
     # Seerr migration — auto-copy Overseerr or Jellyseerr config on first run.
     # Seerr migrates data automatically on first start, but it needs the data
@@ -7109,6 +7185,7 @@ teardown() {
   read -rp "Are you sure? [y/N] " yn
   [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return; }
   compose_selected down --remove-orphans
+  _remove_leftover_containers yes
   # Remove the medianet network so a subsequent install doesn't hit a subnet
   # pool overlap error when Compose tries to recreate it.
   if docker network inspect medianet &>/dev/null 2>&1; then
@@ -7166,6 +7243,7 @@ full_reset() {
 
   info "Stopping and removing containers..."
   compose_selected down --remove-orphans 2>/dev/null || true
+  _remove_leftover_containers yes
 
   info "Removing Docker images..."
   if [[ -f "$COMPOSE_FILE" ]]; then
@@ -8215,6 +8293,35 @@ _migrate_media_paths() {
 #  Entrypoint
 # =============================================================================
 
+# True when this script is being read from a pipe (`curl ... | sudo bash`) instead of from a file.
+_script_is_piped() {
+  local src="${BASH_SOURCE[0]:-}"
+  [[ -z "$src" || ! -f "$src" ]]
+}
+
+# Installs the script as /usr/local/bin/friendbox. Checks root and the OS first, downloads to a
+# temp file, validates it, then moves it into place, so a failed or truncated download can never
+# replace a working copy, and failure is reported instead of "Done!".
+_bootstrap_install() {
+  local dest="/usr/local/bin/friendbox" tmp size
+  if [[ $EUID -ne 0 ]]; then
+    error "Run the bootstrap as root:  curl -fsSL ${REPO_URL}/setup.sh | sudo bash"
+    return 1
+  fi
+  _os_supported || _os_reject
+  info "Downloading setup script to ${dest} ..."
+  tmp=$(mktemp "${dest}.XXXXXX" 2>/dev/null) || { error "Cannot write to $(dirname "$dest")."; return 1; }
+  if ! curl -fsSL --max-time 60 "${REPO_URL}/setup.sh" -o "$tmp"; then
+    rm -f "$tmp"; error "Download failed — nothing was installed. Check your connection and try again."; return 1
+  fi
+  size=$(wc -c < "$tmp" 2>/dev/null || echo 0)
+  if [[ "$size" -lt 1000 ]] || ! grep -q '^FRIENDBOX_VERSION=' "$tmp" || ! bash -n "$tmp" 2>/dev/null; then
+    rm -f "$tmp"; error "The downloaded file is incomplete or invalid — nothing was installed."; return 1
+  fi
+  chmod 755 "$tmp" && mv -f "$tmp" "$dest" || { rm -f "$tmp"; error "Could not install ${dest}."; return 1; }
+  return 0
+}
+
 # ── Handle --dns-update BEFORE any terminal/bootstrap detection ─────────────
 # The cron script calls `friendbox --dns-update` with stdin redirected from /dev/null.
 # If checked after [[ ! -t 0 ]], the bootstrap branch would fire and overwrite the
@@ -8226,17 +8333,21 @@ for _arg in "$@"; do
   fi
 done
 
-if [[ ! -t 0 ]]; then
-  # Non-interactive (piped via curl | bash) — bootstrap only
+if _script_is_piped; then
+  # Piped via `curl | bash` (the script is read from stdin, not from a file) — bootstrap only
   echo -e "${BOLD}${CYAN}Friendbox Setup — Bootstrap${RESET}"
   echo ""
-  info "Downloading setup script to /usr/local/bin/friendbox ..."
-  curl -fsSL "${REPO_URL}/setup.sh" -o /usr/local/bin/friendbox
-  chmod +x /usr/local/bin/friendbox
+  _bootstrap_install || exit 1
   success "Done! Run the interactive menu with:"
   echo ""
   echo -e "    ${BOLD}sudo friendbox${RESET}"
   echo ""
+elif [[ ! -t 0 ]]; then
+  # An installed copy run without a terminal (ssh without -t, piped answers, cron). Never
+  # re-download here: that would silently overwrite the installed script.
+  error "The Friendbox menu needs an interactive terminal."
+  error "Over ssh use: ssh -t <host> sudo friendbox"
+  exit 1
 else
   # Interactive launch — check for --skip-update flag (set by auto_update after
   # re-exec so we don't loop) then run the menu.
@@ -8258,5 +8369,7 @@ else
   if is_installed; then _zram_ensure; fi
   ensure_media_root
   _fix_install_dir_ownership
+  _launch_media_warning
+  _leftover_notice
   main_menu
 fi

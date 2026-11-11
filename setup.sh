@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.3.0"
+FRIENDBOX_VERSION="3.4.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -218,7 +218,7 @@ check_os() {
     warn "kernel command line (/etc/default/grub) and reboot."
   fi
 
-  # Friendbox 3.3 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
+  # Friendbox 3.4 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
   # directories, 1 GiB memory reservations for the media servers, zram swap at 50% of RAM).
   local mem_kib
   mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
@@ -466,14 +466,7 @@ select_containers() {
     local _use_traefik="false"
     [[ -n "${SELECTED[traefik]+_}" ]] && _use_traefik="true"
     # Inline _env_set since we're outside configure_env here
-    _env_set_inline() {
-      local key="$1" val="$2"
-      if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-      else
-        echo "${key}=${val}" >> "$ENV_FILE"
-      fi
-    }
+    _env_set_inline() { _env_put "$1" "$2"; }
     _env_set_inline USE_TRAEFIK "$_use_traefik"
 
     # Set ROOT_REDIRECT_HOST and ROOT_REDIRECT_PORT — which container serves https://DOMAIN.
@@ -1178,11 +1171,38 @@ _env_put() {   # _env_put KEY VALUE — set/replace a key in .env
   _ensure_install_dir
   [[ -f "$ENV_FILE" ]] || { touch "$ENV_FILE"; chmod 600 "$ENV_FILE"; }
   if grep -q "^${1}=" "$ENV_FILE" 2>/dev/null; then
-    sed -i "s|^${1}=.*|${1}=${2}|" "$ENV_FILE"
+    # Escape what sed treats specially in a replacement (\ & and the | delimiter), so a value
+    # such as a path or URL containing one of them is stored literally.
+    local esc="${2//\\/\\\\}"; esc="${esc//&/\\&}"; esc="${esc//|/\\|}"
+    sed -i "s|^${1}=.*|${1}=${esc}|" "$ENV_FILE"
   else
     echo "${1}=${2}" >> "$ENV_FILE"
   fi
 }
+
+# ── .env value safety ───────────────────────────────────────────────────────────
+# .env is read by bash (`source`) AND by Docker Compose's own parser, and the two disagree on
+# quoting. A single quote or line break inside a value breaks both: bash stops loading the file
+# (every later variable silently goes missing, and text after the quote is executed as a command),
+# and Compose refuses the file. So such values are rejected up front.
+_cred_ok() {   # _cred_ok LABEL VALUE — for values written inside '...'
+  case "$2" in
+    *\'*|*$'\n'*|*$'\r'*)
+      error "${1} contains a single quote (') or a line break, which would corrupt .env. Please use a value without them."
+      return 1 ;;
+  esac
+  return 0
+}
+_env_plain_ok() {   # _env_plain_ok LABEL VALUE — for values written UNQUOTED (domain, paths, ...)
+  if [[ ! "$2" =~ ^[A-Za-z0-9._@:/+,=%-]*$ ]]; then
+    error "${1} contains characters that are not supported (spaces, quotes, \$ ; & | < > ( ) \` or \\)."
+    error "Use letters, digits and . _ @ : / + , = - only."
+    return 1
+  fi
+  return 0
+}
+# Escape ' for a value written inside '...' in a file that only bash reads (.dns_config).
+_sq() { printf '%s' "${1//\'/\'\\\'\'}"; }
 
 # Installs upstream mergerfs from GitHub (only way to get 2.41+ on Ubuntu 26.04).
 _mergerfs_install_upstream() {
@@ -1959,6 +1979,7 @@ configure_env() {
     warn "Re-run option 3 (Configure .env) to set it before deploying."
     DOMAIN="${DOMAIN:-example.com}"
   fi
+  _env_plain_ok "Domain" "$DOMAIN" || return 1
   read -rp "ACME/Let's Encrypt email [${ACME_EMAIL:-}]: " input
   ACME_EMAIL="${input:-${ACME_EMAIL:-}}"
   ACME_EMAIL="${ACME_EMAIL//[[:space:]]/}"  # strip any accidental whitespace
@@ -1967,10 +1988,13 @@ configure_env() {
     warn "Let's Encrypt requires a real email address for certificate issuance."
     ACME_EMAIL="${ACME_EMAIL:-admin@example.com}"
   fi
+  _env_plain_ok "ACME email" "$ACME_EMAIL" || return 1
   read -rp "Config root path [${CONFIG_ROOT:-/opt/friendbox/config}]: " input
   CONFIG_ROOT="${input:-${CONFIG_ROOT:-/opt/friendbox/config}}"
   read -rp "Media root path [${MEDIA_ROOT:-/mnt/media}]: " input
   MEDIA_ROOT="${input:-${MEDIA_ROOT:-/mnt/media}}"
+  _env_plain_ok "Config root path" "$CONFIG_ROOT" || return 1
+  _env_plain_ok "Media root path"  "$MEDIA_ROOT"  || return 1
   read -rp "PUID [${PUID:-1000}]: " input; PUID="${input:-${PUID:-1000}}"
   read -rp "PGID [${PGID:-1000}]: " input; PGID="${input:-${PGID:-1000}}"
   if ! [[ "$PUID" =~ ^[0-9]+$ ]] || ! [[ "$PGID" =~ ^[0-9]+$ ]]; then
@@ -1979,6 +2003,7 @@ configure_env() {
   fi
   read -rp "Timezone [${TZ:-America/Toronto}]: " input
   TZ="${input:-${TZ:-America/Toronto}}"
+  _env_plain_ok "Timezone" "$TZ" || return 1
   # Derive USE_TRAEFIK from saved container selection — no prompts here.
   # Traefik dashboard credentials are configured separately via menu option 4.
   load_selected
@@ -2001,6 +2026,7 @@ configure_env() {
     echo ""
     read -rp "  Plex claim token [${PLEX_CLAIM:-none}]: " input
     PLEX_CLAIM="${input:-${PLEX_CLAIM:-}}"
+    _env_plain_ok "Plex claim token" "$PLEX_CLAIM" || return 1
   fi
 
   # Preserve existing TRAEFIK_AUTH by reading it raw from the file —
@@ -2014,14 +2040,7 @@ configure_env() {
 
   # Write base keys — preserve any extra keys (provider creds, DNS config, etc.)
   # that were appended by other menu functions.
-  _env_set() {
-    local key="$1" val="$2"
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-      sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-    else
-      echo "${key}=${val}" >> "$ENV_FILE"
-    fi
-  }
+  _env_set() { _env_put "$1" "$2"; }
 
   # Seed the file if it doesn't exist yet
   if [[ ! -f "$ENV_FILE" ]]; then
@@ -3336,6 +3355,8 @@ _traefik_set_auth() {
   echo -n "Dashboard username [${TRAEFIK_USER:-admin}]: "
   read -r input
   local dash_user="${input:-${TRAEFIK_USER:-admin}}"
+  _env_plain_ok "Username" "$dash_user" || return 1
+  [[ "$dash_user" != *:* ]] || { error "Username cannot contain ':' (it separates user and password in basic auth)."; return 1; }
   echo -n "Dashboard password (press Enter to keep existing): "
   read -rs dash_pass; echo ""
   if [[ -z "$dash_pass" ]]; then
@@ -3377,6 +3398,8 @@ _traefik_set_domain() {
   local new_email="${input:-${ACME_EMAIL:-}}"
   new_email="${new_email//[[:space:]]/}"  # strip any accidental whitespace
   [[ -z "$new_email" ]] && { warn "ACME email cannot be empty."; return 1; }
+  _env_plain_ok "Domain" "$new_domain" || return 1
+  _env_plain_ok "ACME email" "$new_email" || return 1
 
   sed -i '/^DOMAIN=/d;/^ACME_EMAIL=/d' "$ENV_FILE" 2>/dev/null || true
   printf 'DOMAIN=%s\nACME_EMAIL=%s\n' "$new_domain" "$new_email" >> "$ENV_FILE"
@@ -3471,10 +3494,7 @@ _traefik_provider_cloudflare() {
   read -r input
   local cf_email="${input:-${CF_API_EMAIL:-}}"
   [[ -z "$cf_email" ]] && { warn "Email required."; return 1; }
-
-  # Clear all CF credential vars from .env before writing new ones
-  sed -i '/^CF_API_EMAIL=/d;/^CF_DNS_API_TOKEN=/d;/^CF_API_KEY=/d' "$ENV_FILE" 2>/dev/null || true
-  printf "CF_API_EMAIL='%s'\n" "$cf_email" >> "$ENV_FILE"
+  _cred_ok "Cloudflare email" "$cf_email" || return 1
 
   if [[ "$_method" == "2" ]]; then
     # ── Global API Key ─────────────────────────────────────────────────────────
@@ -3489,6 +3509,10 @@ _traefik_provider_cloudflare() {
     else
       warn "  Global API Key is required."; return 1
     fi
+    _cred_ok "Cloudflare Global API Key" "$cf_key" || return 1
+    # Clear all CF credential vars from .env only now that every value is validated
+    sed -i '/^CF_API_EMAIL=/d;/^CF_DNS_API_TOKEN=/d;/^CF_API_KEY=/d' "$ENV_FILE" 2>/dev/null || true
+    printf "CF_API_EMAIL='%s'\n" "$cf_email" >> "$ENV_FILE"
     printf "CF_API_KEY='%s'\n" "$cf_key" >> "$ENV_FILE"
     success "Cloudflare credentials saved (Global API Key method)."
     info "  Traefik will authenticate using CF_API_EMAIL + CF_API_KEY."
@@ -3505,6 +3529,9 @@ _traefik_provider_cloudflare() {
     else
       warn "  Scoped API token is required."; return 1
     fi
+    _cred_ok "Cloudflare API token" "$cf_token" || return 1
+    sed -i '/^CF_API_EMAIL=/d;/^CF_DNS_API_TOKEN=/d;/^CF_API_KEY=/d' "$ENV_FILE" 2>/dev/null || true
+    printf "CF_API_EMAIL='%s'\n" "$cf_email" >> "$ENV_FILE"
     printf "CF_DNS_API_TOKEN='%s'\n" "$cf_token" >> "$ENV_FILE"
     success "Cloudflare credentials saved (Scoped API Token method)."
     info "  Traefik will authenticate using CF_DNS_API_TOKEN."
@@ -3531,6 +3558,7 @@ _traefik_provider_duckdns() {
     warn "Token is required."; return 1
   fi
 
+  _cred_ok "DuckDNS token" "$duck_token" || return 1
   sed -i '/^DUCKDNS_TOKEN=/d' "$ENV_FILE" 2>/dev/null || true
   # Single-quote value — token could contain special characters.
   printf "DUCKDNS_TOKEN='%s'\n" "$duck_token" >> "$ENV_FILE"
@@ -3562,9 +3590,11 @@ _traefik_provider_godaddy() {
     warn "API secret is required."; return 1
   fi
 
-  sed -i '/^GODADDY_API_KEY=/d;/^GODADDY_API_SECRET=/d' "$ENV_FILE" 2>/dev/null || true
+  _cred_ok "GoDaddy API key"    "$gd_key"    || return 1
+  _cred_ok "GoDaddy API secret" "$gd_secret" || return 1
+  sed -i '/^GODADDY_API_KEY=/d;/^GODADDY_API_SECRET=/d;/^GODDADDY_API_SECRET=/d' "$ENV_FILE" 2>/dev/null || true
   # Single-quote values — API secrets can contain $ which bash expands on source.
-  printf "GODADDY_API_KEY='%s'\nGODDADDY_API_SECRET='%s'\n" "$gd_key" "$gd_secret" >> "$ENV_FILE"
+  printf "GODADDY_API_KEY='%s'\nGODADDY_API_SECRET='%s'\n" "$gd_key" "$gd_secret" >> "$ENV_FILE"
   success "GoDaddy credentials saved."
 }
 
@@ -3614,6 +3644,9 @@ _traefik_provider_namecheap() {
     fi
   fi
 
+  _cred_ok "Namecheap API user" "$nc_user" || return 1
+  _cred_ok "Namecheap API key"  "$nc_key"  || return 1
+  _cred_ok "Namecheap source IP" "$nc_ip"  || return 1
   sed -i '/^NAMECHEAP_API_USER=/d;/^NAMECHEAP_API_KEY=/d;/^NAMECHEAP_API_IP=/d' "$ENV_FILE" 2>/dev/null || true
   # Single-quote values — API keys can contain $ which bash expands on source.
   printf "NAMECHEAP_API_USER='%s'\nNAMECHEAP_API_KEY='%s'\n" "$nc_user" "$nc_key" >> "$ENV_FILE"
@@ -3818,6 +3851,9 @@ _creds_configure_vpn() {
 
   local var
   for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
+    _cred_ok "$var" "${!var}" || return 1
+  done
+  for var in VPN_PROV VPN_CLIENT VPN_USER VPN_PASS LAN_NETWORK; do
     sed -i "/^${var}=/d" "$ENV_FILE" 2>/dev/null || true
     # Single-quote the value so special characters (e.g. $ in passwords) are
     # written literally and not expanded when .env is later sourced by bash.
@@ -3842,6 +3878,8 @@ _creds_configure_amp() {
   else
     info "AMP password unchanged."
   fi
+  _cred_ok "AMP username" "$AMP_USER" || return 1
+  _cred_ok "AMP password" "$AMP_PASS" || return 1
   sed -i '/^AMP_USER=/d;/^AMP_PASS=/d' "$ENV_FILE" 2>/dev/null || true
   # Single-quote values to protect special characters on bash source.
   printf "AMP_USER='%s'\nAMP_PASS='%s'\n" "$AMP_USER" "$AMP_PASS" >> "$ENV_FILE"
@@ -3860,6 +3898,7 @@ _creds_configure_mumble() {
   if [[ "$MUMBLE_SUPERUSER_PASSWORD" == "changeme" ]]; then
     warn "Password is still set to 'changeme' — change this before exposing Mumble to the internet."
   fi
+  _cred_ok "Mumble password" "$MUMBLE_SUPERUSER_PASSWORD" || return 1
   sed -i '/^MUMBLE_SUPERUSER_PASSWORD=/d' "$ENV_FILE" 2>/dev/null || true
   # Single-quote value to protect special characters on bash source.
   printf "MUMBLE_SUPERUSER_PASSWORD='%s'\n" "$MUMBLE_SUPERUSER_PASSWORD" >> "$ENV_FILE"
@@ -3916,6 +3955,10 @@ _creds_configure_doplarr() {
     info "Sonarr API key unchanged."
   fi
 
+  _cred_ok "Discord token"   "$DOPLARR_DISCORD_TOKEN"  || return 1
+  _cred_ok "Seerr API key"   "$DOPLARR_OVERSEERR_API"  || return 1
+  _cred_ok "Radarr API key"  "$DOPLARR_RADARR_API"     || return 1
+  _cred_ok "Sonarr API key"  "$DOPLARR_SONARR_API"     || return 1
   sed -i '/^DOPLARR_DISCORD_TOKEN=/d;/^DOPLARR_OVERSEERR_API=/d' "$ENV_FILE" 2>/dev/null || true
   sed -i '/^DOPLARR_RADARR_API=/d;/^DOPLARR_SONARR_API=/d'       "$ENV_FILE" 2>/dev/null || true
   # Single-quote values to protect special characters on bash source.
@@ -3979,6 +4022,10 @@ _creds_configure_wgeasy() {
   read -rp "WireGuard listen port [${WGEASY_INIT_PORT:-51820}]: " input
   local wg_port="${input:-${WGEASY_INIT_PORT:-51820}}"
 
+  _cred_ok "WireGuard username" "$wg_user" || return 1
+  _cred_ok "WireGuard password" "$wg_pass" || return 1
+  _cred_ok "WireGuard host"     "$wg_host" || return 1
+  _cred_ok "WireGuard port"     "$wg_port" || return 1
   sed -i '/^WGEASY_INIT_ENABLED=/d;/^WGEASY_INIT_USERNAME=/d' "$ENV_FILE" 2>/dev/null || true
   sed -i '/^WGEASY_INIT_PASSWORD=/d;/^WGEASY_INIT_HOST=/d;/^WGEASY_INIT_PORT=/d' "$ENV_FILE" 2>/dev/null || true
   printf "WGEASY_INIT_ENABLED='true'\n" >> "$ENV_FILE"
@@ -4481,6 +4528,13 @@ setup_backup() {
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
+}
+
+# MongoDB 5+ (so unifi-db, mongo:7) needs the AVX instruction set. True on non-x86 hosts, where
+# the flag does not exist (Friendbox targets amd64, so this is only a safe default).
+_unifi_cpu_ok() {
+  [[ "$(uname -m)" != "x86_64" ]] && return 0
+  grep -qm1 -w avx /proc/cpuinfo 2>/dev/null
 }
 
 check_port_conflicts() {
@@ -5607,18 +5661,18 @@ _dns_save() {
   # Single-quote all values so special characters (e.g. $ in API keys/secrets)
   # are written literally and not expanded when .dns_config is sourced by bash.
   {
-    printf "DNS_PROVIDER='%s'\n"          "$DNS_PROVIDER"
-    printf "DNS_DOMAIN='%s'\n"            "$DNS_DOMAIN"
-    printf "DNS_CF_EMAIL='%s'\n"          "$DNS_CF_EMAIL"
-    printf "DNS_CF_API_KEY='%s'\n"        "$DNS_CF_API_KEY"
-    printf "DNS_CF_ZONE_ID='%s'\n"        "$DNS_CF_ZONE_ID"
-    printf "DNS_DUCKDNS_TOKEN='%s'\n"     "$DNS_DUCKDNS_TOKEN"
-    printf "DNS_DUCKDNS_SUBDOMAIN='%s'\n" "$DNS_DUCKDNS_SUBDOMAIN"
-    printf "DNS_GODADDY_KEY='%s'\n"       "$DNS_GODADDY_KEY"
-    printf "DNS_GODADDY_SECRET='%s'\n"    "$DNS_GODADDY_SECRET"
-    printf "DNS_NAMECHEAP_USER='%s'\n"    "$DNS_NAMECHEAP_USER"
-    printf "DNS_NAMECHEAP_API_KEY='%s'\n" "$DNS_NAMECHEAP_API_KEY"
-    printf "DNS_NAMECHEAP_SOURCE_IP='%s'\n" "$DNS_NAMECHEAP_SOURCE_IP"
+    printf "DNS_PROVIDER='%s'\n"          "$(_sq "$DNS_PROVIDER")"
+    printf "DNS_DOMAIN='%s'\n"            "$(_sq "$DNS_DOMAIN")"
+    printf "DNS_CF_EMAIL='%s'\n"          "$(_sq "$DNS_CF_EMAIL")"
+    printf "DNS_CF_API_KEY='%s'\n"        "$(_sq "$DNS_CF_API_KEY")"
+    printf "DNS_CF_ZONE_ID='%s'\n"        "$(_sq "$DNS_CF_ZONE_ID")"
+    printf "DNS_DUCKDNS_TOKEN='%s'\n"     "$(_sq "$DNS_DUCKDNS_TOKEN")"
+    printf "DNS_DUCKDNS_SUBDOMAIN='%s'\n" "$(_sq "$DNS_DUCKDNS_SUBDOMAIN")"
+    printf "DNS_GODADDY_KEY='%s'\n"       "$(_sq "$DNS_GODADDY_KEY")"
+    printf "DNS_GODADDY_SECRET='%s'\n"    "$(_sq "$DNS_GODADDY_SECRET")"
+    printf "DNS_NAMECHEAP_USER='%s'\n"    "$(_sq "$DNS_NAMECHEAP_USER")"
+    printf "DNS_NAMECHEAP_API_KEY='%s'\n" "$(_sq "$DNS_NAMECHEAP_API_KEY")"
+    printf "DNS_NAMECHEAP_SOURCE_IP='%s'\n" "$(_sq "$DNS_NAMECHEAP_SOURCE_IP")"
   } > "$DNS_STATE_FILE"
   _own "$DNS_STATE_FILE"
   chmod 600 "$DNS_STATE_FILE"
@@ -6577,6 +6631,18 @@ full_install() {
     echo ""
   fi
 
+  # ── UniFi: MongoDB 7 needs a CPU with AVX ────────────────────────────────────
+  if [[ -n "${SELECTED[unifi]+_}" ]] && ! _unifi_cpu_ok; then
+    echo ""
+    warn "UniFi is selected, but this CPU does not report AVX, which its MongoDB 7 database requires."
+    warn "The 'unifi-db' container will crash-loop. This is common on virtual machines whose CPU type"
+    warn "hides AVX (for example Proxmox 'kvm64'). Set the VM's CPU type to 'host' and reboot it,"
+    warn "or deselect UniFi (option 2)."
+    echo ""
+    read -rp "  Continue anyway? [y/N] " _avx_yn
+    [[ "${_avx_yn:-n}" =~ ^[Yy]$ ]] || { info "Aborted — fix the CPU type or deselect UniFi, then run option 1 again."; return 0; }
+  fi
+
   info "Starting selected containers..."
   # Pull images first, then start containers. Splitting these into two commands
   # prevents a hang that occurred in earlier versions where compose up -d would
@@ -6920,6 +6986,26 @@ teardown() {
   success "Containers removed. Run option 1 to reinstall."
 }
 
+# True only when CONFIG_ROOT is safe for Full Reset to delete recursively. Refuses system
+# directories, anyone's home directory, a mount point, and anything that contains MEDIA_ROOT.
+_config_root_safe() {   # _config_root_safe CFG [MEDIA_ROOT]
+  local cfg media p h
+  cfg=$(readlink -f -- "$1" 2>/dev/null) || return 1
+  [[ -n "$cfg" && "$cfg" != "/" ]] || return 1
+  for p in /bin /boot /dev /etc /home /lib /lib32 /lib64 /media /mnt /opt /proc /root /run /sbin /srv /sys /tmp /usr /var; do
+    [[ "$cfg" == "$p" ]] && return 1
+  done
+  while IFS=: read -r _ _ _ _ _ h _; do
+    [[ -n "$h" && "$cfg" == "$(readlink -f -- "$h" 2>/dev/null)" ]] && return 1
+  done < <(getent passwd 2>/dev/null)
+  mountpoint -q "$cfg" 2>/dev/null && return 1
+  if [[ -n "${2:-}" ]]; then
+    media=$(readlink -f -- "$2" 2>/dev/null || echo "$2")
+    [[ "$media" == "$cfg" || "$media" == "$cfg"/* ]] && return 1
+  fi
+  return 0
+}
+
 full_reset() {
   require_root || return 1
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
@@ -6963,8 +7049,14 @@ full_reset() {
 
   local cfg="${CONFIG_ROOT:-/opt/friendbox/config}"
   if [[ -d "$cfg" ]]; then
-    rm -rf "$cfg"
-    success "Removed config directory: ${cfg}"
+    if _config_root_safe "$cfg" "${MEDIA_ROOT:-}"; then
+      rm -rf "$cfg"
+      success "Removed config directory: ${cfg}"
+    else
+      warn "Config directory NOT removed: ${cfg}"
+      warn "  CONFIG_ROOT points somewhere that is not safe to delete automatically."
+      warn "  Remove the container config folders inside it yourself if you want them gone."
+    fi
   fi
 
   local sf
@@ -7797,6 +7889,8 @@ setup_system_tuning() {
     echo -e "  ${DIM}  transparent_hugepages always→madvise (reduce DB latency spikes)${RESET}"
     echo -e "  ${DIM}  max-concurrent-downloads   3 → 6    (faster image pulls)${RESET}"
     echo -e "  ${DIM}  userland-proxy          true → false (no docker-proxy process per published port; needs a Docker restart)${RESET}"
+    echo -e "  ${DIM}                          ufw users: keep DEFAULT_FORWARD_POLICY=ACCEPT in /etc/default/ufw — with the proxy off, even${RESET}"
+    echo -e "  ${DIM}                          connections from this host to a published port can depend on forwarding rules.${RESET}"
     echo ""
     echo "  1) Show current kernel values + swap + Docker status"
     echo "  2) Apply Friendbox tunings (persistent — survives reboot)"

@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.3.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.4.0**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -12,11 +12,29 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 |---|---|
 | **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
 | **Architecture** | x86_64 (amd64) |
-| **RAM** | 16 GB or more. Friendbox 3.3 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
+| **RAM** | 16 GB or more. Friendbox 3.4 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
 > Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It needs Linux 7.0+, cgroup v2 and Docker 29. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.4.0
+
+Reliability release. No container paths change.
+
+| Change | Details |
+|---|---|
+| **Credentials are validated before they are saved** | A single quote (`'`) or line break in a saved password, token or API key used to corrupt `.env`: bash stopped loading the file (every later variable went missing and text after the quote was run as a command) and Docker Compose refused it. Option 5, the DNS/ACME provider prompts and the WireGuard Easy wizard now reject such values with a clear message **before** touching `.env`, so your existing values are kept. Unquoted settings (domain, ACME email, config/media paths, timezone, Plex claim token, Traefik dashboard username) accept only letters, digits and `. _ @ : / + , = -`; paths with spaces are not supported. `.dns_config` escapes quotes instead. |
+| **GoDaddy secret was saved under a misspelled name** | The API secret was written as `GODDADDY_API_SECRET`, but Traefik reads `GODADDY_API_SECRET`, so GoDaddy DNS challenges got an empty secret. Fixed. **GoDaddy users:** re-enter the credentials once (option 4 → option 3 → GoDaddy); the old misspelled line is removed. |
+| **`.env` updates escape special characters** | The shared helper that edits `.env` values no longer misreads `|`, `&` or `\` in a value. The three copies of it are now one. |
+| **Full Reset refuses unsafe `CONFIG_ROOT`** | It will not recursively delete `/`, a system directory, anyone's home directory, a mount point, or a folder that contains your media root. It says so and skips the deletion; the rest of the reset continues. |
+| **UniFi: AVX check** | UniFi's MongoDB 7 needs a CPU with AVX. Full Install now warns (and asks) before starting UniFi on a CPU without it, which is typical of VMs using a generic CPU type such as Proxmox `kvm64`. Set the VM's CPU type to `host`, or deselect UniFi. |
+| **UniFi waits for its database** | `unifi-db` has a healthcheck and `unifi` waits for it, so the first start no longer fails and restarts. Redeploying `unifi` on its own now also recreates `unifi-db` (its data is kept). |
+| **ufw note for `userland-proxy: false`** | Option 19 now reminds ufw users to keep `DEFAULT_FORWARD_POLICY=ACCEPT`. |
+
+> **Testing status:** the validation helpers, the `.env` escaping, quote-safe `.dns_config` round-trips, the AMP credential flow (a rejected value leaves the old ones intact) and the Full Reset guard (system dirs, home, mount, media root) were tested in a sandbox. The AVX warning path, the UniFi healthcheck/`depends_on` and the GoDaddy fix were not run against Docker or a real provider.
 
 ---
 
@@ -393,7 +411,7 @@ UniFi requires a MongoDB password set in `.env`:
 ```
 UNIFI_MONGO_PASS=yourpassword
 ```
-The UniFi controller and its MongoDB sidecar (`unifi-db`) start together under the `[unifi]` profile. The web UI is at `https://unifi.yourdomain.com` or `https://IP:8443`.
+The UniFi controller and its MongoDB sidecar (`unifi-db`) start together under the `[unifi]` profile; UniFi waits for the database to report healthy. MongoDB 7 needs a CPU with AVX, so on a VM set the CPU type to `host` (Full Install warns if AVX is missing). The web UI is at `https://unifi.yourdomain.com` or `https://IP:8443`.
 
 ---
 
@@ -743,6 +761,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 - This is most commonly Ubuntu's `ufw` firewall conflicting with Docker. ufw's default `FORWARD` policy is `DROP`, which blocks Docker's iptables DNAT rules even for connections on localhost.
 - Fix: set `DEFAULT_FORWARD_POLICY=ACCEPT` in `/etc/default/ufw` and run `sudo ufw reload`
 - Verify after fix: `curl -s http://localhost:9000` (Portainer) or `curl -s http://localhost:8096` (Jellyfin)
+- This matters more with `userland-proxy: false` (option 19), because connections from the host itself to a published port can then depend on the forwarding rules too.
 
 **Container fails to start, port already in use**
 - Full Install automatically runs a port conflict check before `compose up`. If a conflict was detected and you chose to continue, the conflicting process needs to be stopped.

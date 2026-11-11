@@ -1012,6 +1012,10 @@ services:
       - "traefik.http.routers.unifi.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.unifi.loadbalancer.server.port=8443"
       - "traefik.http.services.unifi.loadbalancer.server.scheme=https"
+    # Wait for the database to answer before starting, so the first start doesn't fail and restart.
+    depends_on:
+      unifi-db:
+        condition: service_healthy
 
   # ── UniFi MongoDB — database for UniFi controller (required by unifi) ────────
   unifi-db:
@@ -1023,6 +1027,12 @@ services:
     # MongoDB sizes its cache at ~50% of host RAM (about 7 GB at 16 GB) unless told otherwise.
     # UniFi's database is small, so cap it and leave that memory to Plex/Jellyfin.
     command: ["--wiredTigerCacheSizeGB", "0.5"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     logging:
       driver: json-file
       options:

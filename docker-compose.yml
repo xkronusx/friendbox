@@ -1020,6 +1020,9 @@ services:
     profiles: [unifi]
     restart: unless-stopped
     stop_grace_period: 30s
+    # MongoDB sizes its cache at ~50% of host RAM (about 7 GB at 16 GB) unless told otherwise.
+    # UniFi's database is small, so cap it and leave that memory to Plex/Jellyfin.
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
     logging:
       driver: json-file
       options:

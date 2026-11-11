@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.2.0"
+FRIENDBOX_VERSION="3.3.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -218,7 +218,7 @@ check_os() {
     warn "kernel command line (/etc/default/grub) and reboot."
   fi
 
-  # Friendbox 3.2 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
+  # Friendbox 3.3 is sized for hosts with 16 GB of RAM or more (2 x 4 GiB RAM-backed transcode
   # directories, 1 GiB memory reservations for the media servers, zram swap at 50% of RAM).
   local mem_kib
   mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
@@ -1311,6 +1311,10 @@ _mergerfs_write_fstab() {
   # mergerfs v2 fstab format — uid/gid makes the pool report ownership as PUID:PGID
   # to Docker containers.
   # minfreespace: see _mergerfs_minfreespace (0 would fill disks to 100%).
+  # cache.statfs=10: cache each branch's free-space lookup for 10 s. Without it every
+  #   free-space query (Sonarr/Radarr poll constantly) and every file creation under
+  #   minfreespace asks every disk, which wakes idle HDDs. minfreespace is 4G or more, so a
+  #   decision based on 10-second-old numbers is safe.
   # statfs_ignore=ro: free space reported by the pool ignores RO and NC branches,
   #   so Sonarr/Radarr/qBittorrent don't see space they can never write to.
   # nofail + x-systemd.requires-mounts-for: fstab-only options. nofail keeps a
@@ -1319,7 +1323,7 @@ _mergerfs_write_fstab() {
   local uid="${PUID:-1000}" gid="${PGID:-1000}"
   local minfree
   minfree=$(_mergerfs_minfreespace)
-  local opts="defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=${minfree},moveonenospc=true,statfs_ignore=ro,fsname=mergerpool,nofail"
+  local opts="defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,cache.statfs=10,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=${minfree},moveonenospc=true,statfs_ignore=ro,fsname=mergerpool,nofail"
   local _pt
   _pt=$(_mergerfs_passthrough_opt)
   _MFS_PT_USED="$_pt"   # $(...) ran in a subshell — record the result here
@@ -6980,6 +6984,7 @@ full_reset() {
     # Restore the pre-tuning values immediately so the running session is clean
     _tuning_restore
   fi
+  rm -f "$_NET_MODLOAD"
   _zram_disable
   rm -f "$_QUIC_SYSCTL"
   # Remove max-concurrent-downloads from daemon.json if we set it
@@ -7096,6 +7101,7 @@ view_logs() {
 
 _SYSCTL_CONF="/etc/sysctl.d/99-friendbox.conf"
 _THP_SYSTEMD="/etc/systemd/system/friendbox-thp.service"
+_NET_MODLOAD="/etc/modules-load.d/friendbox-net.conf"   # loads tcp_bbr / nf_conntrack before sysctl.d runs
 _DOCKER_DAEMON="/etc/docker/daemon.json"
 _USERLAND_MARK="${INSTALL_DIR}/.userland_proxy_set"   # present only if Friendbox set userland-proxy
 
@@ -7121,6 +7127,10 @@ _tuning_show_current() {
     "net.core.rmem_max"
     "net.core.wmem_max"
     "net.ipv4.tcp_fastopen"
+    "net.ipv4.tcp_congestion_control"
+    "net.core.default_qdisc"
+    "net.ipv4.tcp_slow_start_after_idle"
+    "net.netfilter.nf_conntrack_max"
     "fs.inotify.max_user_watches"
     "fs.inotify.max_user_instances"
   )
@@ -7382,19 +7392,24 @@ _tuning_snapshot() {
   # Keep the ORIGINAL values across re-applies. If tuning was applied by an older
   # Friendbox (no snapshot, conf already live), the current values are already
   # tuned — don't capture those as "previous".
-  [[ -f "$_TUNING_PREV" ]] && return 0
   [[ -n "${1:-}" ]] || return 0
   _ensure_install_dir
-  local k v
-  : > "$_TUNING_PREV"
+  local k v fresh=true
+  [[ -f "$_TUNING_PREV" ]] && fresh=false
+  # An existing snapshot keeps its original values, but a key added by a newer Friendbox
+  # (never applied before, so still at the kernel default) is appended so Revert can restore it.
+  $fresh && : > "$_TUNING_PREV"
   while IFS= read -r k; do
+    if ! $fresh && grep -q "^sysctl ${k}=" "$_TUNING_PREV" 2>/dev/null; then continue; fi
     v=$(sysctl -n "$k" 2>/dev/null) && echo "sysctl ${k}=${v}" >> "$_TUNING_PREV"
   done < <(grep -oE '^[a-z0-9_.]+[[:space:]]*=' "$1" | tr -d ' =')
-  local thp
-  for thp in enabled defrag; do
-    v=$(sed -n 's/.*\[\([a-z]*\)\].*/\1/p' "/sys/kernel/mm/transparent_hugepage/${thp}" 2>/dev/null)
-    [[ -n "$v" ]] && echo "thp_${thp} ${v}" >> "$_TUNING_PREV"
-  done
+  if $fresh; then
+    local thp
+    for thp in enabled defrag; do
+      v=$(sed -n 's/.*\[\([a-z]*\)\].*/\1/p' "/sys/kernel/mm/transparent_hugepage/${thp}" 2>/dev/null)
+      [[ -n "$v" ]] && echo "thp_${thp} ${v}" >> "$_TUNING_PREV"
+    done
+  fi
   chmod 600 "$_TUNING_PREV"
 }
 
@@ -7422,6 +7437,42 @@ _tuning_restore() {
     info "No pre-tuning snapshot found — applied common defaults. THP returns to its default on reboot."
   fi
   _reapply_friendbox_sysctls    # QUIC buffer + zram settings are independent of option 19
+}
+
+# Network sysctls that only exist when the kernel supports them. Appended to the conf (so they
+# persist) and the needed modules are listed in modules-load.d, because systemd-sysctl runs at
+# boot and a key whose module is not loaded yet would silently fail.
+#   • BBR + fq: much better throughput than CUBIC for remote Plex/Jellyfin viewers on lossy or
+#     high-latency links. default_qdisc applies to a NIC when it is next brought up (reboot).
+#   • tcp_slow_start_after_idle=0: a stream that pauses and resumes keeps its congestion window.
+#   • nf_conntrack_max: torrent clients with thousands of peers can fill the tracking table, and
+#     the kernel then drops packets ("nf_conntrack: table full"). Raised only if currently lower.
+_tuning_net_extras() {
+  local conf="$1" mods=() cur
+  modprobe tcp_bbr 2>/dev/null || true
+  {
+    echo ""
+    echo "# ── Network congestion control and connection tracking ─────────────────────────"
+    if grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+      mods+=(tcp_bbr)
+      echo "net.core.default_qdisc = fq"
+      echo "net.ipv4.tcp_congestion_control = bbr"
+    fi
+    echo "net.ipv4.tcp_slow_start_after_idle = 0"
+    modprobe nf_conntrack 2>/dev/null || true
+    if [[ -r /proc/sys/net/netfilter/nf_conntrack_max ]]; then
+      mods+=(nf_conntrack)
+      cur=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)
+      [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+      (( cur < 524288 )) && echo "net.netfilter.nf_conntrack_max = 524288"
+    fi
+  } >> "$conf"
+  if [[ ${#mods[@]} -gt 0 ]]; then
+    mkdir -p /etc/modules-load.d
+    { echo "# Friendbox: modules needed by /etc/sysctl.d/99-friendbox.conf"; printf '%s\n' "${mods[@]}"; } > "$_NET_MODLOAD"
+  else
+    rm -f "$_NET_MODLOAD"
+  fi
 }
 
 _tuning_apply() {
@@ -7488,6 +7539,8 @@ fs.inotify.max_user_watches = 524288
 # consumes one instance. 128 is easily exhausted with 10+ active containers.
 fs.inotify.max_user_instances = 512
 SYSCTLEOF
+
+  _tuning_net_extras "$_SYSCTL_CONF"
 
   # zram swap is compressed RAM — a disk-swap-style swappiness of 10 would leave it unused.
   if [[ -f "$_ZRAM_SYSCTL" ]]; then sed -i 's/^vm\.swappiness *=.*/vm.swappiness = 100/' "$_SYSCTL_CONF"; fi
@@ -7608,6 +7661,7 @@ _tuning_revert() {
 
   # Removing the conf only affects the next boot — restore the live values now.
   _tuning_restore
+  rm -f "$_NET_MODLOAD"
 
   if [[ -f "$_THP_SYSTEMD" ]]; then
     systemctl disable --now friendbox-thp.service 2>/dev/null || true
@@ -7735,6 +7789,9 @@ setup_system_tuning() {
     echo -e "  ${DIM}  vm.overcommit_memory    0 → 1    (safer for Docker + MongoDB/Redis)${RESET}"
     echo -e "  ${DIM}  net.core.rmem/wmem_max 208KB→16MB (larger socket buffers for Traefik/torrents)${RESET}"
     echo -e "  ${DIM}  net.ipv4.tcp_fastopen   0 → 3    (lower TCP handshake latency)${RESET}"
+    echo -e "  ${DIM}  tcp_congestion_control cubic → bbr + fq (better remote streaming on lossy links; if supported)${RESET}"
+    echo -e "  ${DIM}  tcp_slow_start_after_idle 1 → 0   (paused streams keep their speed)${RESET}"
+    echo -e "  ${DIM}  nf_conntrack_max       → 524288   (torrent peers can't fill the table; raised only if lower)${RESET}"
     echo -e "  ${DIM}  fs.inotify.max_watches 8K → 512K (needed for HA, Sonarr, Radarr watchers)${RESET}"
     echo -e "  ${DIM}  fs.inotify.max_instances 128→512 (more concurrent inotify users)${RESET}"
     echo -e "  ${DIM}  transparent_hugepages always→madvise (reduce DB latency spikes)${RESET}"

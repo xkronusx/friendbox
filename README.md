@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.2.0**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.3.0**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -12,11 +12,28 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 |---|---|
 | **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
 | **Architecture** | x86_64 (amd64) |
-| **RAM** | 16 GB or more. Friendbox 3.2 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
+| **RAM** | 16 GB or more. Friendbox 3.3 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
 > Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It needs Linux 7.0+, cgroup v2 and Docker 29. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.3.0
+
+Performance release. Nothing here changes container paths. Two items need a step on existing installs (marked below).
+
+| Change | Details |
+|---|---|
+| **UniFi database memory cap** | `unifi-db` (MongoDB) sizes its cache at about 50% of host RAM, roughly 7 GB at 16 GB, unless told otherwise. It is now capped at 0.5 GB (`--wiredTigerCacheSizeGB 0.5`), leaving that memory to Plex and Jellyfin. **Existing installs:** applied the next time the container is recreated (menu 12 → 1). Data is untouched. |
+| **BBR congestion control** | Option 19 now also sets `tcp_congestion_control=bbr`, `default_qdisc=fq` and `tcp_slow_start_after_idle=0` when the kernel supports BBR. This improves throughput for remote Plex/Jellyfin viewers on lossy or high-latency links and keeps a paused stream from restarting slowly. The queue discipline applies to the network card at its next bring-up (reboot); BBR applies to new connections immediately. Needed modules are listed in `/etc/modules-load.d/friendbox-net.conf` so they load before sysctl at boot. **Existing installs:** re-run option 19 → 2. |
+| **Connection-tracking headroom** | `nf_conntrack_max` is raised to 524288 if it is lower. Torrent clients with thousands of peers can otherwise fill the table, after which the kernel silently drops packets (`nf_conntrack: table full` in `dmesg`). Costs kernel memory only as entries are used. Same step to apply. |
+| **MergerFS free-space cache** | The pool is mounted with `cache.statfs=10`: each disk's free-space lookup is cached for 10 seconds, so Sonarr/Radarr polling and file creation no longer query (and wake) every disk each time. `minfreespace` is at least 4 GB, so 10-second-old numbers are safe. **Existing installs:** MergerFS → option 6 (Mount / remount pool). |
+
+Revert (option 19 → 3) restores the original BBR/qdisc/conntrack values and removes the module-load file.
+
+> **Testing status:** the sysctl generation (with and without kernel support), the module-load file and the incremental snapshot used by Revert were tested in a sandbox. The MergerFS `cache.statfs` option, the MongoDB flag and BBR on a real 26.04 host were not tested (no mergerfs or Docker in the sandbox).
 
 ---
 
@@ -512,7 +529,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
 | 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
 | 18 | Full Reset | Uninstalls everything — containers, images, configs, and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. |
-| 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, inotify limits, THP, Docker pull concurrency). Shows current values, swap/zram status and Docker daemon settings; option 5 toggles zram swap. Revert restores the values that were active before tuning. |
+| 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, BBR congestion control, connection-tracking limit, inotify limits, THP, Docker pull concurrency). Shows current values, swap/zram status and Docker daemon settings; option 5 toggles zram swap. Revert restores the values that were active before tuning. |
 
 > **Options 10–17 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
 

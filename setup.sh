@@ -31,7 +31,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="3.8.1"
+FRIENDBOX_VERSION="3.8.2"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -4468,6 +4468,19 @@ _backup_ext() {
 
 # _backup_make_archive ARCHIVE CFG [STATE_FILE_REL...] — tar + compress the config tree
 # (stored relative to /). Compression is chosen from ARCHIVE's extension.
+# Fills _BSF with the state files (paths relative to /) stored alongside the config in every
+# backup, including the pre-restore safety copy.
+_backup_collect_state() {
+  _BSF=()
+  local sf
+  for sf in "$ENV_FILE" "$SELECTED_FILE" "$DNS_STATE_FILE" \
+            "$MERGERFS_MODES_FILE" "$MERGERFS_POOL_FILE" \
+            "$INSTALL_FLAG" "$STATE_FILE" "$COMPOSE_OVERRIDE"; do
+    [[ -f "$sf" ]] && _BSF+=("${sf#/}")
+  done
+  return 0
+}
+
 # _backup_verify ARCHIVE — read the whole archive back (decompress + list); catches a truncated
 # or corrupt file that tar reported success for (full disk, I/O error).
 _backup_verify() {
@@ -4597,12 +4610,8 @@ backup_config() {
   fi
 
   # Collect state files alongside the config dir
-  local state_files=() sf
-  for sf in "$ENV_FILE" "$SELECTED_FILE" "$DNS_STATE_FILE" \
-            "$MERGERFS_MODES_FILE" "$MERGERFS_POOL_FILE" \
-            "$INSTALL_FLAG" "$STATE_FILE" "$COMPOSE_OVERRIDE"; do
-    [[ -f "$sf" ]] && state_files+=("${sf#/}")
-  done
+  _backup_collect_state
+  local state_files=("${_BSF[@]}")
 
   info "Excluding regenerable caches (Plex Cache/Logs/Codecs, Jellyfin cache) — see _BACKUP_EXCLUDES."
   if _backup_make_archive "$archive_path" "$cfg" "${state_files[@]}" \
@@ -4684,18 +4693,62 @@ restore_config() {
   echo ""
   echo -e "  Restoring: ${CYAN}$(basename "$chosen")${RESET}"
   echo ""
-  warn "This will OVERWRITE current config files with the selected backup."
-  warn "Running containers will not be stopped — redeploy after restore to apply changes."
-  echo ""
-  read -rp "  Proceed? [y/N] " yn
-  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
-
-  echo ""
-  info "Extracting archive..."
   # GNU tar auto-detects gzip and zstd; zstd must be present to read .tar.zst archives.
   if [[ "$chosen" == *.zst ]] && ! command -v zstd &>/dev/null; then
     apt-get install -y zstd >/dev/null 2>&1 || warn "Could not install zstd — cannot read ${chosen##*/}."
   fi
+  # Read the whole archive first: a damaged file must be refused BEFORE anything is overwritten.
+  info "Checking the archive..."
+  if ! _backup_verify "$chosen"; then
+    error "${chosen##*/} is damaged or unreadable — nothing was changed. Pick another backup."
+    return 1
+  fi
+  success "Archive reads back cleanly."
+  echo ""
+  warn "This will OVERWRITE current config files with the selected backup."
+  info "Running containers are stopped first (so their databases are not written to mid-restore),"
+  info "your current config is saved as a safety backup, and containers are restarted afterwards."
+  echo ""
+  read -rp "  Proceed? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { info "Aborted."; return 0; }
+
+  local cfg_now="${CONFIG_ROOT:-/opt/friendbox/config}" _was_running=false
+  # Room for the safety backup, checked before anything is stopped.
+  if [[ -d "$cfg_now" ]]; then
+    local _ckb _fkb
+    _ckb=$(du -sk "$cfg_now" 2>/dev/null | awk '{print $1}') || _ckb=0
+    _fkb=$(df -k "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $4}') || _fkb=0
+    if [[ "$_ckb" -gt 0 && "$_fkb" -gt 0 && "$_ckb" -gt "$_fkb" ]]; then
+      warn "Not enough disk space for the safety backup — config is ~${_ckb}KB, free is ${_fkb}KB. Nothing was changed."
+      return 1
+    fi
+  fi
+  if is_running 2>/dev/null; then
+    _was_running=true
+    info "Stopping containers..."
+    compose_selected stop 2>/dev/null || true
+  fi
+
+  # Safety backup of what is there now. Named like a normal backup so it appears in the list and
+  # can itself be restored to undo this restore.
+  local safety=""
+  if [[ -d "$cfg_now" ]]; then
+    safety="${BACKUP_DIR}/friendbox_backup_$(date '+%Y%m%d_%H%M%S')_prerestore.$(_backup_ext)"
+    _backup_collect_state
+    info "Saving the current config first..."
+    if _backup_make_archive "$safety" "$cfg_now" "${_BSF[@]}" && _backup_verify "$safety"; then
+      chown root:root "$safety"; chmod 600 "$safety"
+      success "Safety backup: ${safety##*/}  (restore it from this menu to undo)"
+    else
+      rm -f "$safety"
+      error "Could not make the safety backup — nothing was changed."
+      [[ "$_was_running" == "true" ]] && { info "Restarting containers..."; compose_selected up -d 2>/dev/null || true; }
+      return 1
+    fi
+  fi
+
+  echo ""
+  info "Extracting archive..."
   if tar -xf "$chosen" -C / 2>/dev/null; then
     # Re-source .env so restored values are active for the steps below
     [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
@@ -4719,7 +4772,9 @@ restore_config() {
     fi
     success "Restore complete."
     echo ""
-    read -rp "  Redeploy all containers now to apply restored config? [Y/n] " _rd_yn
+    local _rd_yn="y"
+    # Containers we stopped must come back; only ask when nothing was running before.
+    [[ "$_was_running" == "true" ]] || read -rp "  Redeploy all containers now to apply restored config? [Y/n] " _rd_yn
     if [[ ! "${_rd_yn:-y}" =~ ^[Nn]$ ]]; then
       info "Redeploying containers..."
       _jellyfin_fix_markers
@@ -4728,10 +4783,19 @@ restore_config() {
       compose_selected up -d --force-recreate
       success "Containers redeployed with restored config."
     else
-      info "Containers are still running with old config — redeploy when ready: option 12"
+      info "Containers were not redeployed — do it when ready: option 12"
     fi
   else
-    error "Extraction failed — archive may be corrupt."
+    error "Extraction failed part-way (disk full or a permissions problem)."
+    if [[ -n "$safety" && -f "$safety" ]]; then
+      warn "Putting your previous config back from the safety backup..."
+      if tar -xf "$safety" -C / 2>/dev/null; then
+        success "Previous config restored. Safety copy kept: ${safety##*/}"
+      else
+        error "Could not put it back automatically. Restore ${safety##*/} from this menu."
+      fi
+    fi
+    [[ "$_was_running" == "true" ]] && { info "Restarting containers..."; compose_selected up -d 2>/dev/null || true; }
     return 1
   fi
 }

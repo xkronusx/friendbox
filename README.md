@@ -1,6 +1,6 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.8.1**
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.8.2**
 
 **Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
@@ -17,6 +17,20 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
 > Friendbox 3.x **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It is built for Linux 7.0+, cgroup v2, Docker 29 and amd64: Full Install **warns** (it does not stop) if the kernel is older than 7.0, cgroup v2 is off, Docker is older than 29 or the architecture is not amd64. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 What's new in 3.8.2
+
+Restore safety. Backup menu → option 2 used to extract the chosen archive straight over the live config, with containers still running.
+
+| Change | Details |
+|---|---|
+| **The archive is checked before anything is touched** | The whole archive is read back first. A truncated or corrupt file is refused with "nothing was changed", where before it could leave the config half-overwritten. |
+| **Containers are stopped during the restore** | Running containers are stopped before extraction, so their SQLite databases are not written to while files are replaced underneath them, and are brought back (recreated) afterwards. If nothing was running, you are asked whether to redeploy, as before. |
+| **A safety backup of your current config is made first** | It is saved as `friendbox_backup_<time>_prerestore.tar.*` in the backups folder, so it shows up in the list and can itself be restored to undo the restore. If it cannot be made (including not enough free space, checked before anything is stopped), the restore stops without changing anything and the containers are restarted. If extraction fails part-way, the previous config is put back from the safety backup automatically. Pre-restore copies count towards the 10 kept. |
+
+> **Testing status:** restore was run in a sandbox with real archives: a normal restore with containers running, a corrupt archive (refused, config and containers untouched), nothing running (prompt shown, no stop), a failing safety backup (aborted, containers restarted, config untouched), and an extraction that fails part-way (previous config put back). Docker itself was stubbed, and nothing was run on an Ubuntu 26.04 host.
 
 ---
 
@@ -715,7 +729,7 @@ sudo friendbox  →  option 16
 
 Option 16 opens the Backup & Restore menu. It creates a timestamped `.tar.zst` (or `.tar.gz` if zstd cannot be installed) of all container config directories plus key state files (`docker-compose.override.yml` if you have one, `.env`, `.selected_containers`, `.dns_config`). `acme.json` is intentionally excluded — it is environment-specific and will be regenerated — as are regenerable Plex/Jellyfin caches, logs and codecs. Before archiving, running containers are automatically stopped so that SQLite databases (Sonarr, Radarr, Prowlarr, etc.) are in a consistent state; they are restarted automatically once the archive is written. Backups are stored in `/opt/friendbox/backups/` (root:root 600) and the 10 most recent are kept automatically.
 
-To restore: option 16 → option 2 → select an archive. The restore extracts over the current config, re-applies correct acme.json permissions, and offers to redeploy all containers immediately so the restored config takes effect.
+To restore: option 16 → option 2 → select an archive. The archive is checked first (a damaged one is refused), running containers are stopped, your current config is saved as a `…_prerestore` backup (restore that one to undo), and the chosen archive is extracted over the config. Correct acme.json permissions are re-applied and the containers are recreated so the restored config takes effect.
 
 ### Full uninstall
 

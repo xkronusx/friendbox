@@ -3,7 +3,7 @@
 #  Friendbox Setup — Interactive Menu
 #  curl -fsSL https://raw.githubusercontent.com/xkronusx/friendbox/main/setup.sh | bash
 #
-#  Tested on: Ubuntu 24.04.4 LTS (Noble Numbat)
+#  Requires: Ubuntu 26.04 LTS (Resolute Raccoon) or newer
 # =============================================================================
 
 # Note: set -e / set -u intentionally omitted — this is an interactive menu
@@ -28,7 +28,7 @@ INSTALL_FLAG="${INSTALL_DIR}/.installed"
 MEDIA_ROOT="/mnt/media"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-FRIENDBOX_VERSION="2.2.6"
+FRIENDBOX_VERSION="3.0.0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
@@ -147,39 +147,75 @@ is_running() {
   compose_selected ps --status running 2>/dev/null | grep -q "running" || return 1
 }
 
-# ── OS compatibility check ────────────────────────────────────────────────────
-check_os() {
-  local os_id="" os_version="" os_pretty=""
+# ── Platform helpers ──────────────────────────────────────────────────────────
+# Friendbox 3.x requires Ubuntu 26.04 LTS or newer (Linux 7.0+, cgroup v2 only,
+# Docker 29). Older releases are rejected, not warned about.
+MIN_UBUNTU_VERSION="26.04"
 
-  if [[ -f /etc/os-release ]]; then
+# _kernel_at_least MAJOR MINOR — true when the running kernel is >= MAJOR.MINOR.
+# Used to gate features that only exist on newer kernels (e.g. FUSE passthrough
+# needs 6.9+). Pure shell, so it behaves the same with GNU or Rust coreutils.
+_kernel_at_least() {
+  local want_maj="$1" want_min="$2" maj min _rest
+  IFS=. read -r maj min _rest <<< "$(uname -r)"
+  maj="${maj//[^0-9]/}"; min="${min//[^0-9]/}"
+  [[ -n "$maj" ]] || return 1
+  [[ -n "$min" ]] || min=0
+  (( maj > want_maj || (maj == want_maj && min >= want_min) ))
+}
+
+# True when the host runs the unified cgroup v2 hierarchy. Ubuntu 26.04 only
+# supports v2 (systemd 259 removed v1).
+_cgroup_v2() {
+  [[ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" == "cgroup2fs" ]]
+}
+
+# ── OS requirement ────────────────────────────────────────────────────────────
+# True only for Ubuntu >= MIN_UBUNTU_VERSION. Version comparison is done by dpkg,
+# so 26.10, 28.04 etc. pass and 24.04 / 25.10 do not.
+_os_supported() {
+  [[ -f /etc/os-release ]] || return 1
+  (
     # shellcheck source=/dev/null
-    source /etc/os-release 2>/dev/null || true
-    os_id="${ID:-}"
-    os_version="${VERSION_ID:-}"
-    os_pretty="${PRETTY_NAME:-unknown}"
-  fi
+    . /etc/os-release 2>/dev/null || exit 1
+    [[ "${ID:-}" == "ubuntu" && -n "${VERSION_ID:-}" ]] || exit 1
+    dpkg --compare-versions "$VERSION_ID" ge "$MIN_UBUNTU_VERSION"
+  )
+}
 
-  local supported=false
-  [[ "$os_id" == "ubuntu" && "$os_version" == "24.04" ]] && supported=true
+_os_reject() {
+  local os_pretty
+  os_pretty=$( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown OS}" )
+  echo "" >&2
+  echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${RESET}" >&2
+  echo -e "${RED}║  ✖  Unsupported Operating System                            ║${RESET}" >&2
+  echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${RESET}" >&2
+  echo "" >&2
+  echo -e "  ${BOLD}Detected:${RESET}  ${os_pretty}" >&2
+  echo -e "  ${BOLD}Required:${RESET}  Ubuntu ${MIN_UBUNTU_VERSION} LTS (Resolute Raccoon) or newer" >&2
+  echo "" >&2
+  echo -e "  Friendbox ${FRIENDBOX_VERSION} relies on Linux 7.0+ features (FUSE passthrough, cgroup v2" >&2
+  echo -e "  resource controls) and Docker 29, and no longer supports earlier releases." >&2
+  echo -e "  Upgrade first:  ${BOLD}sudo do-release-upgrade${RESET}" >&2
+  echo "" >&2
+  exit 1
+}
 
-  if [[ "$supported" == "true" ]]; then
-    success "OS check passed: ${os_pretty}"
+# Silent when the OS is acceptable; exits otherwise. Runs on every interactive launch.
+_os_gate() { _os_supported || _os_reject; }
+
+check_os() {
+  _os_supported || _os_reject
+  success "OS check passed: $( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Ubuntu}" )"
+
+  # Ubuntu 26.04 only supports the unified cgroup v2 hierarchy, which Docker resource
+  # controls and the health report rely on.
+  if _cgroup_v2; then
+    info "Kernel $(uname -r) · cgroup v2"
   else
-    echo ""
-    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${YELLOW}║  ⚠  Unsupported Operating System                            ║${RESET}"
-    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${RESET}"
-    echo ""
-    echo -e "  ${BOLD}Detected:${RESET}   ${os_pretty:-Unknown OS}"
-    echo -e "  ${BOLD}Supported:${RESET}  Ubuntu 24.04 LTS (Noble Numbat)"
-    echo ""
-    echo -e "  Friendbox is tested and supported on ${BOLD}Ubuntu 24.04 LTS${RESET} only."
-    echo -e "  Running on other systems may work but is not officially supported."
-    echo -e "  Package names, service paths, and Docker install steps may differ."
-    echo ""
-    read -rp "  Continue anyway? [y/N] " yn
-    [[ "$yn" =~ ^[Yy]$ ]] || die "Aborted. Please install Ubuntu 24.04.4 LTS and try again."
-    warn "Continuing on unsupported OS — proceed with caution."
+    warn "Kernel $(uname -r) is not using cgroup v2 — Docker resource priorities and the"
+    warn "health report will not work. Remove 'systemd.unified_cgroup_hierarchy=0' from the"
+    warn "kernel command line (/etc/default/grub) and reboot."
   fi
   echo ""
 }
@@ -191,7 +227,7 @@ CONTAINER_ORDER=(
   sonarr radarr prowlarr bazarr lidarr
   qbittorrent qbittorrentvpn delugevpn nzbget
   seerr ombi doplarr
-  heimdall homarr
+  heimdall
   homeassistant actual
   unifi wgeasy fail2ban filezilla netbootxyz
   teamspeak6 mumble
@@ -226,7 +262,6 @@ declare -A CONTAINER_NAMES=(
   [doplarr]="Doplarr"
   [unifi]="UniFi Network"
   [actual]="Actual Budget"
-  [homarr]="Homarr"
   [wgeasy]="WireGuard Easy"
 )
 
@@ -258,7 +293,6 @@ declare -A CONTAINER_DESC=(
   [doplarr]="Discord bot for media requests via Seerr/Sonarr/Radarr"
   [unifi]="Ubiquiti UniFi network controller"
   [actual]="Local-first personal finance / budgeting"
-  [homarr]="Modern application dashboard"
   [wgeasy]="Self-hosted WireGuard VPN server (inbound — for remote access to your network)"
 )
 
@@ -434,11 +468,11 @@ select_containers() {
     _env_set_inline USE_TRAEFIK "$_use_traefik"
 
     # Set ROOT_REDIRECT_HOST and ROOT_REDIRECT_PORT — which container serves https://DOMAIN.
-    # Priority: portainer > heimdall > homarr > jellyfin > plex > seerr > sonarr > first selected.
+    # Priority: portainer > heimdall > jellyfin > plex > seerr > sonarr > first selected.
     # Maps container key → [container_name, internal_port]
-    declare -A _RNAME=([portainer]=portainer [heimdall]=heimdall [homarr]=homarr
+    declare -A _RNAME=([portainer]=portainer [heimdall]=heimdall
       [jellyfin]=jellyfin [plex]=plex [seerr]=seerr [sonarr]=sonarr)
-    declare -A _RPORT=([portainer]=9000 [heimdall]=80 [homarr]=7575
+    declare -A _RPORT=([portainer]=9000 [heimdall]=80
       [jellyfin]=8096 [plex]=32400 [seerr]=5055 [sonarr]=8989)
     declare -A _RNAME_ALL=(
       [traefik]=traefik     [portainer]=portainer [plex]=plex
@@ -447,7 +481,7 @@ select_containers() {
       [qbittorrent]=qbittorrent
       [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
       [seerr]=seerr [ombi]=ombi
-      [heimdall]=heimdall   [homarr]=homarr       [filezilla]=filezilla
+      [heimdall]=heimdall       [filezilla]=filezilla
       [unifi]=unifi         [actual]=actual       [wgeasy]=wgeasy
       [ampmc]=ampmc         [netbootxyz]=netbootxyz)
     declare -A _RPORT_ALL=(
@@ -457,12 +491,12 @@ select_containers() {
       [qbittorrent]=8080
       [qbittorrentvpn]=8080 [delugevpn]=8112 [nzbget]=6789
       [seerr]=5055   [ombi]=3579
-      [heimdall]=80      [homarr]=7575    [filezilla]=3000
+      [heimdall]=80    [filezilla]=3000
       [unifi]=8443       [actual]=5006    [wgeasy]=51821
       [ampmc]=8080       [netbootxyz]=3000)
     local _redir_name="" _redir_port=""
     local _redir_set=false
-    for _cand in portainer heimdall homarr jellyfin plex seerr sonarr; do
+    for _cand in portainer heimdall jellyfin plex seerr sonarr; do
       if [[ -n "${SELECTED[$_cand]+_}" ]]; then
         _redir_name="${_RNAME[$_cand]}"
         _redir_port="${_RPORT[$_cand]}"
@@ -759,8 +793,65 @@ sync_repo() {
   fi
 }
 
+# ── Docker apt repository ─────────────────────────────────────────────────────
+# Writes Docker's repo as a deb822 .sources file (the format Docker documents for
+# Ubuntu) using the current release codename. Also removes the
+# legacy docker.list / docker.gpg pair that earlier Friendbox versions created.
+_docker_repo_write() {
+  local codename arch
+  codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+  arch=$(dpkg --print-architecture)
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || return 1
+  chmod a+r /etc/apt/keyrings/docker.asc
+  cat > /etc/apt/sources.list.d/docker.sources << DOCKERSRC
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: ${codename}
+Components: stable
+Architectures: ${arch}
+Signed-By: /etc/apt/keyrings/docker.asc
+DOCKERSRC
+  rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.gpg
+}
+
+# After an in-place release upgrade (24.04 -> 26.04) third-party apt sources are
+# normally disabled, or still point at the old codename. If this machine used
+# Docker's repo before and its source is not valid for THIS release, rewrite it.
+# Does nothing when Docker came from Ubuntu's own archive.
+_docker_repo_repair() {
+  [[ $EUID -eq 0 ]] || return 0
+  command -v docker &>/dev/null || return 0
+  local dir="/etc/apt/sources.list.d" codename
+  codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+
+  # Any leftover Docker source file (current, legacy, or a release-upgrade backup)?
+  local had_repo=false f
+  for f in "$dir"/docker.sources "$dir"/docker.list "$dir"/docker.list.* "$dir"/docker.sources.*; do
+    [[ -e "$f" ]] && had_repo=true
+  done
+  [[ "$had_repo" == "true" ]] || return 0
+
+  # Already correct? (new-format file, this codename, not disabled)
+  if [[ -f "$dir/docker.sources" ]] \
+     && grep -qE "^Suites:[[:space:]]*${codename}[[:space:]]*$" "$dir/docker.sources" \
+     && ! grep -qiE '^Enabled:[[:space:]]*no' "$dir/docker.sources" \
+     && [[ ! -f "$dir/docker.list" ]]; then
+    return 0
+  fi
+
+  info "Docker apt source is missing or not valid for ${codename} — rewriting it..."
+  if _docker_repo_write; then
+    apt-get update -qq 2>/dev/null || true
+    success "Docker apt source now targets '${codename}'."
+  else
+    warn "Could not refresh Docker's apt source (no network?). Docker updates via apt may be unavailable."
+  fi
+}
+
 # ── Dependency checks ─────────────────────────────────────────────────────────
 check_deps() {
+  _docker_repo_repair
   local missing=()
   local cmd
   for cmd in docker curl; do
@@ -782,15 +873,13 @@ check_deps() {
     if ! command -v docker &>/dev/null; then
       info "Installing Docker CE (official)..."
       apt-get install -y ca-certificates curl gnupg
-      install -m 0755 -d /etc/apt/keyrings
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-      chmod a+r /etc/apt/keyrings/docker.gpg
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-        > /etc/apt/sources.list.d/docker.list
-      apt-get update -qq
-      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      if _docker_repo_write; then
+        apt-get update -qq
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      else
+        warn "Could not reach download.docker.com — falling back to Ubuntu's docker.io packages."
+        apt-get install -y docker.io docker-compose-v2
+      fi
     fi
 
     # Install remaining missing packages
@@ -994,9 +1083,184 @@ _mergerfs_build_branch_list() {
   echo "${all[*]-}"
 }
 
+# ── Kernel FUSE passthrough (Linux 6.9+, mergerfs 2.41+) ──────────────────────
+# With passthrough, file data I/O on the pool goes straight to the underlying
+# disk inside the kernel instead of being proxied through the userspace mergerfs
+# process — large media reads/writes stop being CPU-bound on a single FUSE path.
+#   Needs: kernel >= 6.9 (Ubuntu 26.04's 7.0 qualifies), and a
+#   mergerfs build that supports it. Ubuntu 26.04's repo ships mergerfs 2.40.2,
+#   which does NOT; upstream 2.41+ does. The option was spelled passthrough.io in
+#   2.41/2.42, and a mis-spelled option is silently ignored by 2.42, so support is
+#   verified by reading the live setting back — never assumed from a version string.
+#   ON by default (mode "rw"). Because Ubuntu's mergerfs is too old, Friendbox installs
+#   upstream mergerfs automatically when it needs to (MERGERFS_AUTO_UPSTREAM=0 stops that).
+#   Override with MERGERFS_PASSTHROUGH=rw|ro|off in .env (or the menu).
+#   Caveat: mergerfs' moveonenospc cannot rescue writes that use passthrough; "ro"
+#   (reads only) keeps it working. minfreespace already keeps disks from filling.
+_MFS_PT_USED=""
+_MFS_FORCE_NO_PT=""
+_MFS_UPSTREAM_TRIED=""
+
+_mfs_read_xattr() {   # _mfs_read_xattr MOUNTPOINT OPTION → prints the live value
+  python3 -c 'import os,sys; print(os.getxattr(sys.argv[1]+"/.mergerfs","user.mergerfs."+sys.argv[2]).decode())' \
+    "$1" "$2" 2>/dev/null
+}
+
+# Prints the passthrough option name the installed mergerfs really honours
+# (passthrough.io or passthrough); returns 1 if unsupported. Uses a throw-away
+# probe mount in /run, so it works before the real pool exists.
+_mergerfs_passthrough_name() {
+  command -v mergerfs &>/dev/null || return 1
+  command -v python3  &>/dev/null || return 1
+  _kernel_at_least 6 9            || return 1
+  [[ -e /dev/fuse ]]              || return 1
+  local t name got found=""
+  t=$(mktemp -d /run/friendbox-mfsprobe.XXXXXX 2>/dev/null) || return 1
+  mkdir -p "$t/a" "$t/b" "$t/mp"
+  for name in passthrough.io passthrough; do
+    if mergerfs -o "cache.files=partial,${name}=ro,fsname=friendbox-probe" "$t/a:$t/b" "$t/mp" 2>/dev/null; then
+      got=$(_mfs_read_xattr "$t/mp" "$name")
+      umount "$t/mp" 2>/dev/null || umount -l "$t/mp" 2>/dev/null || true
+      if [[ "$got" == "ro" ]]; then found="$name"; break; fi
+    fi
+  done
+  mountpoint -q "$t/mp" 2>/dev/null || rm -rf "$t"
+  [[ -n "$found" ]] && { echo "$found"; return 0; }
+  return 1
+}
+
+# Prints the fstab option fragment for the configured mode (e.g. passthrough.io=ro),
+# or nothing. Records what was applied in _MFS_PT_USED for verification/fallback.
+_mergerfs_passthrough_opt() {
+  _MFS_PT_USED=""
+  [[ -z "$_MFS_FORCE_NO_PT" ]] || return 0
+  local mode="${MERGERFS_PASSTHROUGH:-rw}"
+  [[ "$mode" == "off" ]] && return 0
+  case "$mode" in
+    ro|rw) ;;
+    *) warn "Invalid MERGERFS_PASSTHROUGH='${mode}' (use rw, ro or off) — passthrough left off." >&2; return 0 ;;
+  esac
+  local name
+  if ! name=$(_mergerfs_passthrough_name); then
+    warn "FUSE passthrough is enabled but the installed mergerfs can't use it" >&2
+    warn "  (needs mergerfs 2.41+ and kernel 6.9+; you have kernel $(uname -r))." >&2
+    warn "  Continuing without it. Fix: MergerFS menu → Kernel I/O passthrough → option 1." >&2
+    return 0
+  fi
+  _MFS_PT_USED="${name}=${mode}"
+  echo "${_MFS_PT_USED}"
+}
+
+_mergerfs_verify_passthrough() {   # after a successful mount
+  [[ -n "$_MFS_PT_USED" ]] || return 0
+  local name="${_MFS_PT_USED%%=*}" want="${_MFS_PT_USED#*=}" got
+  got=$(_mfs_read_xattr "$1" "$name")
+  if [[ "$got" == "$want" ]]; then
+    success "FUSE passthrough active (${name}=${got}, kernel $(uname -r))."
+  else
+    warn "Passthrough was requested but mergerfs reports '${got:-unknown}' — it is not active."
+  fi
+}
+
+_env_put() {   # _env_put KEY VALUE — set/replace a key in .env
+  _ensure_install_dir
+  [[ -f "$ENV_FILE" ]] || { touch "$ENV_FILE"; chmod 600 "$ENV_FILE"; }
+  if grep -q "^${1}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i "s|^${1}=.*|${1}=${2}|" "$ENV_FILE"
+  else
+    echo "${1}=${2}" >> "$ENV_FILE"
+  fi
+}
+
+# Installs upstream mergerfs from GitHub (only way to get 2.41+ on Ubuntu 26.04).
+_mergerfs_install_upstream() {
+  local codename arch ver url tmp
+  codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+  arch=$(dpkg --print-architecture)
+  ver="${MERGERFS_UPSTREAM_VERSION:-2.42.0}"
+  url="https://github.com/trapexit/mergerfs/releases/download/${ver}/mergerfs_${ver}.ubuntu-${codename}_${arch}.deb"
+  info "Downloading ${url##*/} ..."
+  tmp=$(mktemp -d)
+  if ! curl -fsSL --max-time 180 -o "$tmp/mergerfs.deb" "$url"; then
+    warn "Download failed. Upstream may not publish a build for ${codename}/${arch} at version ${ver}."
+    warn "Releases: https://github.com/trapexit/mergerfs/releases"
+    rm -rf "$tmp"; return 1
+  fi
+  if apt-get install -y "$tmp/mergerfs.deb"; then
+    success "Installed: $(mergerfs --version 2>/dev/null | head -1)"
+    rm -rf "$tmp"
+  else
+    warn "apt could not install the package."; rm -rf "$tmp"; return 1
+  fi
+}
+
+_mergerfs_passthrough_menu() {
+  _mergerfs_load_pool
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  while true; do
+    echo ""
+    echo -e "${BOLD}Kernel I/O passthrough (FUSE passthrough)${RESET}"
+    echo -e "${DIM}  Lets the kernel serve pool file I/O directly instead of via the mergerfs process.${RESET}"
+    echo ""
+    local kern="no" name="" live=""
+    _kernel_at_least 6 9 && kern="yes"
+    name=$(_mergerfs_passthrough_name) || name=""
+    echo -e "  Kernel $(uname -r) supports it (6.9+) : ${kern}"
+    echo -e "  Installed mergerfs supports it       : $([[ -n "$name" ]] && echo "yes (${name})" || echo "no — $(mergerfs --version 2>/dev/null | head -1)")"
+    echo -e "  Configured mode (.env)               : ${MERGERFS_PASSTHROUGH:-rw (default)}"
+    if [[ -n "${MERGERFS_POOL:-}" ]] && mountpoint -q "$MERGERFS_POOL" 2>/dev/null; then
+      live=$(_mfs_read_xattr "$MERGERFS_POOL" "passthrough.io"; true)
+      [[ -z "$live" ]] && live=$(_mfs_read_xattr "$MERGERFS_POOL" "passthrough")
+      echo -e "  Live on mounted pool                 : ${live:-n/a}"
+    fi
+    echo ""
+    echo "  1) Install / update upstream mergerfs (done automatically; Ubuntu's repo has 2.40.2)"
+    echo "  2) Full passthrough  (rw — default; moveonenospc cannot rescue these writes)"
+    echo "  3) Read-only passthrough  (ro — keeps moveonenospc working for writes)"
+    echo "  4) Disable passthrough"
+    echo "  5) Back"
+    echo ""
+    read -rp "  Choice: " c
+    case "$c" in
+      1) _mergerfs_install_upstream || true ;;
+      2|3|4)
+         local m="rw"; [[ "$c" == "3" ]] && m="ro"; [[ "$c" == "4" ]] && m="off"
+         if [[ "$m" != "off" && -z "$name" ]]; then
+           warn "The installed mergerfs can't do passthrough yet (mergerfs 2.41+ required)."
+           warn "Use option 1 first."
+         else
+           _env_put MERGERFS_PASSTHROUGH "$m"; MERGERFS_PASSTHROUGH="$m"
+           success "MERGERFS_PASSTHROUGH=${m} saved."
+           if [[ -n "${MERGERFS_POOL:-}" ]]; then
+             read -rp "  Remount the pool now to apply it? [y/N] " yn
+             [[ "$yn" =~ ^[Yy]$ ]] && { _mergerfs_remount "$MERGERFS_POOL" || true; }
+           fi
+         fi ;;
+      5) return ;;
+      *) warn "Invalid choice." ;;
+    esac
+  done
+}
+
+# Make sure a passthrough-capable mergerfs is installed (Ubuntu 26.04's repo ships
+# 2.40.2, which is not). Runs at most once per session and never aborts the caller:
+# on any failure the pool is simply mounted without passthrough.
+_mergerfs_ensure_passthrough() {
+  [[ "${MERGERFS_PASSTHROUGH:-rw}" == "off" ]] && return 0
+  [[ "${MERGERFS_AUTO_UPSTREAM:-1}" == "0" ]] && return 0
+  _kernel_at_least 6 9 || return 0
+  _mergerfs_passthrough_name >/dev/null 2>&1 && return 0
+  [[ -z "$_MFS_UPSTREAM_TRIED" ]] || return 0
+  _MFS_UPSTREAM_TRIED=1
+  info "FUSE passthrough needs mergerfs 2.41+ (Ubuntu's package is older) — installing the upstream build..."
+  _mergerfs_install_upstream || warn "Upstream mergerfs not installed — the pool will mount without passthrough."
+  return 0
+}
+
 _mergerfs_write_fstab() {
   local pool_path="$1"
   [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null || true
+  _mergerfs_ensure_passthrough
   local branch_list
   branch_list=$(_mergerfs_build_branch_list)
 
@@ -1044,6 +1308,10 @@ _mergerfs_write_fstab() {
   local minfree
   minfree=$(_mergerfs_minfreespace)
   local opts="defaults,allow_other,use_ino,uid=${uid},gid=${gid},cache.files=partial,cache.readdir=true,cache.attr=1,cache.entry=1,cache.symlinks=true,func.getattr=newest,dropcacheonclose=true,category.create=ff,minfreespace=${minfree},moveonenospc=true,statfs_ignore=ro,fsname=mergerpool,nofail"
+  local _pt
+  _pt=$(_mergerfs_passthrough_opt)
+  _MFS_PT_USED="$_pt"   # $(...) ran in a subshell — record the result here
+  [[ -n "$_pt" ]] && opts+=",${_pt}"
   local _bp
   while IFS= read -r _bp; do
     [[ -n "$_bp" ]] && opts+=",x-systemd.requires-mounts-for=${_bp}"
@@ -1052,7 +1320,7 @@ _mergerfs_write_fstab() {
 
   _mergerfs_docker_guard "$pool_path"
   command -v systemctl &>/dev/null && systemctl daemon-reload 2>/dev/null || true
-  success "fstab updated (minfreespace=${minfree}; previous fstab saved to /etc/fstab.friendbox.bak)."
+  success "fstab updated (minfreespace=${minfree}${_pt:+, ${_pt}}; previous fstab saved to /etc/fstab.friendbox.bak)."
 }
 
 # Fix ownership on a branch without rewriting every inode. chown -R re-chowns
@@ -1163,8 +1431,17 @@ _mergerfs_remount() {
   # exactly the options a reboot would use (one source of truth).
   local mount_out mount_rc=0
   mount_out=$(mount "$pool_path" 2>&1) || mount_rc=$?
+  if [[ $mount_rc -ne 0 && -n "$_MFS_PT_USED" ]]; then
+    warn "Mount failed with ${_MFS_PT_USED} — retrying without passthrough..."
+    _MFS_FORCE_NO_PT=1
+    _mergerfs_write_fstab "$pool_path"
+    _MFS_FORCE_NO_PT=""
+    mount_rc=0
+    mount_out=$(mount "$pool_path" 2>&1) || mount_rc=$?
+  fi
   if [[ $mount_rc -eq 0 ]]; then
     success "Pool mounted at ${pool_path}."
+    _mergerfs_verify_passthrough "$pool_path"
   else
     warn "mergerfs mount failed (exit ${mount_rc}):"
     warn "  ${mount_out}"
@@ -1621,7 +1898,8 @@ setup_mergerfs() {
     echo "  6) Mount / remount pool"
     echo "  7) Fix ownership & create subdirs on all drives"
     echo "  8) Unmount pool"
-    echo "  9) Back to main menu"
+    echo "  9) Kernel I/O passthrough (FUSE passthrough) settings"
+    echo "  10) Back to main menu"
     echo ""
     read -rp "  Choice: " choice
     case "$choice" in
@@ -1633,7 +1911,8 @@ setup_mergerfs() {
       6) _mergerfs_mount_pool         || true; pause ;;
       7) _mergerfs_provision_branches || true; pause ;;
       8) _mergerfs_clear_mountpoint   || true; pause ;;
-      9) return ;;
+      9) _mergerfs_passthrough_menu   || true; pause ;;
+      10) return ;;
       *) warn "Invalid choice."; sleep 1 ;;
     esac
   done
@@ -2801,7 +3080,7 @@ _traefik_set_redirect() {
     [qbittorrent]=qbittorrent
     [qbittorrentvpn]=qbittorrentvpn [delugevpn]=delugevpn [nzbget]=nzbget
     [seerr]=seerr     [ombi]=ombi
-    [heimdall]=heimdall       [homarr]=homarr           [filezilla]=filezilla
+    [heimdall]=heimdall           [filezilla]=filezilla
     [unifi]=unifi             [actual]=actual           [wgeasy]=wgeasy
     [ampmc]=ampmc             [netbootxyz]=netbootxyz
   )
@@ -2812,7 +3091,7 @@ _traefik_set_redirect() {
     [qbittorrent]=8080
     [qbittorrentvpn]=8080     [delugevpn]=8112          [nzbget]=6789
     [seerr]=5055          [ombi]=3579
-    [heimdall]=80             [homarr]=7575             [filezilla]=3000
+    [heimdall]=80             [filezilla]=3000
     [unifi]=8443              [actual]=5006             [wgeasy]=51821
     [ampmc]=8080              [netbootxyz]=3000
   )
@@ -4142,7 +4421,6 @@ check_port_conflicts() {
     [doplarr]="8787/tcp:Doplarr"
     [unifi]="8443/tcp:UniFi-UI 8880/tcp:UniFi-inform 3478/udp:UniFi-STUN 10001/udp:UniFi-discovery"
     [actual]="5006/tcp:ActualBudget"
-    [homarr]="7575/tcp:Homarr"
     [wgeasy]="51820/udp:WireGuard 51821/tcp:WG-Easy-UI"
   )
 
@@ -4314,9 +4592,9 @@ _jellyfin_detect_gpu() {
         if lsmod 2>/dev/null | grep -q '^i915[[:space:]]'; then
           _drv="i915 loaded"
         elif lsmod 2>/dev/null | grep -q '^xe[[:space:]]'; then
-          _drv="xe loaded (Arc/Meteor Lake)"
+          _drv="xe loaded (Arc / Xe-generation Intel)"
         else
-          _drv="NO DRIVER — try: sudo modprobe i915"
+          _drv="NO DRIVER — try: sudo modprobe i915 (older Intel) or xe (Arc, Lunar Lake and newer)"
         fi
       elif echo "$_line" | grep -qiE 'AMD|Advanced Micro Devices|ATI'; then
         _type="amd"
@@ -4568,6 +4846,33 @@ _jellyfin_hw_check() {
   echo ""
 }
 
+# _hwaccel_pick_nodes — print "RENDER_NODE CARD_NODE" for the real GPU.
+# Newer kernels (6.x/7.x) can expose several DRM devices (simpledrm/virtio
+# framebuffers, iGPU + dGPU, i915 vs xe), so renderD128 / card0 are not reliable.
+# Choose the first render node bound to a real GPU driver and the card node that
+# belongs to the SAME PCI device; fall back to the first node present.
+_hwaccel_pick_nodes() {
+  local r drv dev c best_r="" best_c=""
+  for r in /sys/class/drm/renderD[0-9]*; do
+    [[ -e "$r" ]] || continue
+    drv=$(basename "$(readlink -f "$r/device/driver" 2>/dev/null)")
+    case "$drv" in i915|xe|amdgpu|radeon|nouveau|nvidia) ;; *) continue ;; esac
+    best_r="/dev/dri/$(basename "$r")"
+    dev=$(readlink -f "$r/device" 2>/dev/null)
+    for c in /sys/class/drm/card[0-9]*; do
+      [[ "$(readlink -f "$c/device" 2>/dev/null)" == "$dev" ]] && { best_c="/dev/dri/$(basename "$c")"; break; }
+    done
+    break
+  done
+  if [[ -z "$best_r" ]]; then
+    for r in /dev/dri/renderD[0-9]*; do [[ -e "$r" ]] && { best_r="$r"; break; }; done
+  fi
+  if [[ -z "$best_c" ]]; then
+    for c in /dev/dri/card[0-9]*; do [[ -e "$c" ]] && { best_c="$c"; break; }; done
+  fi
+  echo "${best_r:-/dev/dri/renderD128} ${best_c:-/dev/dri/card0}"
+}
+
 _jellyfin_hw_apply() {
   # Patch docker-compose.yml to configure hardware acceleration for Jellyfin.
   # Argument: vaapi | nvenc | none
@@ -4586,16 +4891,12 @@ _jellyfin_hw_apply() {
 
   info "Patching docker-compose.yml for Jellyfin HW accel: ${_method}..."
 
-  # Detect the correct /dev/dri/card* device — card0 is not always the right one.
-  # On systems with integrated + discrete GPUs, or after driver changes, the
-  # Intel iGPU may be card1 or higher. Pick the first card* that actually exists.
-  local _card_dev="/dev/dri/card0"  # fallback
-  local _c
-  for _c in /dev/dri/card[0-9]*; do
-    [[ -e "$_c" ]] && { _card_dev="$_c"; break; }
-  done
+  # Pick the render + card device nodes of the real GPU (see _hwaccel_pick_nodes).
+  local _render_dev _card_dev
+  read -r _render_dev _card_dev <<< "$(_hwaccel_pick_nodes)"
+  info "Using GPU nodes: ${_render_dev} (render), ${_card_dev} (card)"
 
-  python3 - "$COMPOSE_FILE" "$_method" "$_rgid" "$_vgid" "$_card_dev" << 'PYEOF'
+  python3 - "$COMPOSE_FILE" "$_method" "$_rgid" "$_vgid" "$_card_dev" "$_render_dev" << 'PYEOF'
 import sys, re
 
 path     = sys.argv[1]
@@ -4603,6 +4904,7 @@ method   = sys.argv[2]   # vaapi | nvenc | none
 rgid     = sys.argv[3]   # render group GID (may be empty string)
 vgid     = sys.argv[4]   # video  group GID (may be empty string)
 card_dev = sys.argv[5]   # /dev/dri/card* — detected at runtime
+render_dev = sys.argv[6] # host render node; always exposed to the container as /dev/dri/renderD128
 
 with open(path) as f:
     content = f.read()
@@ -4646,7 +4948,7 @@ if method == 'vaapi':
         '    # Requires: GPU driver loaded, /dev/dri/renderD128 present, render group exists.\n'
         '    # To disable: option 5 → Jellyfin HW accel → None.\n'
         '    devices:\n'
-        '      - /dev/dri/renderD128:/dev/dri/renderD128\n'
+        '      - ' + render_dev + ':/dev/dri/renderD128\n'
         f'      - {card_dev}:{card_dev}\n'
         '    group_add:\n'
         + grp
@@ -5023,7 +5325,7 @@ HDEOF
     [homeassistant]="homeassistant" [filezilla]="filezilla"
     [heimdall]="heimdall"           [fail2ban]="fail2ban"
     [doplarr]="doplarr"             [unifi]="unifi"
-    [actual]="actual"               [homarr]="homarr"
+    [actual]="actual"
     [wgeasy]="wgeasy"
   )
 
@@ -5084,8 +5386,8 @@ HDEOF
     # Verify HW accel prerequisites if a method is configured
     local _jf_hw="${JELLYFIN_HW_ACCEL:-none}"
     if [[ "$_jf_hw" == "vaapi" ]]; then
-      if [[ -e /dev/dri/renderD128 ]]; then
-        success "  /dev/dri/renderD128  [VA-API device present]"
+      if compgen -G "/dev/dri/renderD*" >/dev/null; then
+        success "  $(read -r _r _ <<< "$(_hwaccel_pick_nodes)"; echo "$_r")  [VA-API device present]"
       else
         warn "Jellyfin VA-API is configured but /dev/dri/renderD128 is missing."
         warn "Verify GPU driver is loaded: lsmod | grep -E 'i915|amdgpu|xe'"
@@ -5244,7 +5546,7 @@ _dns_get_subdomains() {
     [teamspeak6]="ts6"
     [mumble]="mumble"         [ampmc]="amp"
     [netbootxyz]="netboot"    [filezilla]="filezilla"
-    [heimdall]="heimdall"     [homarr]="homarr"
+    [heimdall]="heimdall"
     [doplarr]="doplarr"       [unifi]="unifi"
     [actual]="actual"         [wgeasy]="wg"
   )
@@ -5684,6 +5986,17 @@ CRONEOF
   local cron_file="/etc/cron.d/friendbox-dns"
   echo "*/5 * * * * root ${cron_script} >> /var/log/friendbox-dns.log 2>&1" > "$cron_file"
   chmod 644 "$cron_file"
+  # /etc/cron.d is only read if the cron daemon exists and runs. It is not part
+  # of minimal/cloud Ubuntu images (it is "standard" priority, not "required").
+  if ! systemctl is-active --quiet cron 2>/dev/null; then
+    info "cron is not running — installing/starting it so DNS auto-update can run..."
+    if apt-get install -y cron >/dev/null 2>&1 && systemctl enable --now cron >/dev/null 2>&1; then
+      success "cron service active."
+    else
+      warn "Could not start cron — DNS auto-update will not run until it is installed:"
+      warn "  sudo apt install cron && sudo systemctl enable --now cron"
+    fi
+  fi
 
   # Install logrotate config so the cron log doesn't grow unbounded
   cat > /etc/logrotate.d/friendbox-dns << 'LREOF'
@@ -6253,7 +6566,7 @@ print_urls() {
       [filezilla]="https://filezilla.${d}"
       [heimdall]="https://heimdall.${d}"        [doplarr]="(no web UI — Discord bot only)"
       [unifi]="https://unifi.${d}"              [actual]="https://actual.${d}"
-      [homarr]="https://homarr.${d}"            [wgeasy]="https://wg.${d}"
+            [wgeasy]="https://wg.${d}"
       [fail2ban]="(no web UI — host network)"
     )
   else
@@ -6282,7 +6595,7 @@ print_urls() {
       [homeassistant]="http://${host_ip}:8123"  [filezilla]="http://${host_ip}:3300"
       [heimdall]="http://${host_ip}:8091"       [doplarr]="http://${host_ip}:8787"
       [unifi]="https://${host_ip}:8443"         [actual]="http://${host_ip}:5006"
-      [homarr]="http://${host_ip}:7575"         [wgeasy]="http://${host_ip}:51821"
+         [wgeasy]="http://${host_ip}:51821"
       [fail2ban]="(no web UI — host network)"
     )
   fi
@@ -6552,14 +6865,8 @@ full_reset() {
   if [[ -f "$_tune_conf" ]]; then
     rm -f "$_tune_conf"
     info "  Removed: ${_tune_conf}"
-    # Restore kernel defaults immediately so the running session is clean
-    sysctl vm.swappiness=60 vm.dirty_ratio=20 vm.dirty_background_ratio=10 \
-           vm.vfs_cache_pressure=100 vm.overcommit_memory=0 \
-           net.core.rmem_max=212992 net.core.wmem_max=212992 \
-           net.ipv4.tcp_fastopen=0 fs.inotify.max_user_watches=8192 \
-           fs.inotify.max_user_instances=128 2>/dev/null || true
-    echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
-    echo always > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
+    # Restore the pre-tuning values immediately so the running session is clean
+    _tuning_restore
   fi
   # Remove max-concurrent-downloads from daemon.json if we set it
   local _daemon_json="/etc/docker/daemon.json"
@@ -6748,6 +7055,56 @@ _tuning_show_current() {
   echo ""
 }
 
+# Snapshot of the values that were live BEFORE Friendbox first tuned the system,
+# so "Revert" restores what this host really had — kernel defaults differ between
+# Ubuntu releases and builds, so hard-coded "defaults" are unreliable.
+_TUNING_PREV="${INSTALL_DIR}/.tuning_prev"
+
+_tuning_snapshot() {
+  # Keep the ORIGINAL values across re-applies. If tuning was applied by an older
+  # Friendbox (no snapshot, conf already live), the current values are already
+  # tuned — don't capture those as "previous".
+  [[ -f "$_TUNING_PREV" ]] && return 0
+  [[ -n "${1:-}" ]] || return 0
+  _ensure_install_dir
+  local k v
+  : > "$_TUNING_PREV"
+  while IFS= read -r k; do
+    v=$(sysctl -n "$k" 2>/dev/null) && echo "sysctl ${k}=${v}" >> "$_TUNING_PREV"
+  done < <(grep -oE '^[a-z0-9_.]+[[:space:]]*=' "$1" | tr -d ' =')
+  local thp
+  for thp in enabled defrag; do
+    v=$(sed -n 's/.*\[\([a-z]*\)\].*/\1/p' "/sys/kernel/mm/transparent_hugepage/${thp}" 2>/dev/null)
+    [[ -n "$v" ]] && echo "thp_${thp} ${v}" >> "$_TUNING_PREV"
+  done
+  chmod 600 "$_TUNING_PREV"
+}
+
+_tuning_restore() {
+  local line
+  if [[ -f "$_TUNING_PREV" ]]; then
+    while IFS= read -r line; do
+      case "$line" in
+        "sysctl "*)     sysctl -w "${line#sysctl }" &>/dev/null || true ;;
+        "thp_enabled "*) echo "${line#thp_enabled }" > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true ;;
+        "thp_defrag "*)  echo "${line#thp_defrag }"  > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true ;;
+      esac
+    done < "$_TUNING_PREV"
+    rm -f "$_TUNING_PREV"
+    success "Restored the values that were active before tuning."
+  else
+    # Tuned by an older Friendbox — no snapshot exists. Fall back to the common
+    # kernel defaults. THP is left alone: its default depends on the kernel build,
+    # and it returns to that default on the next reboot once the service is gone.
+    sysctl vm.swappiness=60 vm.dirty_ratio=20 vm.dirty_background_ratio=10 \
+           vm.vfs_cache_pressure=100 vm.overcommit_memory=0 \
+           net.core.rmem_max=212992 net.core.wmem_max=212992 \
+           net.ipv4.tcp_fastopen=0 fs.inotify.max_user_watches=8192 \
+           fs.inotify.max_user_instances=128 &>/dev/null || true
+    info "No pre-tuning snapshot found — applied common defaults. THP returns to its default on reboot."
+  fi
+}
+
 _tuning_apply() {
   echo ""
   echo -e "${BOLD}Applying Friendbox system tunings...${RESET}"
@@ -6812,6 +7169,8 @@ fs.inotify.max_user_watches = 524288
 # consumes one instance. 128 is easily exhausted with 10+ active containers.
 fs.inotify.max_user_instances = 512
 SYSCTLEOF
+
+  _tuning_snapshot "$_SYSCTL_CONF"   # record pre-tuning values before they change
 
   # Apply immediately (no reboot needed)
   if sysctl -p "$_SYSCTL_CONF" 2>/dev/null; then
@@ -6905,22 +7264,9 @@ _tuning_revert() {
     success "Removed ${_SYSCTL_CONF}"
   fi
 
-  # Re-apply kernel defaults explicitly (in case the values were changed in
-  # the running session — removing the conf file only affects next boot)
-  sysctl vm.swappiness=60                   2>/dev/null || true
-  sysctl vm.dirty_ratio=20                  2>/dev/null || true
-  sysctl vm.dirty_background_ratio=10       2>/dev/null || true
-  sysctl vm.vfs_cache_pressure=100          2>/dev/null || true
-  sysctl vm.overcommit_memory=0             2>/dev/null || true
-  sysctl net.core.rmem_max=212992           2>/dev/null || true
-  sysctl net.core.wmem_max=212992           2>/dev/null || true
-  sysctl net.ipv4.tcp_fastopen=0            2>/dev/null || true
-  sysctl fs.inotify.max_user_watches=8192   2>/dev/null || true
-  sysctl fs.inotify.max_user_instances=128  2>/dev/null || true
+  # Removing the conf only affects the next boot — restore the live values now.
+  _tuning_restore
 
-  # Restore THP to 'always' (Ubuntu default) and remove the systemd service
-  echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
-  echo always > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
   if [[ -f "$_THP_SYSTEMD" ]]; then
     systemctl disable --now friendbox-thp.service 2>/dev/null || true
     rm -f "$_THP_SYSTEMD"
@@ -7165,6 +7511,27 @@ main_menu() {
   done
 }
 
+# ── One-time cleanups when upgrading to Friendbox 3.0.0 ───────────────────────
+# 3.0.0 removed Homarr (its legacy image is archived). Clean saved state so the
+# stack keeps working, and tell the user about anything left on the host.
+_migrate_v3() {
+  [[ $EUID -eq 0 && -d "$INSTALL_DIR" ]] || return 0
+  if [[ -f "$SELECTED_FILE" ]] && grep -qx 'homarr' "$SELECTED_FILE"; then
+    sed -i '/^homarr$/d' "$SELECTED_FILE"
+    info "Homarr was removed in Friendbox 3.0.0 — dropped it from your container selection."
+  fi
+  if [[ -f "$ENV_FILE" ]] && grep -q '^ROOT_REDIRECT_HOST=homarr$' "$ENV_FILE"; then
+    sed -i '/^ROOT_REDIRECT_HOST=/d;/^ROOT_REDIRECT_PORT=/d' "$ENV_FILE"
+    warn "Your https://DOMAIN root redirect pointed at Homarr; it now falls back to Portainer."
+    warn "Pick another target in: Traefik configuration."
+  fi
+  if command -v docker &>/dev/null && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'homarr'; then
+    warn "A Homarr container from an earlier version is still on this host (no longer managed)."
+    warn "  Remove it:   sudo docker rm -f homarr"
+    warn "  Its data is kept in the 'homarr' folder under your CONFIG_ROOT — delete it when you no longer need it."
+  fi
+}
+
 # =============================================================================
 #  Entrypoint
 # =============================================================================
@@ -7194,6 +7561,7 @@ if [[ ! -t 0 ]]; then
 else
   # Interactive launch — check for --skip-update flag (set by auto_update after
   # re-exec so we don't loop) then run the menu.
+  _os_gate
   SKIP_UPDATE=false
   for arg in "$@"; do
     [[ "$arg" == "--skip-update" ]] && SKIP_UPDATE=true
@@ -7205,6 +7573,7 @@ else
     # no-root / offline — either way, fall through to the menu below.
   fi
 
+  _migrate_v3
   ensure_media_root
   _fix_install_dir_ownership
   main_menu

@@ -41,6 +41,51 @@ compose() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "${profile_args[@]}" "$@"
 }
 
+# Kernel-level resource report (cgroup v2 + PSI — Ubuntu 26.04 is cgroup v2 only).
+#  • PSI: how long tasks stalled waiting for CPU / memory / IO over the last 10s.
+#    Sustained memory or IO pressure is the early warning before streams buffer.
+#  • OOM kills: per-container count from the container's own cgroup, so a download
+#    client being killed for memory is visible even though it auto-restarts.
+CGROUP_ROOT="${CGROUP_ROOT:-/sys/fs/cgroup}"
+PSI_ROOT="${PSI_ROOT:-/proc/pressure}"
+
+resource_report() {
+  local r line avg col shown=false
+  if [[ -r "${PSI_ROOT}/memory" ]]; then
+    echo ""
+    echo -e "${BOLD}Host pressure (PSI, 10s avg — % of time tasks were stalled)${RESET}"
+    for r in cpu memory io; do
+      [[ -r "${PSI_ROOT}/${r}" ]] || continue
+      line=$(grep '^some' "${PSI_ROOT}/${r}")
+      avg=${line#*avg10=}; avg=${avg%% *}
+      col="${GREEN}"
+      # whole-number compare: >=10% memory/io stall or >=50% cpu stall is notable
+      case "$r" in
+        cpu) (( ${avg%.*} >= 50 )) && col="${YELLOW}" ;;
+        *)   (( ${avg%.*} >= 10 )) && col="${YELLOW}" ;;
+      esac
+      printf "  ${col}%-8s %s%%${RESET}\\n" "$r" "$avg"
+    done
+  fi
+
+  [[ $# -gt 0 && -d "${CGROUP_ROOT}/system.slice" ]] || return 0
+  local name id ev kills
+  for name in "$@"; do
+    id=$(docker inspect -f '{{.Id}}' "$name" 2>/dev/null) || continue
+    ev="${CGROUP_ROOT}/system.slice/docker-${id}.scope/memory.events"
+    [[ -r "$ev" ]] || continue
+    kills=$(awk '$1=="oom_kill"{print $2}' "$ev")
+    if [[ "${kills:-0}" -gt 0 ]]; then
+      if [[ "$shown" == "false" ]]; then
+        echo ""; warn "Containers killed by the kernel for running out of memory:"; shown=true
+      fi
+      echo "  • ${name}: ${kills} OOM kill(s) since it last started"
+    fi
+  done
+  [[ "$shown" == "true" ]] && echo -e "  ${DIM:-}Consider raising memory, adding swap, or lowering concurrent downloads.${RESET}"
+  return 0
+}
+
 health_check() {
   echo ""
   echo -e "${BOLD}Container Health Report${RESET}"
@@ -89,6 +134,8 @@ else:
   fi
 
   echo "─────────────────────────────────────────────────────"
+
+  resource_report "${names[@]}"
 
   local bad
   bad=$(docker ps --filter "network=medianet" --filter "status=exited" --format "{{.Names}}" 2>/dev/null || true)

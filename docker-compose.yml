@@ -18,6 +18,9 @@ services:
     container_name: traefik
     profiles: [traefik]
     restart: unless-stopped
+    # Resource priority (cgroup v2): favoured under CPU/memory contention
+    cpu_shares: 2048
+    oom_score_adj: -500
     stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
@@ -117,6 +120,10 @@ services:
     container_name: plex
     profiles: [plex]
     restart: unless-stopped
+    # Resource priority (cgroup v2): favoured under CPU/memory contention
+    cpu_shares: 2048
+    mem_reservation: 512m
+    oom_score_adj: -500
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
@@ -168,6 +175,10 @@ services:
     container_name: jellyfin
     profiles: [jellyfin]
     restart: unless-stopped
+    # Resource priority (cgroup v2): favoured under CPU/memory contention
+    cpu_shares: 2048
+    mem_reservation: 512m
+    oom_score_adj: -500
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
@@ -220,6 +231,8 @@ services:
     container_name: sonarr
     profiles: [sonarr]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
@@ -255,6 +268,8 @@ services:
     container_name: radarr
     profiles: [radarr]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
@@ -290,6 +305,8 @@ services:
     container_name: prowlarr
     profiles: [prowlarr]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
     stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
@@ -323,6 +340,8 @@ services:
     container_name: bazarr
     profiles: [bazarr]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
     stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
@@ -358,6 +377,8 @@ services:
     container_name: lidarr
     profiles: [lidarr]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
     stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
@@ -467,6 +488,9 @@ services:
     container_name: nzbget
     profiles: [nzbget]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
+    oom_score_adj: 300
     stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
@@ -501,6 +525,9 @@ services:
     container_name: qbittorrent
     profiles: [qbittorrent]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
+    oom_score_adj: 300
     stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
@@ -543,6 +570,9 @@ services:
     container_name: qbittorrentvpn
     profiles: [qbittorrentvpn]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
+    oom_score_adj: 300
     stop_grace_period: 30s
     logging:
       driver: json-file
@@ -597,6 +627,9 @@ services:
     container_name: delugevpn
     profiles: [delugevpn]
     restart: unless-stopped
+    # Resource priority (cgroup v2): yields to media servers under CPU contention
+    cpu_shares: 512
+    oom_score_adj: 300
     stop_grace_period: 30s
     logging:
       driver: json-file
@@ -1023,38 +1056,6 @@ services:
       - "traefik.http.routers.actual.tls=true"
       - "traefik.http.routers.actual.middlewares=secHeaders@file,compress@file"
       - "traefik.http.services.actual.loadbalancer.server.port=5006"
-
-  # ── Homarr — modern application dashboard ────────────────────────────────────
-  homarr:
-    image: ghcr.io/ajnart/homarr:latest
-    container_name: homarr
-    profiles: [homarr]
-    restart: unless-stopped
-    stop_grace_period: 10s
-    security_opt:
-      - no-new-privileges:true
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    networks:
-      - medianet
-    volumes:
-      - ${CONFIG_ROOT}/homarr/configs:/app/data/configs
-      - ${CONFIG_ROOT}/homarr/icons:/app/public/icons
-      - ${CONFIG_ROOT}/homarr/data:/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    ports:
-      - "7575:7575"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=medianet"
-      - "traefik.http.routers.homarr.rule=Host(`homarr.${DOMAIN}`)"
-      - "traefik.http.routers.homarr.entrypoints=websecure"
-      - "traefik.http.routers.homarr.tls=true"
-      - "traefik.http.routers.homarr.middlewares=secHeaders@file,compress@file"
-      - "traefik.http.services.homarr.loadbalancer.server.port=7575"
 
   # ── WireGuard Easy — WireGuard VPN server with web UI ───────────────────────
   wgeasy:

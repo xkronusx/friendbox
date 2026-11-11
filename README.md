@@ -1,8 +1,8 @@
 # 📦 Friendbox
 
-A fully automated, menu-driven Docker media server stack for Ubuntu 24.04 LTS.
+A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS and newer. **Version 3.0.0**
 
-**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · Homarr · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
+**Includes:** Traefik · Portainer · Plex · Jellyfin · Sonarr · Radarr · Prowlarr · Bazarr · Lidarr · qBittorrent · qBittorrentVPN · DelugeVPN · NZBGet · Seerr · Ombi · Home Assistant · Heimdall · FileZilla · Doplarr · UniFi Network · Actual Budget · WireGuard Easy · Fail2ban · TeamSpeak 6 · Mumble · AMP (game servers) · NetbootXYZ
 
 ---
 
@@ -10,13 +10,71 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 24.04 LTS.
 
 | Requirement | Details |
 |---|---|
-| **OS** | Ubuntu 24.04 LTS (Noble Numbat) — tested and supported |
+| **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
 | **Architecture** | x86_64 (amd64) |
 | **RAM** | 4 GB minimum, 8 GB+ recommended |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
 
-> Friendbox will warn you and ask for confirmation if run on a non-Ubuntu 24.04 system. It may work on other Debian-based distros but is not tested or supported.
+> Friendbox 3.0.0 **refuses to run** on anything older than Ubuntu 26.04 (including 24.04 LTS) and on non-Ubuntu systems. There is no override. It needs Linux 7.0+, cgroup v2 and Docker 29. On an older Ubuntu, upgrade first with `sudo do-release-upgrade`.
+
+---
+
+## 🆕 Friendbox 3.0.0
+
+Version 3.0.0 is a major release built around Ubuntu 26.04 LTS ("Resolute Raccoon": Linux 7.0, systemd 259, cgroup v2 only, Rust `coreutils`, `sudo-rs`, Docker 29).
+
+**Breaking changes**
+
+| Change | Details |
+|---|---|
+| **Ubuntu 26.04+ only** | Older releases and non-Ubuntu systems are rejected at every interactive launch and during Full Install. |
+| **FUSE passthrough is on by default** | MergerFS pools now use kernel passthrough (mode `rw`) and Friendbox installs upstream mergerfs automatically, because Ubuntu's own package is too old. See below. |
+
+**Upgrading from 2.x**
+
+1. Upgrade the OS first: `sudo do-release-upgrade`. Ubuntu normally disables third-party apt sources during the upgrade.
+2. After the reboot, run `sudo friendbox`. On launch it:
+   - rewrites a stale Docker apt source for `resolute` (then `sudo apt update && sudo apt upgrade` updates Docker),
+   - removes `homarr` from your saved container selection, clears a root redirect that pointed at it, and tells you how to remove the old container (`sudo docker rm -f homarr`; its config folder under `CONFIG_ROOT` is left for you to delete).
+3. Confirm the pool is mounted (`findmnt /mnt/media`). The Docker mount guard keeps Docker down if it is not.
+4. Apply passthrough to an existing pool: **MergerFS → option 6 (Mount / remount pool)**. This installs upstream mergerfs, rewrites the fstab entry and remounts. Nothing changes on a running pool until you remount it.
+5. Run `sudo /opt/friendbox/scripts/redeploy.sh` to recreate containers on the new Docker and pick up the resource priorities below.
+
+**Kernel features Friendbox uses**
+
+| Feature | What it does |
+|---|---|
+| **FUSE passthrough** (default) | The kernel serves pool file I/O directly instead of proxying it through the mergerfs process. Needs Linux 6.9+ (met by 26.04) and mergerfs 2.41+. |
+| **cgroup v2 priorities** | `cpu_shares`, `mem_reservation` and `oom_score_adj` in `docker-compose.yml`: Plex, Jellyfin and Traefik get 4× the CPU weight of the arr apps and download clients under contention, memory protection for the media servers, and download clients are the first OOM-kill candidates. |
+| **Health report** | `redeploy.sh --health` shows host CPU/memory/IO pressure (PSI) and any container the kernel OOM-killed. |
+| **GPU node detection** | Picks the render/card nodes of the real GPU (Intel `i915` or `xe`, AMD, NVIDIA) rather than assuming `renderD128`/`card0`, which can be a framebuffer device on newer kernels. |
+
+**FUSE passthrough in detail**
+
+- **Automatic setup:** when the pool is mounted or remounted, Friendbox checks whether the installed mergerfs supports passthrough. If not, it downloads and installs upstream mergerfs from `github.com/trapexit/mergerfs` (default `2.42.0`, override with `MERGERFS_UPSTREAM_VERSION`). If the download fails, the pool mounts normally without passthrough.
+- **Verified, not assumed:** some mergerfs versions silently ignore an option name they don't recognise, so Friendbox reads the setting back from the live mount and reports whether passthrough is really active. If the pool fails to mount with passthrough, it is remounted without it.
+- **Mode:** `rw` by default. `ro` accelerates reads only and keeps mergerfs' `moveonenospc` working for writes. With `rw`, `moveonenospc` cannot rescue a write that runs out of space on a disk; `minfreespace` already keeps disks from filling.
+- **Controls** (in `/opt/friendbox/.env`, apply with MergerFS → option 6, or use MergerFS → option 9):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MERGERFS_PASSTHROUGH` | `rw` | `rw`, `ro` or `off`. |
+| `MERGERFS_AUTO_UPSTREAM` | `1` | `0` stops Friendbox installing upstream mergerfs (passthrough then stays off unless you install it yourself). |
+| `MERGERFS_UPSTREAM_VERSION` | `2.42.0` | Upstream release to install. |
+
+**Compatibility notes for 26.04**
+
+| Area | Result |
+|---|---|
+| Rust `coreutils` (uutils 0.8) | Every coreutils command Friendbox runs (`df`, `sort -V`, `stat`, `du`, `ls`, `tail`) was tested against the 26.04 build and behaves the same. `findutils` stays GNU. |
+| `sudo-rs` | Friendbox never calls `sudo` internally, so nothing changes. |
+| Docker | Docker's apt repo publishes `resolute`. Friendbox writes it in the deb822 format (`docker.sources`) and repairs it after an OS upgrade. |
+| Docker 29 | Docker 29 raised its minimum API version to 1.44. Traefik (pinned `v3.6.10`) already includes the fix. |
+| `cron` | The DNS auto-update uses `/etc/cron.d`. `cron` is not on every minimal/cloud image, so Friendbox installs and starts it when needed. |
+| System tuning (option 19) | "Revert" restores the values that were live *before* tuning (saved to `/opt/friendbox/.tuning_prev`) instead of assuming hard-coded defaults. |
+
+> **Testing status:** the pieces above were tested individually against the real 26.04 packages (coreutils, mergerfs 2.40.2) and upstream mergerfs 2.42.0 on a 6.18 kernel, including shared-`mmap` writes (the libtorrent pattern) with `rw` passthrough. A full end-to-end install on a physical 26.04 machine has not been run.
 
 ---
 
@@ -90,6 +148,7 @@ mkdir -p /mnt/media && chown 1000:1000 /mnt/media
 | 6 | Mount / remount pool |
 | 7 | Fix ownership & create subdirs on all drives |
 | 8 | Unmount pool |
+| 9 | Kernel I/O passthrough settings (rw / ro / off) and upstream mergerfs install |
 
 > **Drive details (option 5)** uses `findmnt` to detect whether a real filesystem is mounted at each drive path — not just whether the directory exists. It shows the device name (e.g. `● /dev/sdb1`) in green when mounted, `○ not mounted` in yellow when not, and `? path missing` in red when the directory is absent entirely.
 
@@ -113,6 +172,7 @@ Optional overrides in `/opt/friendbox/.env` (apply with option 7 → option 6):
 |---|---|---|
 | `MERGERFS_MINFREESPACE` | 5% of your smallest RW disk, clamped between `4G` and `50G` | Set a fixed size such as `100G`. Make it larger than the biggest single file you write; lower it if the pool reports no space while disks still have a little left. |
 | `MERGERFS_DOCKER_GUARD` | `1` | Set to `0` to remove the Docker drop-in and let Docker start without the pool. |
+| `MERGERFS_PASSTHROUGH` | `rw` | FUSE passthrough mode: `rw`, `ro` or `off`. See *Friendbox 3.0.0* above. |
 
 > **After a remount:** running containers keep the mount they started with, so they don't see the new pool until restarted. Friendbox lists the running containers that use the pool and offers to restart them right after a successful mount.
 
@@ -162,7 +222,6 @@ Toggle services with their number, press `d` when done. Your selection persists 
 | `ombi` | Media request manager for Plex, Emby, and Jellyfin |
 | `homeassistant` | Home automation platform — uses host networking for device discovery |
 | `heimdall` | Simple application dashboard |
-| `homarr` | Modern application dashboard |
 | `filezilla` | FTP/SFTP client with browser-based GUI |
 | `doplarr` | Discord bot for Seerr/Sonarr/Radarr media requests |
 | `unifi` | Ubiquiti UniFi network controller (includes MongoDB sidecar) |
@@ -343,7 +402,6 @@ Option 11 shows your full URL list. With Traefik selected it shows HTTPS subdoma
 | Ombi | `https://ombi.yourdomain.com` (`http://IP:3579` direct) | Create admin account on first visit |
 | Home Assistant | `http://IP:8123` (host network — not routable via Traefik) | Create admin account on first visit |
 | Heimdall | `https://heimdall.yourdomain.com` (`http://IP:8091` direct) | No auth by default — add apps from the dashboard |
-| Homarr | `https://homarr.yourdomain.com` (`http://IP:7575` direct) | No auth by default — configure from the dashboard |
 | FileZilla | `https://filezilla.yourdomain.com` (`http://IP:3300` direct) | No auth by default — add site manager entries for your servers |
 | Doplarr | No web UI — Discord bot only | Invite bot to your server, use slash commands |
 | UniFi | `https://unifi.yourdomain.com` (`https://IP:8443` direct) | Create admin account on first visit. Inform port for devices: `IP:8880` |
@@ -375,7 +433,6 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | NZBGet | `http://nzbget:6789` |
 | Seerr | `http://seerr:5055` |
 | Ombi | `http://ombi:3579` |
-| Homarr | `http://homarr:7575` |
 | Heimdall | `http://heimdall:80` |
 | UniFi | `https://unifi:8443` |
 | Actual Budget | `http://actual:5006` |
@@ -424,7 +481,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
 | 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
 | 18 | Full Reset | Uninstalls everything — containers, images, configs, and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. |
-| 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, inotify limits, THP, Docker pull concurrency). Shows current values and swap status. |
+| 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, inotify limits, THP, Docker pull concurrency). Shows current values and swap status. Revert restores the values that were active before tuning. |
 
 > **Options 10–17 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
 
@@ -523,7 +580,7 @@ sudo friendbox  →  option 12  →  option 2  →  select from numbered list
 sudo /opt/friendbox/scripts/redeploy.sh              # redeploy all
 sudo /opt/friendbox/scripts/redeploy.sh sonarr        # redeploy one
 sudo /opt/friendbox/scripts/redeploy.sh --restart     # restart without pulling
-sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
+sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memory/IO pressure + OOM kills
 ```
 
 ---
@@ -542,6 +599,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 ├── .selected_containers              # Active container selection
 ├── .mergerfs_modes                   # Per-disk MergerFS mode (RW/NC/RO)
 ├── .mergerfs_pool                    # MergerFS pool mount path
+├── .tuning_prev                      # Values active before option 19 tuning (used by Revert)
 ├── .dns_config                       # DNS provider credentials (chmod 600)
 ├── docker-compose.yml                # Full service stack
 ├── config/
@@ -611,6 +669,10 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check
 - RO branches must never have subdirectories created on them
 - Run option 7 → option 7 to fix ownership and recreate subdirs only on RW/NC branches
 - Remount pool to apply current mode settings: option 7 → option 6
+
+**FUSE passthrough is not active after enabling it**
+- Check the MergerFS menu → option 9: it shows whether the kernel and the installed mergerfs support it. Ubuntu's own mergerfs (2.40.2) does not; Friendbox installs upstream automatically when the pool is mounted, unless `MERGERFS_AUTO_UPSTREAM=0` is set or the download failed. Option 1 retries the install.
+- Live value: `python3 -c "import os;print(os.getxattr('/mnt/media/.mergerfs','user.mergerfs.passthrough.io').decode())"`
 
 **MergerFS pool not mounted after reboot (or Docker not running)**
 - Docker will not start while the pool is unmounted (the mount guard). Check: `findmnt /mnt/media` and `systemctl status docker`

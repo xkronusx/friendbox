@@ -11,7 +11,7 @@ A fully automated, menu-driven Docker media server stack for Ubuntu 26.04 LTS an
 | Requirement | Details |
 |---|---|
 | **OS** | Ubuntu 26.04 LTS (Resolute Raccoon) or newer — required |
-| **Architecture** | x86_64 (amd64) |
+| **Architecture** | x86_64 (amd64). If UniFi is selected the CPU must support AVX (MongoDB 7 requirement); on a VM set the CPU type to `host`. |
 | **RAM** | 16 GB or more. Friendbox 3.4 is sized for it: two 4 GiB RAM-backed transcode folders, 1 GiB memory reservations for Plex/Jellyfin, and zram swap. It still runs on less, but warns at launch and will see memory pressure. |
 | **Disk** | 20 GB minimum for OS + config; separate drives recommended for media |
 | **Domain** | A registered domain or free DuckDNS subdomain (e.g. `myhome.duckdns.org`) |
@@ -220,6 +220,8 @@ mkdir -p /mnt/media && chown 1000:1000 /mnt/media
 
 > **Subdirectory creation (option 7)** writes `movies/`, `tv/`, and `downloads/` (if any download client, Sonarr, or Radarr is selected) directly on each RW/NC branch disk. RO branches never get new directories (their file ownership is still corrected). Subdirs are never created through the mounted pool path.
 
+> **MergerFS caching:** besides `cache.files=partial`, the pool uses `cache.readdir=true`, `cache.attr=1`, `cache.entry=1` and `cache.statfs=10` (per-disk free space is cached for 10 seconds, so polling doesn't wake idle drives). Existing pools pick up changes with option 6 (remount).
+
 > **MergerFS and libtorrent:** Friendbox mounts the pool with `cache.files=partial`, which lets libtorrent-based clients (Deluge, qBittorrent) use memory-mapped I/O on the pool. Without file caching, `mmap()` on a FUSE filesystem fails with "No such device". This is applied automatically on every remount.
 
 **MergerFS safety defaults** (set automatically):
@@ -260,6 +262,8 @@ Sets core variables in `/opt/friendbox/.env`. All other steps depend on this.
 | **Plex claim token** | Optional. Get one at [plex.tv/claim](https://plex.tv/claim) — valid for 4 minutes. Lets Plex auto-link to your account on first start. Leave blank to claim manually later. |
 
 Press **Enter** on any prompt to keep the current value.
+
+> **Allowed characters:** the domain, ACME email, config/media paths, timezone and Plex claim token accept letters, digits and `. _ @ : / + , = -` only (no spaces or quotes), because these values are stored unquoted in `.env`. Anything else is rejected with a message before `.env` is changed.
 
 ---
 
@@ -311,15 +315,16 @@ Toggle services with their number, press `d` when done. Your selection persists 
 
 Runs the complete first-time setup in sequence:
 
-1. OS compatibility check
-2. Installs Docker CE, curl, apache2-utils
+1. OS compatibility check (Ubuntu 26.04+, 16 GB RAM advisory)
+2. Installs Docker CE, curl, apache2-utils, and sets up zram swap
 3. Pulls latest `docker-compose.yml` and config files from GitHub
 4. Opens container selection (selection is needed before environment prompts)
 5. Prompts to confirm environment settings (Plex claim token is skipped if Plex not selected)
 6. Creates the `medianet` Docker bridge network
 7. Creates `acme.json` with correct permissions (`root:root 600`)
 8. Provisions config and media directories (creates `traefik.yml`, `acme.json`, all config and media dirs)
-9. Starts all selected containers with `docker compose up -d`
+9. Pre-flight checks: Traefik/ACME settings, port conflicts, VPN credentials, and an AVX check if UniFi is selected
+10. Starts all selected containers (`docker compose pull`, then `up -d`)
 
 If Friendbox is already installed, option 1 warns before proceeding.
 
@@ -398,6 +403,8 @@ Only shows options for services you have selected.
 | **Jellyfin** | Hardware acceleration method (VA-API / NVENC / None) + full diagnostic tool |
 | **Doplarr** | Discord bot token, Seerr API key (required), Radarr and Sonarr API keys (optional) |
 | **WireGuard Easy** | Optional unattended first-start setup (username, password, host, port). If skipped, a setup wizard runs on first visit to the web UI. |
+
+> **Credential characters:** passwords, tokens and API keys may contain any character **except a single quote (`'`) or a line break**. Those would corrupt `.env`, so they are rejected before anything is saved and your existing values are kept.
 
 > **VPN LAN CIDR note:** The default value includes your home LAN subnet (`192.168.1.0/24`) and the Docker bridge subnet assigned to `medianet` (detected automatically from the live network). Both are required — the home subnet allows your LAN devices through the VPN firewall, and the Docker bridge subnet allows Traefik to reverse-proxy the VPN container while the tunnel is active. If your home network uses a different subnet (e.g. `192.168.0.0/24`), update the first entry accordingly.
 
@@ -546,7 +553,7 @@ All containers share the `medianet` Docker bridge and communicate by container n
 | 15 | Check port conflicts | Checks whether any ports needed by selected containers are already in use. |
 | 16 | Backup & Restore | Create, restore, and delete timestamped config backups. Backups stored in `/opt/friendbox/backups/`. |
 | 17 | Teardown | Stops and removes containers, removes Docker network. Config and data preserved. |
-| 18 | Full Reset | Uninstalls everything — containers, images, configs, and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. |
+| 18 | Full Reset | Uninstalls everything — containers, images, configs, tuning, zram swap and the `friendbox` binary. Media files and backups are NOT deleted. Requires typing `RESET` to confirm. The config folder is not deleted if `CONFIG_ROOT` is `/`, a system directory, a home directory, a mount point or contains your media root. |
 | 19 | System performance tuning | Apply or revert host kernel tunings optimised for a Docker media server workload (swappiness, dirty ratios, socket buffers, BBR congestion control, connection-tracking limit, inotify limits, THP, Docker pull concurrency). Shows current values, swap/zram status and Docker daemon settings; option 5 toggles zram swap. Revert restores the values that were active before tuning. |
 
 > **Options 10–17 are blocked until Full Install has been completed.** The menu header shows `✔ INSTALLED` or `○ NOT YET INSTALLED`.
@@ -666,6 +673,8 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 ├── .mergerfs_modes                   # Per-disk MergerFS mode (RW/NC/RO)
 ├── .mergerfs_pool                    # MergerFS pool mount path
 ├── .tuning_prev                      # Values active before option 19 tuning (used by Revert)
+├── .userland_proxy_set               # Present only if Friendbox set Docker's userland-proxy (so Revert removes only that)
+├── .media_paths_notice               # One-time /data/downloads → /data/media/downloads reminder already shown
 ├── .dns_config                       # DNS provider credentials (chmod 600)
 ├── docker-compose.yml                # Full service stack
 ├── config/
@@ -684,6 +693,19 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 /etc/fstab.friendbox.bak              # fstab as it was before Friendbox's last MergerFS change
 /etc/systemd/system/docker.service.d/
 └── friendbox-mergerfs.conf           # Docker mount guard (requires the pool to be mounted)
+
+# Host tuning (options 19 and automatic setup; removed by Revert / Full Reset)
+/etc/sysctl.d/99-friendbox.conf       # Option 19 kernel settings (memory, TCP/BBR, conntrack, inotify)
+/etc/sysctl.d/98-friendbox-quic.conf  # UDP receive buffer for Traefik HTTP/3
+/etc/sysctl.d/98-friendbox-zram.conf  # swappiness while zram swap is active
+/etc/modules-load.d/friendbox-net.conf  # loads tcp_bbr / nf_conntrack before sysctl at boot
+/etc/systemd/system/friendbox-thp.service   # Transparent HugePages = madvise
+/etc/systemd/system/friendbox-zram.service  # zram swap (script: /usr/local/sbin/friendbox-zram)
+/etc/docker/daemon.json               # max-concurrent-downloads and userland-proxy (keys Friendbox set)
+
+# DNS auto-update (option 6 → 7)
+/usr/local/bin/friendbox-dns-update   # cron job script (/etc/cron.d/friendbox-dns, every 5 minutes)
+/var/log/friendbox-dns.log            # its log (rotated weekly)
 ```
 
 > `traefik.yml` is fully generated from your `.env` settings and ACME provider selection. Do not edit manually — it will be regenerated when you run option 4. Use option 4 to make changes.
@@ -694,6 +716,7 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 
 - `acme.json` is always `root:root 600` — required for Traefik v3 to write cert renewals
 - `.env` is `chmod 600` — contains VPN credentials, DNS provider API keys, and hashed dashboard passwords. Do not share or commit it
+- Mumble and AMP fall back to the password `changeme`, and UniFi's database to `unifipass`, if you skip option 5. Set real credentials before exposing those services
 - `.dns_config` is `chmod 600` — contains DNS provider API keys
 - WireGuard Easy v15 stores credentials in its internal database — `INIT_PASSWORD` in `.env` is plaintext and only consumed on first start; remove it after first deploy
 - The Traefik HTTPS dashboard requires bcrypt Basic Auth credentials (option 4 → option 1)
@@ -810,6 +833,17 @@ sudo /opt/friendbox/scripts/redeploy.sh --health      # health check + CPU/memor
 - Option 1 automatically checks container logs and displays the token in the post-install summary. If it didn't appear, the container may not have started yet when the check ran.
 - Retrieve it manually: `docker logs teamspeak6 | grep -i token`
 - The token is only printed once on first start. Once used it is consumed and will not appear again.
+
+**"contains a single quote" / value rejected when saving credentials or settings**
+- A single quote or line break in a password, token or API key would corrupt `.env` (bash would stop loading it and Docker Compose would refuse it), so it is refused and your old values are kept. Use a value without them. Unquoted settings (domain, email, paths, timezone) allow only letters, digits and `. _ @ : / + , = -`.
+- If `.env` was already damaged by an older version, open `/opt/friendbox/.env`, fix or delete the broken line, and re-enter the value from the menu.
+
+**`unifi-db` restarts constantly**
+- MongoDB 7 needs a CPU with AVX. Check: `grep -c avx /proc/cpuinfo` (0 means unsupported). On a VM set the CPU type to `host` (Proxmox: Hardware → Processors → Type) and reboot it, or deselect UniFi.
+- Check the log: option 14 → `unifi-db`.
+
+**GoDaddy DNS challenge fails with an empty secret (installs before 3.4.0)**
+- Older versions saved the API secret under a misspelled name. Re-enter it: option 4 → option 3 → GoDaddy.
 
 **Script not updating on launch**
 - Always use `sudo friendbox` — auto-update requires root
